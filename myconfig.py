@@ -1,6 +1,5 @@
 # This file has the configurations of the experiments.
 import os
-import torch
 import multiprocessing
 
 # Paths of downloaded LibriSpeech datasets.
@@ -31,7 +30,7 @@ LSTM_HIDDEN_SIZE = 64
 LSTM_NUM_LAYERS = 3
 
 # Whether to use bi-directional LSTM.
-BI_LSTM = True
+# BI_LSTM = True
 
 # If false, use last frame of LSTM inference as aggregated output;
 # if true, use mean frame of LSTM inference as aggregated output.
@@ -92,6 +91,3 @@ EVAL_THRESHOLD_STEP = 0.001
 
 # Number of processes for multi-processing.
 NUM_PROCESSES = min(multiprocessing.cpu_count(), BATCH_SIZE)
-
-# Wehther to use GPU or CPU.
-DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

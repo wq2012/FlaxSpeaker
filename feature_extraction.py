@@ -1,8 +1,8 @@
 import librosa
 import soundfile as sf
 import random
-import torch
 import numpy as np
+import jax.numpy as jnp
 
 import myconfig
 import dataset
@@ -73,11 +73,11 @@ class TrimmedTripletFeaturesFetcher:
 
 
 def get_batched_triplet_input(spk_to_utts, batch_size, pool=None):
-    """Get batched triplet input for PyTorch."""
+    """Get batched triplet input for Jax."""
     fetcher = TrimmedTripletFeaturesFetcher(spk_to_utts)
     if pool is None:
         input_arrays = list(map(fetcher, range(batch_size)))
     else:
         input_arrays = pool.map(fetcher, range(batch_size))
-    batch_input = torch.from_numpy(np.concatenate(input_arrays)).float()
-    return batch_input
+    batch_input = np.concatenate(input_arrays)
+    return jnp.asarray(batch_input)
