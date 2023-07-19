@@ -23,6 +23,12 @@ class BaseSpeakerEncoder(nn.Module):
 
 class LstmSpeakerEncoder(BaseSpeakerEncoder):
 
+    def setup(self):
+        self.lstm_layers = [
+            nn.RNN(nn.OptimizedLSTMCell(
+                features=myconfig.LSTM_HIDDEN_SIZE))
+            for i in range(myconfig.LSTM_NUM_LAYERS)]
+
     def _aggregate_frames(self, batch_output):
         """Aggregate output frames."""
         if myconfig.FRAME_AGGREGATION_MEAN:
@@ -31,12 +37,9 @@ class LstmSpeakerEncoder(BaseSpeakerEncoder):
         else:
             return batch_output[:, -1, :]
 
-    @nn.compact
     def __call__(self, x):
-        for i in range(myconfig.LSTM_NUM_LAYERS):
-            x = nn.RNN(nn.OptimizedLSTMCell(
-                features=myconfig.LSTM_HIDDEN_SIZE))(x)
-
+        for lstm in self.lstm_layers:
+            x = lstm(x)
         return self._aggregate_frames(x)
 
 
