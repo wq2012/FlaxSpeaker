@@ -136,7 +136,8 @@ def train_step(state, batch_input):
     grad_fn = jax.grad(loss_fn)
     grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
-    return state
+    loss = loss_fn(state.params)
+    return state, loss
 
 
 def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
@@ -155,11 +156,9 @@ def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
         batch_input = feature_extraction.get_batched_triplet_input(
             spk_to_utts, myconfig.BATCH_SIZE, pool)
 
-        state = train_step(state, batch_input)
-        # loss = state.metrics.compute()["loss"]
+        state, loss = train_step(state, batch_input)
 
-        # print("step:", step, "/", num_steps, "loss:", loss.item())
-        print("step:", step)
+        print("step:", step, "/", num_steps, "loss:", loss)
 
         # if (saved_model is not None and
         #         (step + 1) % myconfig.SAVE_MODEL_FREQUENCY == 0):
