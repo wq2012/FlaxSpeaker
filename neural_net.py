@@ -132,11 +132,10 @@ def train_step(state, batch_input):
         loss = get_triplet_loss_from_batch_output(
             batch_output, myconfig.BATCH_SIZE)
         return loss
-    grad_fn = jax.grad(loss_fn)
-    grads = grad_fn(state.params)
+    loss_grad_fn = jax.value_and_grad(loss_fn)
+    loss_val, grads = loss_grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
-    loss = loss_fn(state.params)
-    return state, loss
+    return state, loss_val
 
 
 def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
