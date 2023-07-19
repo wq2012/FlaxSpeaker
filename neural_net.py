@@ -2,6 +2,7 @@ import os
 import time
 import jax
 import jax.numpy as jnp
+import flax
 from flax.training import train_state
 from flax import linen as nn
 import tensorflow as tf
@@ -16,9 +17,6 @@ import myconfig
 
 class BaseSpeakerEncoder(nn.Module):
     pass
-    # def _load_from(self, saved_model):
-    #     var_dict = torch.load(saved_model, map_location=myconfig.DEVICE)
-    #     self.load_state_dict(var_dict["encoder_state_dict"])
 
 
 class LstmSpeakerEncoder(BaseSpeakerEncoder):
@@ -106,16 +104,14 @@ def get_triplet_loss_from_batch_output(batch_output, batch_size):
     return loss
 
 
-# def save_model(saved_model_path, encoder, losses, start_time):
-#     """Save model to disk."""
-#     training_time = time.time() - start_time
-#     os.makedirs(os.path.dirname(saved_model_path), exist_ok=True)
-#     if not saved_model_path.endswith(".pt"):
-#         saved_model_path += ".pt"
-#     torch.save({"encoder_state_dict": encoder.state_dict(),
-#                 "losses": losses,
-#                 "training_time": training_time},
-#                saved_model_path)
+def save_model(saved_model_path, state):
+    """Save model to disk."""
+    os.makedirs(os.path.dirname(saved_model_path), exist_ok=True)
+    if not saved_model_path.endswith(".msgpack"):
+        saved_model_path += ".msgpack"
+    bytes_output = flax.serialization.to_bytes(state)
+    with open(saved_model_path, "wb") as f:
+        f.write(bytes_output)
 
 
 def create_train_state(module, rng, learning_rate):
@@ -160,22 +156,22 @@ def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
             spk_to_utts, myconfig.BATCH_SIZE, pool)
 
         state, loss = train_step(state, batch_input)
+        losses.append(loss)
 
         print("step:", step, "/", num_steps, "loss:", loss)
 
-        # if (saved_model is not None and
-        #         (step + 1) % myconfig.SAVE_MODEL_FREQUENCY == 0):
-        #     checkpoint = saved_model
-        #     if checkpoint.endswith(".pt"):
-        #         checkpoint = checkpoint[:-3]
-        #     checkpoint += ".ckpt-" + str(step + 1) + ".pt"
-        #     save_model(checkpoint,
-        #                encoder, losses, start_time)
+        if (saved_model is not None and
+                (step + 1) % myconfig.SAVE_MODEL_FREQUENCY == 0):
+            checkpoint = saved_model
+            if checkpoint.endswith(".msgpack"):
+                checkpoint = checkpoint[:-8]
+            checkpoint += ".ckpt-" + str(step + 1) + ".msgpack"
+            save_model(checkpoint, state)
 
     training_time = time.time() - start_time
     print("Finished training in", training_time, "seconds")
-    # if saved_model is not None:
-    #     save_model(saved_model, encoder, losses, start_time)
+    if saved_model is not None:
+        save_model(saved_model, state)
     return losses
 
 
