@@ -84,7 +84,7 @@ SLIDING_WINDOW_STEP = 50  # 1.6 seconds
 # Number of triplets to evaluate for computing Equal Error Rate (EER).
 # Both the number of positive trials and number of negative trials will be
 # equal to this number.
-NUM_EVAL_TRIPLETS = 10000
+NUM_EVAL_TRIPLETS = 100
 
 # Step of threshold sweeping for computing Equal Error Rate (EER).
 EVAL_THRESHOLD_STEP = 0.001

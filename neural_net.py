@@ -64,17 +64,20 @@ class TransformerSpeakerEncoder(BaseSpeakerEncoder):
 
 
 @jax.jit
+def cosine_similarity(a, b):
+    """Compute cosine similarity between two embeddings."""
+    eps = 1e-6
+    return jnp.dot(a, b) / (jnp.linalg.norm(a) * jnp.linalg.norm(b) + eps)
+
+
+@jax.jit
 def get_triplet_loss(anchor, pos, neg):
     """Triplet loss defined in https://arxiv.org/pdf/1705.02304.pdf."""
-    eps = 1e-6
-
-    def cos(vec1, vec2):
-        return jnp.dot(vec1, vec2) / jnp.sqrt(
-            jnp.dot(vec1, vec1) * jnp.dot(vec2, vec2) + eps)
 
     return jnp.maximum(
-        jax.vmap(cos, in_axes=[0, 0])(anchor, neg) - jax.vmap(
-            cos, in_axes=[0, 0])(anchor, pos) + myconfig.TRIPLET_ALPHA,
+        jax.vmap(cosine_similarity, in_axes=[0, 0])(anchor, neg) -
+        jax.vmap(cosine_similarity, in_axes=[0, 0])(anchor, pos) +
+        myconfig.TRIPLET_ALPHA,
         0.0)
 
 

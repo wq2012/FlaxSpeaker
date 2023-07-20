@@ -1,4 +1,4 @@
-import torch
+import jax.numpy as jnp
 import numpy as np
 from multiprocessing.pool import ThreadPool
 import time
@@ -9,49 +9,43 @@ import neural_net
 import myconfig
 
 
-def run_inference(features, encoder,
+def run_inference(features, state,
                   full_sequence=myconfig.USE_FULL_SEQUENCE_INFERENCE):
     """Get the embedding of an utterance using the encoder."""
     if full_sequence:
         # Full sequence inference.
-        batch_input = torch.unsqueeze(torch.from_numpy(
-            features), dim=0).float().to(myconfig.DEVICE)
-        batch_output = encoder(batch_input)
-        return batch_output[0, :].cpu().data.numpy()
+        batch_input = jnp.expand_dims(
+            features, axis=0)
+        batch_output = state.apply_fn({'params': state.params}, batch_input)
+        return batch_output[0, :]
     else:
         # Sliding window inference.
         sliding_windows = feature_extraction.extract_sliding_windows(features)
         if not sliding_windows:
             return None
-        batch_input = torch.from_numpy(
-            np.stack(sliding_windows)).float().to(myconfig.DEVICE)
-        batch_output = encoder(batch_input)
+        batch_input = jnp.stack(sliding_windows)
+        batch_output = state.apply_fn({'params': state.params}, batch_input)
 
         # Aggregate the inference outputs from sliding windows.
-        aggregated_output = torch.mean(batch_output, dim=0, keepdim=False).cpu()
-        return aggregated_output.data.numpy()
-
-
-def cosine_similarity(a, b):
-    """Compute cosine similarity between two embeddings."""
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        aggregated_output = jnp.mean(batch_output, axis=0, keepdims=False)
+        return aggregated_output
 
 
 class TripletScoreFetcher:
     """Class for computing triplet scores with multi-processing."""
 
-    def __init__(self, spk_to_utts, encoder, num_eval_triplets):
+    def __init__(self, spk_to_utts, state, num_eval_triplets):
         self.spk_to_utts = spk_to_utts
-        self.encoder = encoder
+        self.state = state
         self.num_eval_triplets = num_eval_triplets
 
     def __call__(self, i):
         """Get the labels and scores from a triplet."""
         anchor, pos, neg = feature_extraction.get_triplet_features(
             self.spk_to_utts)
-        anchor_embedding = run_inference(anchor, self.encoder)
-        pos_embedding = run_inference(pos, self.encoder)
-        neg_embedding = run_inference(neg, self.encoder)
+        anchor_embedding = run_inference(anchor, self.state)
+        pos_embedding = run_inference(pos, self.state)
+        neg_embedding = run_inference(neg, self.state)
         if ((anchor_embedding is None) or
             (pos_embedding is None) or
                 (neg_embedding is None)):
@@ -59,17 +53,18 @@ class TripletScoreFetcher:
             return ([], [])
         triplet_labels = [1, 0]
         triplet_scores = [
-            cosine_similarity(anchor_embedding, pos_embedding),
-            cosine_similarity(anchor_embedding, neg_embedding)]
+            neural_net.cosine_similarity(anchor_embedding, pos_embedding),
+            neural_net.cosine_similarity(anchor_embedding, neg_embedding)]
         print("triplets evaluated:", i, "/", self.num_eval_triplets)
         return (triplet_labels, triplet_scores)
 
 
-def compute_scores(encoder, spk_to_utts, num_eval_triplets=myconfig.NUM_EVAL_TRIPLETS):
+def compute_scores(state, spk_to_utts, num_eval_triplets=myconfig.NUM_EVAL_TRIPLETS):
     """Compute cosine similarity scores from testing data."""
     labels = []
     scores = []
-    fetcher = TripletScoreFetcher(spk_to_utts, encoder, num_eval_triplets)
+    fetcher = TripletScoreFetcher(
+        spk_to_utts, state, num_eval_triplets)
     # CUDA does not support multi-processing, so using a ThreadPool.
     with ThreadPool(myconfig.NUM_PROCESSES) as pool:
         while num_eval_triplets > len(labels) // 2:
@@ -117,10 +112,10 @@ def run_eval():
         spk_to_utts = dataset.get_librispeech_spk_to_utts(
             myconfig.TEST_DATA_DIR)
         print("Evaluation data:", myconfig.TEST_DATA_DIR)
-    encoder = neural_net.get_speaker_encoder(
+    _, state = neural_net.get_speaker_encoder(
         myconfig.SAVED_MODEL_PATH)
     labels, scores = compute_scores(
-        encoder, spk_to_utts, myconfig.NUM_EVAL_TRIPLETS)
+        state, spk_to_utts, myconfig.NUM_EVAL_TRIPLETS)
     eer, eer_threshold = compute_eer(labels, scores)
     eval_time = time.time() - start_time
     print("Finished evaluation in", eval_time, "seconds")
