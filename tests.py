@@ -1,5 +1,5 @@
 import os
-import torch
+import jax.numpy as jnp
 import unittest
 import numpy as np
 import multiprocessing
@@ -11,6 +11,9 @@ import feature_extraction
 import neural_net
 import evaluation
 import myconfig
+
+
+EPS = 1e-6
 
 
 class TestDataset(unittest.TestCase):
@@ -99,8 +102,8 @@ class TestFeatureExtraction(unittest.TestCase):
     def test_get_batched_triplet_input(self):
         batch_input = feature_extraction.get_batched_triplet_input(
             self.spk_to_utts, batch_size=4)
-        self.assertEqual(batch_input.shape, torch.Size(
-            [3 * 4, myconfig.SEQ_LEN, myconfig.N_MFCC]))
+        self.assertTupleEqual(batch_input.shape,
+                              (3 * 4, myconfig.SEQ_LEN, myconfig.N_MFCC))
 
 
 class TestNeuralNet(unittest.TestCase):
@@ -108,45 +111,64 @@ class TestNeuralNet(unittest.TestCase):
         self.spk_to_utts = dataset.get_librispeech_spk_to_utts(
             myconfig.TRAIN_DATA_DIR)
 
+    def test_cosine_similarity(self):
+        a = jnp.array([0.6, 0.8, 0.0])
+        b = jnp.array([0.6, 0.8, 0.0])
+        self.assertAlmostEqual(
+            1.0, neural_net.cosine_similarity(a, b).item(), delta=EPS)
+
+        a = jnp.array([0.6, 0.8, 0.0])
+        b = jnp.array([0.8, -0.6, 0.0])
+        self.assertAlmostEqual(
+            0.0, neural_net.cosine_similarity(a, b).item(), delta=EPS)
+
+        a = jnp.array([0.6, 0.8, 0.0])
+        b = jnp.array([0.8, 0.6, 0.0])
+        self.assertAlmostEqual(
+            0.96, neural_net.cosine_similarity(a, b).item(), delta=EPS)
+
+        a = jnp.array([0.6, 0.8, 0.0])
+        b = jnp.array([0.0, 0.8, -0.6])
+        self.assertAlmostEqual(
+            0.64, neural_net.cosine_similarity(a, b).item(), delta=EPS)
+
     def test_get_triplet_loss1(self):
-        anchor = torch.tensor([0.0, 1.0])
-        pos = torch.tensor([0.0, 1.0])
-        neg = torch.tensor([0.0, 1.0])
+        anchor = jnp.array([[0.0, 1.0]])
+        pos = jnp.array([[0.0, 1.0]])
+        neg = jnp.array([[0.0, 1.0]])
         loss = neural_net.get_triplet_loss(anchor, pos, neg)
-        loss_value = loss.data.numpy().item()
-        self.assertAlmostEqual(loss_value, myconfig.TRIPLET_ALPHA)
+        self.assertAlmostEqual(loss.item(), myconfig.TRIPLET_ALPHA, delta=EPS)
 
     def test_get_triplet_loss2(self):
-        anchor = torch.tensor([0.6, 0.8])
-        pos = torch.tensor([0.6, 0.8])
-        neg = torch.tensor([-0.8, 0.6])
+        anchor = jnp.array([[0.6, 0.8]])
+        pos = jnp.array([[0.6, 0.8]])
+        neg = jnp.array([[-0.8, 0.6]])
         loss = neural_net.get_triplet_loss(anchor, pos, neg)
-        loss_value = loss.data.numpy().item()
-        self.assertAlmostEqual(loss_value, 0)
+        self.assertAlmostEqual(loss.item(), 0, delta=EPS)
 
     def test_get_triplet_loss3(self):
-        anchor = torch.tensor([0.6, 0.8])
-        pos = torch.tensor([-0.8, 0.6])
-        neg = torch.tensor([0.6, 0.8])
+        anchor = jnp.array([[0.6, 0.8]])
+        pos = jnp.array([[-0.8, 0.6]])
+        neg = jnp.array([[0.6, 0.8]])
         loss = neural_net.get_triplet_loss(anchor, pos, neg)
-        loss_value = loss.data.numpy().item()
-        self.assertAlmostEqual(loss_value, 1 + myconfig.TRIPLET_ALPHA)
+        self.assertAlmostEqual(
+            loss.item(), 1 + myconfig.TRIPLET_ALPHA, delta=EPS)
 
     def test_get_triplet_loss_from_batch_output1(self):
-        batch_output = torch.tensor([[0.6, 0.8], [-0.8, 0.6], [0.6, 0.8]])
+        batch_output = jnp.array([[0.6, 0.8], [-0.8, 0.6], [0.6, 0.8]])
         loss = neural_net.get_triplet_loss_from_batch_output(
             batch_output, batch_size=1)
-        loss_value = loss.data.numpy().item()
-        self.assertAlmostEqual(loss_value, 1 + myconfig.TRIPLET_ALPHA)
+        self.assertAlmostEqual(loss.item(), 1 + myconfig.TRIPLET_ALPHA,
+                               delta=EPS)
 
     def test_get_triplet_loss_from_batch_output2(self):
-        batch_output = torch.tensor(
+        batch_output = jnp.array(
             [[0.6, 0.8], [-0.8, 0.6], [0.6, 0.8],
              [0.6, 0.8], [-0.8, 0.6], [0.6, 0.8]])
         loss = neural_net.get_triplet_loss_from_batch_output(
             batch_output, batch_size=2)
-        loss_value = loss.data.numpy().item()
-        self.assertAlmostEqual(loss_value, 1 + myconfig.TRIPLET_ALPHA)
+        self.assertAlmostEqual(loss.item(), 1 + myconfig.TRIPLET_ALPHA,
+                               delta=EPS)
 
     def test_train_unilstm_network(self):
         myconfig.USE_TRANSFORMER = False
@@ -174,65 +196,34 @@ class TestNeuralNet(unittest.TestCase):
 
 class TestEvaluation(unittest.TestCase):
     def setUp(self):
-        myconfig.BI_LSTM = False
         myconfig.FRAME_AGGREGATION_MEAN = False
         myconfig.USE_TRANSFORMER = False
-        self.encoder = neural_net.get_speaker_encoder().to(myconfig.DEVICE)
+        _, self.state = neural_net.get_speaker_encoder()
         self.spk_to_utts = dataset.get_librispeech_spk_to_utts(
             myconfig.TEST_DATA_DIR)
 
-    def test_run_unilstm_inference(self):
-        myconfig.BI_LSTM = False
+    def test_run_lstm_inference(self):
         myconfig.FRAME_AGGREGATION_MEAN = False
         myconfig.USE_TRANSFORMER = False
         myconfig.USE_FULL_SEQUENCE_INFERENCE = False
         features = feature_extraction.extract_features(os.path.join(
             myconfig.TEST_DATA_DIR, "61/70968/61-70968-0000.flac"))
-        embedding = evaluation.run_inference(features, self.encoder)
-        self.assertEqual(embedding.shape, (myconfig.LSTM_HIDDEN_SIZE,))
+        embedding = evaluation.run_inference(features, self.state)
+        self.assertTupleEqual(embedding.shape, (myconfig.LSTM_HIDDEN_SIZE,))
 
-    def test_run_bilstm_inference(self):
-        myconfig.BI_LSTM = True
-        myconfig.FRAME_AGGREGATION_MEAN = True
-        myconfig.USE_TRANSFORMER = False
-        myconfig.USE_FULL_SEQUENCE_INFERENCE = False
-        self.encoder = neural_net.get_speaker_encoder().to(myconfig.DEVICE)
-        features = feature_extraction.extract_features(os.path.join(
-            myconfig.TEST_DATA_DIR, "61/70968/61-70968-0000.flac"))
-        embedding = evaluation.run_inference(features, self.encoder)
-        self.assertEqual(embedding.shape, (2 * myconfig.LSTM_HIDDEN_SIZE,))
-
-    def test_run_bilstm_full_sequence_inference(self):
-        myconfig.BI_LSTM = True
+    def test_run_lstm_full_sequence_inference(self):
         myconfig.FRAME_AGGREGATION_MEAN = True
         myconfig.USE_TRANSFORMER = False
         myconfig.USE_FULL_SEQUENCE_INFERENCE = True
-        self.encoder = neural_net.get_speaker_encoder().to(myconfig.DEVICE)
+        _, self.state = neural_net.get_speaker_encoder()
         features = feature_extraction.extract_features(os.path.join(
             myconfig.TEST_DATA_DIR, "61/70968/61-70968-0000.flac"))
-        embedding = evaluation.run_inference(features, self.encoder)
-        self.assertEqual(embedding.shape, (2 * myconfig.LSTM_HIDDEN_SIZE,))
-
-    def test_cosine_similarity(self):
-        a = np.array([0.6, 0.8, 0.0])
-        b = np.array([0.6, 0.8, 0.0])
-        self.assertAlmostEqual(1.0, evaluation.cosine_similarity(a, b))
-
-        a = np.array([0.6, 0.8, 0.0])
-        b = np.array([0.8, -0.6, 0.0])
-        self.assertAlmostEqual(0.0, evaluation.cosine_similarity(a, b))
-
-        a = np.array([0.6, 0.8, 0.0])
-        b = np.array([0.8, 0.6, 0.0])
-        self.assertAlmostEqual(0.96, evaluation.cosine_similarity(a, b))
-
-        a = np.array([0.6, 0.8, 0.0])
-        b = np.array([0.0, 0.8, -0.6])
-        self.assertAlmostEqual(0.64, evaluation.cosine_similarity(a, b))
+        embedding = evaluation.run_inference(features, self.state)
+        self.assertTupleEqual(embedding.shape, (myconfig.LSTM_HIDDEN_SIZE,))
 
     def test_compute_scores(self):
         labels, scores = evaluation.compute_scores(
-            self.encoder, self.spk_to_utts, 3)
+            self.state, self.spk_to_utts, 3)
         self.assertListEqual(labels, [1, 0, 1, 0, 1, 0])
         self.assertEqual(len(scores), 6)
 
