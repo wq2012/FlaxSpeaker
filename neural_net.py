@@ -113,7 +113,7 @@ def load_model(saved_model_path, state):
     """Load model from disk."""
     with open(saved_model_path, "rb") as f:
         bytes_output = f.read()
-    flax.serialization.from_bytes(state, bytes_output)
+    return flax.serialization.from_bytes(state, bytes_output)
     print("Model loaded from:", saved_model_path)
 
 
@@ -152,7 +152,7 @@ def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
 
     state = create_train_state(encoder, init_rng, myconfig.LEARNING_RATE)
     if saved_model:
-        load_model(saved_model, state)
+        state = load_model(saved_model, state)
 
     for step in range(num_steps):
         # Build batched input.
