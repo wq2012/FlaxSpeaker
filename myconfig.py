@@ -37,7 +37,7 @@ LSTM_NUM_LAYERS = 3
 FRAME_AGGREGATION_MEAN = True
 
 # If true, we use transformer instead of LSTM.
-USE_TRANSFORMER = False
+USE_TRANSFORMER = True
 
 # Dimension of transformer layers.
 TRANSFORMER_DIM = 32

@@ -41,39 +41,32 @@ class LstmSpeakerEncoder(BaseSpeakerEncoder):
         return self._aggregate_frames(x)
 
 
-# class TransformerSpeakerEncoder(BaseSpeakerEncoder):
+class TransformerSpeakerEncoder(BaseSpeakerEncoder):
 
-#     def __init__(self, saved_model=""):
-#         super(TransformerSpeakerEncoder, self).__init__()
-#         # Define the Transformer network.
-#         self.linear_layer = nn.Linear(myconfig.N_MFCC, myconfig.TRANSFORMER_DIM)
-#         self.encoder = nn.TransformerEncoder(nn.TransformerEncoderLayer(
-#             d_model=myconfig.TRANSFORMER_DIM, nhead=myconfig.TRANSFORMER_HEADS,
-#             batch_first=True),
-#             num_layers=myconfig.TRANSFORMER_ENCODER_LAYERS)
-#         self.decoder = nn.TransformerDecoder(nn.TransformerDecoderLayer(
-#             d_model=myconfig.TRANSFORMER_DIM, nhead=myconfig.TRANSFORMER_HEADS,
-#             batch_first=True),
-#             num_layers=1)
+    def setup(self):
+        # Define the Transformer network.
+        self.linear_layer = nn.Dense(features=myconfig.TRANSFORMER_DIM)
+        self.encoders = [nn.SelfAttention(num_heads=myconfig.TRANSFORMER_HEADS)
+                         for i in range(myconfig.TRANSFORMER_ENCODER_LAYERS)]
+        self.temporal_attention = nn.Dense(features=1)
 
-#         # Load from a saved model if provided.
-#         if saved_model:
-#             self._load_from(saved_model)
+    def __call__(self, x):
+        encoder_input = nn.activation.sigmoid(self.linear_layer(x))
+        for encoder in self.encoders:
+            encoder_output = encoder(encoder_input)
+            encoder_input = encoder_output
 
-#     def forward(self, x):
-#         encoder_input = torch.sigmoid(self.linear_layer(x))
-#         encoder_output = self.encoder(encoder_input)
-#         tgt = torch.zeros(x.shape[0], 1, myconfig.TRANSFORMER_DIM).to(
-#             myconfig.DEVICE)
-#         output = self.decoder(tgt, encoder_output)
-#         return output[:, 0, :]
+        # Attentive temporal pooling.
+        temporal_weights = self.temporal_attention(encoder_output)
+        weighted_output = jnp.multiply(encoder_output, temporal_weights)
+        weighted_output = jax.nn.softmax(weighted_output)
+        return jnp.mean(weighted_output, axis=1, keepdims=False)
 
 
-def get_speaker_encoder(load_from=""):
-    """Create speaker encoder model or load it from a saved model."""
+def get_speaker_encoder():
+    """Create speaker encoder model."""
     if myconfig.USE_TRANSFORMER:
-        raise NotImplementedError()
-        # return TransformerSpeakerEncoder()
+        return TransformerSpeakerEncoder()
     else:
         return LstmSpeakerEncoder()
 
