@@ -71,6 +71,7 @@ def get_speaker_encoder():
         return LstmSpeakerEncoder()
 
 
+@jax.jit
 def get_triplet_loss(anchor, pos, neg):
     """Triplet loss defined in https://arxiv.org/pdf/1705.02304.pdf."""
     eps = 1e-6
@@ -105,6 +106,15 @@ def save_model(saved_model_path, state):
     bytes_output = flax.serialization.to_bytes(state)
     with open(saved_model_path, "wb") as f:
         f.write(bytes_output)
+    print("Model saved to: ", saved_model_path)
+
+
+def load_model(saved_model_path, state):
+    """Load model from disk."""
+    with open(saved_model_path, "rb") as f:
+        bytes_output = f.read()
+    flax.serialization.from_bytes(state, bytes_output)
+    print("Model loaded from:", saved_model_path)
 
 
 def create_train_state(module, rng, learning_rate):
@@ -141,7 +151,9 @@ def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
     init_rng = jax.random.PRNGKey(0)
 
     state = create_train_state(encoder, init_rng, myconfig.LEARNING_RATE)
-    print("Start training")
+    if saved_model:
+        load_model(saved_model, state)
+
     for step in range(num_steps):
         # Build batched input.
         batch_input = feature_extraction.get_batched_triplet_input(
