@@ -155,7 +155,7 @@ def train_step(state, batch_input):
 def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
     start_time = time.time()
     losses = []
-    _, state = get_speaker_encoder(saved_model)
+    _, state = get_speaker_encoder()
 
     # Train
     for step in range(num_steps):
