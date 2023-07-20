@@ -37,7 +37,7 @@ LSTM_NUM_LAYERS = 3
 FRAME_AGGREGATION_MEAN = True
 
 # If true, we use transformer instead of LSTM.
-USE_TRANSFORMER = True
+USE_TRANSFORMER = False
 
 # Dimension of transformer layers.
 TRANSFORMER_DIM = 32
@@ -61,13 +61,13 @@ BATCH_SIZE = 8
 LEARNING_RATE = 0.0001
 
 # Save a model to disk every these many steps.
-SAVE_MODEL_FREQUENCY = 10
+SAVE_MODEL_FREQUENCY = 10000
 
 # Number of steps to train.
-TRAINING_STEPS = 100
+TRAINING_STEPS = 100000
 
 # Whether we are going to train with SpecAugment.
-SPECAUG_TRAINING = False
+SPECAUG_TRAINING = True
 
 # Parameters for SpecAugment training.
 SPECAUG_FREQ_MASK_PROB = 0.3
@@ -84,7 +84,7 @@ SLIDING_WINDOW_STEP = 50  # 1.6 seconds
 # Number of triplets to evaluate for computing Equal Error Rate (EER).
 # Both the number of positive trials and number of negative trials will be
 # equal to this number.
-NUM_EVAL_TRIPLETS = 100
+NUM_EVAL_TRIPLETS = 10000
 
 # Step of threshold sweeping for computing Equal Error Rate (EER).
 EVAL_THRESHOLD_STEP = 0.001
