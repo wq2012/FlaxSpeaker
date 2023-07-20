@@ -63,14 +63,6 @@ class TransformerSpeakerEncoder(BaseSpeakerEncoder):
         return jnp.mean(weighted_output, axis=1, keepdims=False)
 
 
-def get_speaker_encoder():
-    """Create speaker encoder model."""
-    if myconfig.USE_TRANSFORMER:
-        return TransformerSpeakerEncoder()
-    else:
-        return LstmSpeakerEncoder()
-
-
 @jax.jit
 def get_triplet_loss(anchor, pos, neg):
     """Triplet loss defined in https://arxiv.org/pdf/1705.02304.pdf."""
@@ -113,8 +105,8 @@ def load_model(saved_model_path, state):
     """Load model from disk."""
     with open(saved_model_path, "rb") as f:
         bytes_output = f.read()
-    return flax.serialization.from_bytes(state, bytes_output)
     print("Model loaded from:", saved_model_path)
+    return flax.serialization.from_bytes(state, bytes_output)
 
 
 def create_train_state(module, rng, learning_rate):
@@ -124,6 +116,22 @@ def create_train_state(module, rng, learning_rate):
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
         apply_fn=module.apply, params=params, tx=tx)
+
+
+def get_speaker_encoder(load_from=None):
+    """Create speaker encoder model."""
+    if myconfig.USE_TRANSFORMER:
+        encoder = TransformerSpeakerEncoder()
+    else:
+        encoder = LstmSpeakerEncoder()
+
+    tf.random.set_seed(0)
+    init_rng = jax.random.PRNGKey(0)
+    state = create_train_state(encoder, init_rng, myconfig.LEARNING_RATE)
+    if load_from:
+        state = load_model(load_from, state)
+
+    return encoder, state
 
 
 @jax.jit
@@ -144,16 +152,9 @@ def train_step(state, batch_input):
 def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
     start_time = time.time()
     losses = []
-    encoder = get_speaker_encoder()
+    _, state = get_speaker_encoder(saved_model)
 
     # Train
-    tf.random.set_seed(0)
-    init_rng = jax.random.PRNGKey(0)
-
-    state = create_train_state(encoder, init_rng, myconfig.LEARNING_RATE)
-    if saved_model:
-        state = load_model(saved_model, state)
-
     for step in range(num_steps):
         # Build batched input.
         batch_input = feature_extraction.get_batched_triplet_input(
@@ -179,6 +180,13 @@ def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
     return losses
 
 
+def visualize_losses(losses):
+    plt.plot(losses)
+    plt.xlabel("step")
+    plt.ylabel("loss")
+    plt.show()
+
+
 def run_training():
     if myconfig.TRAIN_DATA_CSV:
         spk_to_utts = dataset.get_csv_spk_to_utts(
@@ -193,10 +201,7 @@ def run_training():
                                myconfig.TRAINING_STEPS,
                                myconfig.SAVED_MODEL_PATH,
                                pool)
-    plt.plot(losses)
-    plt.xlabel("step")
-    plt.ylabel("loss")
-    plt.show()
+    visualize_losses(losses)
 
 
 if __name__ == "__main__":
