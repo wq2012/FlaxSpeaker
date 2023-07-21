@@ -8,8 +8,8 @@ TRAIN_DATA_DIR = os.path.join(
 TEST_DATA_DIR = os.path.join(
     "/mnt/e/Research/Data/LibriSpeech/test-clean")
 
-# Paths of CSV files where the first column is speaker, and the second column is
-# utterance file.
+# Paths of CSV files where the first column is speaker, and the second column
+# is utterance file.
 # These will allow you to train/evaluate using other datasets than LibriSpeech.
 # If given, TRAIN_DATA_DIR and/or TEST_DATA_DIR will be ignored.
 TRAIN_DATA_CSV = ""

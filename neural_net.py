@@ -9,6 +9,7 @@ import tensorflow as tf
 import optax
 import matplotlib.pyplot as plt
 import multiprocessing
+from typing import Optional
 
 import dataset
 import feature_extraction
@@ -27,7 +28,7 @@ class LstmSpeakerEncoder(BaseSpeakerEncoder):
                 features=myconfig.LSTM_HIDDEN_SIZE))
             for i in range(myconfig.LSTM_NUM_LAYERS)]
 
-    def _aggregate_frames(self, batch_output):
+    def _aggregate_frames(self, batch_output: jax.Array) -> jax.Array:
         """Aggregate output frames."""
         if myconfig.FRAME_AGGREGATION_MEAN:
             return jnp.mean(
@@ -35,7 +36,7 @@ class LstmSpeakerEncoder(BaseSpeakerEncoder):
         else:
             return batch_output[:, -1, :]
 
-    def __call__(self, x):
+    def __call__(self, x: jax.Array) -> jax.Array:
         for lstm in self.lstm_layers:
             x = lstm(x)
         return self._aggregate_frames(x)
@@ -50,7 +51,7 @@ class TransformerSpeakerEncoder(BaseSpeakerEncoder):
                          for i in range(myconfig.TRANSFORMER_ENCODER_LAYERS)]
         self.temporal_attention = nn.Dense(features=1)
 
-    def __call__(self, x):
+    def __call__(self, x: jax.Array) -> jax.Array:
         encoder_input = nn.activation.sigmoid(self.linear_layer(x))
         for encoder in self.encoders:
             encoder_output = encoder(encoder_input)
@@ -64,14 +65,15 @@ class TransformerSpeakerEncoder(BaseSpeakerEncoder):
 
 
 @jax.jit
-def cosine_similarity(a, b):
+def cosine_similarity(a: jax.Array, b: jax.Array) -> jax.Array:
     """Compute cosine similarity between two embeddings."""
     eps = 1e-6
     return jnp.dot(a, b) / (jnp.linalg.norm(a) * jnp.linalg.norm(b) + eps)
 
 
 @jax.jit
-def get_triplet_loss(anchor, pos, neg):
+def get_triplet_loss(anchor: jax.Array, pos: jax.Array, neg: jax.Array
+                     ) -> jax.Array:
     """Triplet loss defined in https://arxiv.org/pdf/1705.02304.pdf."""
 
     return jnp.maximum(
@@ -81,7 +83,8 @@ def get_triplet_loss(anchor, pos, neg):
         0.0)
 
 
-def get_triplet_loss_from_batch_output(batch_output, batch_size):
+def get_triplet_loss_from_batch_output(batch_output: jax.Array, batch_size: int
+                                       ) -> jax.Array:
     """Triplet loss from N*(a|p|n) batch output."""
     batch_output_reshaped = jnp.reshape(
         batch_output, (batch_size, 3, batch_output.shape[1]))
@@ -93,7 +96,7 @@ def get_triplet_loss_from_batch_output(batch_output, batch_size):
     return loss
 
 
-def save_model(saved_model_path, state):
+def save_model(saved_model_path: str, state: train_state.TrainState) -> None:
     """Save model to disk."""
     os.makedirs(os.path.dirname(saved_model_path), exist_ok=True)
     if not saved_model_path.endswith(".msgpack"):
@@ -104,7 +107,8 @@ def save_model(saved_model_path, state):
     print("Model saved to: ", saved_model_path)
 
 
-def load_model(saved_model_path, state):
+def load_model(saved_model_path: str, state: train_state.TrainState
+               ) -> train_state.TrainState:
     """Load model from disk."""
     with open(saved_model_path, "rb") as f:
         bytes_output = f.read()
@@ -112,7 +116,8 @@ def load_model(saved_model_path, state):
     return flax.serialization.from_bytes(state, bytes_output)
 
 
-def create_train_state(module, rng, learning_rate):
+def create_train_state(module: nn.Module, rng: jax.Array, learning_rate: float
+                       ) -> train_state.TrainState:
     """Creates an initial `TrainState`."""
     params = module.init(
         rng, jnp.ones([1, myconfig.SEQ_LEN, myconfig.N_MFCC]))["params"]
@@ -121,7 +126,8 @@ def create_train_state(module, rng, learning_rate):
         apply_fn=module.apply, params=params, tx=tx)
 
 
-def get_speaker_encoder(load_from=None):
+def get_speaker_encoder(load_from: bool = None
+                        ) -> tuple[BaseSpeakerEncoder, train_state.TrainState]:
     """Create speaker encoder model."""
     if myconfig.USE_TRANSFORMER:
         encoder = TransformerSpeakerEncoder()
@@ -138,9 +144,10 @@ def get_speaker_encoder(load_from=None):
 
 
 @jax.jit
-def train_step(state, batch_input):
+def train_step(state: train_state.TrainState, batch_input: jax.Array
+               ) -> tuple[train_state.TrainState, jax.Array]:
     """Train for a single step."""
-    def loss_fn(params):
+    def loss_fn(params: flax.core.frozen_dict.FrozenDict) -> jax.Array:
         # Compute loss.
         batch_output = state.apply_fn({'params': params}, batch_input)
         loss = get_triplet_loss_from_batch_output(
@@ -152,7 +159,11 @@ def train_step(state, batch_input):
     return state, loss_val
 
 
-def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
+def train_network(spk_to_utts: dataset.SpkToUtts,
+                  num_steps: int,
+                  saved_model: Optional[str] = None,
+                  pool: Optional[multiprocessing.pool.Pool] = None
+                  ) -> list[float]:
     start_time = time.time()
     losses = []
     _, state = get_speaker_encoder()
@@ -183,14 +194,14 @@ def train_network(spk_to_utts, num_steps, saved_model=None, pool=None):
     return losses
 
 
-def visualize_losses(losses):
+def visualize_losses(losses: list[float]) -> None:
     plt.plot(losses)
     plt.xlabel("step")
     plt.ylabel("loss")
     plt.show()
 
 
-def run_training():
+def run_training() -> None:
     if myconfig.TRAIN_DATA_CSV:
         spk_to_utts = dataset.get_csv_spk_to_utts(
             myconfig.TRAIN_DATA_CSV)

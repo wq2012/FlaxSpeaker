@@ -4,7 +4,7 @@ import random
 import myconfig
 
 
-def apply_specaug(features):
+def apply_specaug(features: np.ndarray) -> np.ndarray:
     """Apply SpecAugment to features."""
     seq_len, n_mfcc = features.shape
     outputs = features

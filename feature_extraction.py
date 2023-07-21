@@ -2,14 +2,17 @@ import librosa
 import soundfile as sf
 import random
 import numpy as np
+import jax
 import jax.numpy as jnp
+import multiprocessing
+from typing import Optional
 
 import myconfig
 import dataset
 import specaug
 
 
-def extract_features(audio_file):
+def extract_features(audio_file: str) -> np.ndarray:
     """Extract MFCC features from an audio file, shape=(TIME, MFCC)."""
     waveform, sample_rate = sf.read(audio_file)
 
@@ -26,7 +29,7 @@ def extract_features(audio_file):
     return features.transpose()
 
 
-def extract_sliding_windows(features):
+def extract_sliding_windows(features: np.ndarray) -> list[np.ndarray]:
     """Extract sliding windows from features."""
     sliding_windows = []
     start = 0
@@ -36,7 +39,8 @@ def extract_sliding_windows(features):
     return sliding_windows
 
 
-def get_triplet_features(spk_to_utts):
+def get_triplet_features(spk_to_utts: dataset.SpkToUtts
+                         ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Get a triplet of anchor/pos/neg features."""
     anchor_utt, pos_utt, neg_utt = dataset.get_triplet(spk_to_utts)
     return (extract_features(anchor_utt),
@@ -44,7 +48,7 @@ def get_triplet_features(spk_to_utts):
             extract_features(neg_utt))
 
 
-def trim_features(features, apply_specaug):
+def trim_features(features: np.ndarray, apply_specaug: bool) -> np.ndarray:
     """Trim features to SEQ_LEN."""
     full_length = features.shape[0]
     start = random.randint(0, full_length - myconfig.SEQ_LEN)
@@ -57,10 +61,10 @@ def trim_features(features, apply_specaug):
 class TrimmedTripletFeaturesFetcher:
     """The fetcher of trimmed features for multi-processing."""
 
-    def __init__(self, spk_to_utts):
+    def __init__(self, spk_to_utts: dataset.SpkToUtts):
         self.spk_to_utts = spk_to_utts
 
-    def __call__(self, _):
+    def __call__(self, _) -> np.ndarray:
         """Get a triplet of trimmed anchor/pos/neg features."""
         anchor, pos, neg = get_triplet_features(self.spk_to_utts)
         while (anchor.shape[0] < myconfig.SEQ_LEN or
@@ -72,7 +76,10 @@ class TrimmedTripletFeaturesFetcher:
                          trim_features(neg, myconfig.SPECAUG_TRAINING)])
 
 
-def get_batched_triplet_input(spk_to_utts, batch_size, pool=None):
+def get_batched_triplet_input(
+        spk_to_utts: dataset.SpkToUtts,
+        batch_size: int,
+        pool: Optional[multiprocessing.pool.Pool] = None) -> jax.Array:
     """Get batched triplet input for Jax."""
     fetcher = TrimmedTripletFeaturesFetcher(spk_to_utts)
     if pool is None:

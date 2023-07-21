@@ -1,7 +1,9 @@
+import jax
 import jax.numpy as jnp
-import numpy as np
+from flax.training import train_state
 from multiprocessing.pool import ThreadPool
 import time
+from typing import Optional
 
 import dataset
 import feature_extraction
@@ -9,8 +11,10 @@ import neural_net
 import myconfig
 
 
-def run_inference(features, state,
-                  full_sequence=myconfig.USE_FULL_SEQUENCE_INFERENCE):
+def run_inference(features: jax.Array,
+                  state: train_state.TrainState,
+                  full_sequence: bool = myconfig.USE_FULL_SEQUENCE_INFERENCE
+                  ) -> jax.Array:
     """Get the embedding of an utterance using the encoder."""
     if full_sequence:
         # Full sequence inference.
@@ -34,12 +38,15 @@ def run_inference(features, state,
 class TripletScoreFetcher:
     """Class for computing triplet scores with multi-processing."""
 
-    def __init__(self, spk_to_utts, state, num_eval_triplets):
+    def __init__(self,
+                 spk_to_utts: dataset.SpkToUtts,
+                 state: train_state.TrainState,
+                 num_eval_triplets: int):
         self.spk_to_utts = spk_to_utts
         self.state = state
         self.num_eval_triplets = num_eval_triplets
 
-    def __call__(self, i):
+    def __call__(self, i: int) -> tuple[list[int], list[float]]:
         """Get the labels and scores from a triplet."""
         anchor, pos, neg = feature_extraction.get_triplet_features(
             self.spk_to_utts)
@@ -59,7 +66,11 @@ class TripletScoreFetcher:
         return (triplet_labels, triplet_scores)
 
 
-def compute_scores(state, spk_to_utts, num_eval_triplets=myconfig.NUM_EVAL_TRIPLETS):
+def compute_scores(
+        state: train_state.TrainState,
+        spk_to_utts: dataset.SpkToUtts,
+        num_eval_triplets: int = myconfig.NUM_EVAL_TRIPLETS
+) -> tuple[list[int], list[float]]:
     """Compute cosine similarity scores from testing data."""
     labels = []
     scores = []
@@ -77,7 +88,8 @@ def compute_scores(state, spk_to_utts, num_eval_triplets=myconfig.NUM_EVAL_TRIPL
     return (labels, scores)
 
 
-def compute_eer(labels, scores):
+def compute_eer(labels: list[int], scores: list[float]
+                ) -> tuple[Optional[float], Optional[float]]:
     """Compute the Equal Error Rate (EER)."""
     if len(labels) != len(scores):
         raise ValueError("Length of labels and scored must match")
@@ -101,7 +113,7 @@ def compute_eer(labels, scores):
     return eer, eer_threshold
 
 
-def run_eval():
+def run_eval() -> None:
     """Run evaluation of the saved model on test data."""
     start_time = time.time()
     if myconfig.TEST_DATA_CSV:

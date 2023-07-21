@@ -4,7 +4,10 @@ import glob
 import csv
 
 
-def get_librispeech_spk_to_utts(data_dir):
+SpkToUtts = dict[str, list[str]]
+
+
+def get_librispeech_spk_to_utts(data_dir: str) -> SpkToUtts:
     """Get the dict from speaker to list of utterances for LibriSpeech."""
     flac_files = glob.glob(os.path.join(data_dir, "*", "*", "*.flac"))
     spk_to_utts = dict()
@@ -19,7 +22,7 @@ def get_librispeech_spk_to_utts(data_dir):
     return spk_to_utts
 
 
-def get_csv_spk_to_utts(csv_file):
+def get_csv_spk_to_utts(csv_file: str) -> SpkToUtts:
     """Get the dict from speaker to list of utterances from CSV file."""
     spk_to_utts = dict()
     with open(csv_file) as f:
@@ -36,7 +39,7 @@ def get_csv_spk_to_utts(csv_file):
     return spk_to_utts
 
 
-def get_triplet(spk_to_utts):
+def get_triplet(spk_to_utts: SpkToUtts) -> tuple[str, str, str]:
     """Get a triplet of anchor/pos/neg samples."""
     pos_spk, neg_spk = random.sample(list(spk_to_utts.keys()), 2)
     # Retry if too few positive utterances.
