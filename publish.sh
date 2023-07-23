@@ -18,4 +18,9 @@ rm -rf flaxspeaker.egg-info
 python setup.py sdist bdist_wheel
 python -m twine upload dist/* --verbose
 
+# clean up again
+rm -rf build
+rm -rf dist
+rm -rf flaxspeaker.egg-info
+
 popd
