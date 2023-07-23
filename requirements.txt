@@ -4,3 +4,4 @@ flax
 librosa
 matplotlib
 pyyaml
+munch
