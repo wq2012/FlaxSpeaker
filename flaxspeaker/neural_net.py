@@ -14,8 +14,8 @@ import munch
 from functools import partial
 import sys
 
-import dataset
-import feature_extraction
+from flaxspeaker import dataset
+from flaxspeaker import feature_extraction
 
 
 class BaseSpeakerEncoder(nn.Module):

@@ -7,9 +7,9 @@ from typing import Optional
 import munch
 import sys
 
-import dataset
-import feature_extraction
-import neural_net
+from flaxspeaker import dataset
+from flaxspeaker import feature_extraction
+from flaxspeaker import neural_net
 
 
 def run_inference(features: jax.Array,

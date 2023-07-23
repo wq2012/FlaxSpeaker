@@ -6,11 +6,11 @@ import multiprocessing
 import tempfile
 import munch
 
-import dataset
-import specaug
-import feature_extraction
-import neural_net
-import evaluation
+from flaxspeaker import dataset
+from flaxspeaker import specaug
+from flaxspeaker import feature_extraction
+from flaxspeaker import neural_net
+from flaxspeaker import evaluation
 
 
 EPS = 1e-6

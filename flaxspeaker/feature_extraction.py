@@ -8,8 +8,8 @@ from multiprocessing import pool
 from typing import Optional
 import munch
 
-import dataset
-import specaug
+from flaxspeaker import dataset
+from flaxspeaker import specaug
 
 
 def extract_features(audio_file: str, n_mfcc: int) -> np.ndarray:

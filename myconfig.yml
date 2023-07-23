@@ -62,10 +62,10 @@ train:
   learning_rate: 0.0001
 
   # Save a model to disk every these many steps.
-  save_model_frequency: 1
+  save_model_frequency: 1000
 
   # Number of steps to train.
-  num_steps: 10
+  num_steps: 10000
 
   # Number of processes for multi-processing.
   num_processes: 8
@@ -88,7 +88,7 @@ eval:
   # Number of triplets to evaluate for computing Equal Error Rate (EER).
   # Both the number of positive trials and number of negative trials will be
   # equal to this number.
-  num_triplets: 100
+  num_triplets: 1000
 
   # Step of threshold sweeping for computing Equal Error Rate (EER).
   threshold_step: 0.001
