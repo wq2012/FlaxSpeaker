@@ -141,6 +141,7 @@ class TestNeuralNet(TestBase):
         super().setUp()
         self.spk_to_utts = dataset.get_librispeech_spk_to_utts(
             self.config.data.train_librispeech_dir)
+        self.config.model.saved_model_path = ""
 
     def test_cosine_similarity(self):
         a = jnp.array([0.6, 0.8, 0.0])
@@ -242,6 +243,7 @@ class TestEvaluation(TestBase):
         _, self.state = neural_net.get_speaker_encoder(self.config)
         self.spk_to_utts = dataset.get_librispeech_spk_to_utts(
             self.config.data.test_librispeech_dir)
+        self.config.model.saved_model_path = "testdata/flax_model.msgpack"
 
     def test_run_lstm_inference(self):
         self.config.model.frame_aggregation_mean = False
