@@ -1,0 +1,94 @@
+---
+# This file has the configurations of the experiments.
+
+data:
+  # Paths of downloaded LibriSpeech datasets.
+  train_librispeech_dir: "/mnt/e/Research/Data/LibriSpeech/train-clean-100"
+  test_librispeech_dir: "/mnt/e/Research/Data/LibriSpeech/test-clean"
+
+  # Paths of CSV files where the first column is speaker, and the second column
+  # is utterance file.
+  # These will allow you to train/evaluate using other datasets than
+  # LibriSpeech. If given, train_librispeech_dir and/or test_librispeech_dir
+  # will be ignored.
+  train_csv: ""
+  test_csv: ""
+
+model:
+  # Path of save model.
+  saved_model_path: "/home/quan/Code/github/FlaxSpeaker/saved_model/flax_model.msgpack"
+
+  # Number of MFCCs for librosa.feature.mfcc.
+  n_mfcc: 128
+
+  # Sequence length of the sliding window.
+  seq_len: 100  # 3.2 seconds
+
+  # Sliding window step for sliding window inference.
+  sliding_window_step: 50  # 1.6 seconds
+
+  # Type of network to use. If true, we use transformer; otherwise we use LSTM.
+  use_transformer: False
+
+  lstm:
+    # Hidden size of LSTM layers.
+    hidden_size: 64
+
+    # Number of LSTM layers.
+    num_layers: 3
+
+    # If false, use last frame of LSTM inference as aggregated output;
+    # if true, use mean frame of LSTM inference as aggregated output.
+    frame_aggregation_mean: True
+
+  transformer:
+    # Dimension of transformer layers.
+    dim: 32
+
+    # Number of encoder layers for transformer
+    num_encoder_layers: 2
+
+    # Number of heads in transformer layers.
+    num_heads: 8
+
+train:
+  # Alpha for the triplet loss.
+  triplet_alpha: 0.1
+
+  # How many triplets do we train in a single batch.
+  batch_size: 8
+
+  # Learning rate.
+  learning_rate: 0.0001
+
+  # Save a model to disk every these many steps.
+  save_model_frequency: 1
+
+  # Number of steps to train.
+  num_steps: 10
+
+  # Number of processes for multi-processing.
+  num_processes: 8
+
+  specaug:
+    # Whether we are going to train with SpecAugment.
+    use_specaug: True
+
+    # Parameters for SpecAugment training.
+    freq_mask_prob: 0.3
+    time_mask_prob: 0.3
+    freq_mask_max_width: 16  # n_mfcc // 8
+    time_mask_max_width: 10  # seq_len // 10
+
+
+eval:
+  # Whether to use full sequence inference or sliding window inference.
+  full_sequence_inference: False
+
+  # Number of triplets to evaluate for computing Equal Error Rate (EER).
+  # Both the number of positive trials and number of negative trials will be
+  # equal to this number.
+  num_triplets: 100
+
+  # Step of threshold sweeping for computing Equal Error Rate (EER).
+  threshold_step: 0.001

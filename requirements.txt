@@ -3,4 +3,4 @@ jax
 flax
 librosa
 matplotlib
-munch
+pyyaml

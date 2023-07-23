@@ -10,10 +10,12 @@ import optax
 import matplotlib.pyplot as plt
 import multiprocessing
 from typing import Optional
+import munch
+from functools import partial
+import sys
 
 import dataset
 import feature_extraction
-import myconfig
 
 
 class BaseSpeakerEncoder(nn.Module):
@@ -21,16 +23,17 @@ class BaseSpeakerEncoder(nn.Module):
 
 
 class LstmSpeakerEncoder(BaseSpeakerEncoder):
+    lstm_config: munch.Munch
 
     def setup(self):
         self.lstm_layers = [
             nn.RNN(nn.OptimizedLSTMCell(
-                features=myconfig.LSTM_HIDDEN_SIZE))
-            for i in range(myconfig.LSTM_NUM_LAYERS)]
+                features=self.lstm_config["hidden_size"]))
+            for i in range(self.lstm_config["num_layers"])]
 
     def _aggregate_frames(self, batch_output: jax.Array) -> jax.Array:
         """Aggregate output frames."""
-        if myconfig.FRAME_AGGREGATION_MEAN:
+        if self.lstm_config["frame_aggregation_mean"]:
             return jnp.mean(
                 batch_output, axis=1, keepdims=False)
         else:
@@ -43,12 +46,14 @@ class LstmSpeakerEncoder(BaseSpeakerEncoder):
 
 
 class TransformerSpeakerEncoder(BaseSpeakerEncoder):
+    transformer_config: munch.Munch
 
     def setup(self):
         # Define the Transformer network.
-        self.linear_layer = nn.Dense(features=myconfig.TRANSFORMER_DIM)
-        self.encoders = [nn.SelfAttention(num_heads=myconfig.TRANSFORMER_HEADS)
-                         for i in range(myconfig.TRANSFORMER_ENCODER_LAYERS)]
+        self.linear_layer = nn.Dense(features=self.transformer_config["dim"])
+        self.encoders = [
+            nn.SelfAttention(num_heads=self.transformer_config["num_heads"])
+            for i in range(self.transformer_config["num_encoder_layers"])]
         self.temporal_attention = nn.Dense(features=1)
 
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -72,18 +77,21 @@ def cosine_similarity(a: jax.Array, b: jax.Array) -> jax.Array:
 
 
 @jax.jit
-def get_triplet_loss(anchor: jax.Array, pos: jax.Array, neg: jax.Array
-                     ) -> jax.Array:
+def get_triplet_loss(anchor: jax.Array, pos: jax.Array, neg: jax.Array,
+                     alpha: float) -> jax.Array:
     """Triplet loss defined in https://arxiv.org/pdf/1705.02304.pdf."""
 
     return jnp.maximum(
         jax.vmap(cosine_similarity, in_axes=[0, 0])(anchor, neg) -
         jax.vmap(cosine_similarity, in_axes=[0, 0])(anchor, pos) +
-        myconfig.TRIPLET_ALPHA,
+        alpha,
         0.0)
 
 
-def get_triplet_loss_from_batch_output(batch_output: jax.Array, batch_size: int
+@partial(jax.jit, static_argnames=["batch_size", "triplet_alpha"])
+def get_triplet_loss_from_batch_output(batch_output: jax.Array,
+                                       batch_size: int,
+                                       triplet_alpha: float
                                        ) -> jax.Array:
     """Triplet loss from N*(a|p|n) batch output."""
     batch_output_reshaped = jnp.reshape(
@@ -91,7 +99,8 @@ def get_triplet_loss_from_batch_output(batch_output: jax.Array, batch_size: int
     batch_loss = get_triplet_loss(
         batch_output_reshaped[:, 0, :],
         batch_output_reshaped[:, 1, :],
-        batch_output_reshaped[:, 2, :])
+        batch_output_reshaped[:, 2, :],
+        triplet_alpha)
     loss = jnp.mean(batch_loss)
     return loss
 
@@ -116,42 +125,49 @@ def load_model(saved_model_path: str, state: train_state.TrainState
     return flax.serialization.from_bytes(state, bytes_output)
 
 
-def create_train_state(module: nn.Module, rng: jax.Array, learning_rate: float
+def create_train_state(module: nn.Module, rng: jax.Array, myconfig: munch.Munch
                        ) -> train_state.TrainState:
     """Creates an initial `TrainState`."""
     params = module.init(
-        rng, jnp.ones([1, myconfig.SEQ_LEN, myconfig.N_MFCC]))["params"]
-    tx = optax.adam(learning_rate)
+        rng, jnp.ones([1, myconfig.model.seq_len, myconfig.model.n_mfcc])
+    )["params"]
+    tx = optax.adam(myconfig.train.learning_rate)
     return train_state.TrainState.create(
         apply_fn=module.apply, params=params, tx=tx)
 
 
-def get_speaker_encoder(load_from: bool = None
-                        ) -> tuple[BaseSpeakerEncoder, train_state.TrainState]:
+def get_speaker_encoder(
+    myconfig: munch.Munch,
+    load_from: bool = None,
+) -> tuple[BaseSpeakerEncoder, train_state.TrainState]:
     """Create speaker encoder model."""
-    if myconfig.USE_TRANSFORMER:
-        encoder = TransformerSpeakerEncoder()
+    if myconfig.model.use_transformer:
+        encoder = TransformerSpeakerEncoder(
+            transformer_config=myconfig.model.transformer)
     else:
-        encoder = LstmSpeakerEncoder()
+        encoder = LstmSpeakerEncoder(lstm_config=myconfig.model.lstm)
 
     tf.random.set_seed(0)
     init_rng = jax.random.PRNGKey(0)
-    state = create_train_state(encoder, init_rng, myconfig.LEARNING_RATE)
+    state = create_train_state(encoder, init_rng, myconfig)
     if load_from:
         state = load_model(load_from, state)
 
     return encoder, state
 
 
-@jax.jit
-def train_step(state: train_state.TrainState, batch_input: jax.Array
+@partial(jax.jit, static_argnames=["batch_size", "triplet_alpha"])
+def train_step(state: train_state.TrainState,
+               batch_input: jax.Array,
+               batch_size: int,
+               triplet_alpha: float
                ) -> tuple[train_state.TrainState, jax.Array]:
     """Train for a single step."""
     def loss_fn(params: flax.core.frozen_dict.FrozenDict) -> jax.Array:
         # Compute loss.
         batch_output = state.apply_fn({'params': params}, batch_input)
         loss = get_triplet_loss_from_batch_output(
-            batch_output, myconfig.BATCH_SIZE)
+            batch_output, batch_size, triplet_alpha)
         return loss
     loss_grad_fn = jax.value_and_grad(loss_fn)
     loss_val, grads = loss_grad_fn(state.params)
@@ -160,28 +176,31 @@ def train_step(state: train_state.TrainState, batch_input: jax.Array
 
 
 def train_network(spk_to_utts: dataset.SpkToUtts,
-                  num_steps: int,
-                  saved_model: Optional[str] = None,
+                  myconfig: munch.Munch,
                   pool: Optional[multiprocessing.pool.Pool] = None
                   ) -> list[float]:
     start_time = time.time()
     losses = []
-    _, state = get_speaker_encoder()
+    _, state = get_speaker_encoder(myconfig)
 
     # Train
-    for step in range(num_steps):
+    for step in range(myconfig.train.num_steps):
         # Build batched input.
         batch_input = feature_extraction.get_batched_triplet_input(
-            spk_to_utts, myconfig.BATCH_SIZE, pool)
+            spk_to_utts, myconfig, pool)
 
-        state, loss = train_step(state, batch_input)
+        state, loss = train_step(
+            state,
+            batch_input,
+            myconfig.train.batch_size,
+            myconfig.train.triplet_alpha)
         losses.append(loss)
 
-        print("step:", step, "/", num_steps, "loss:", loss)
+        print("step:", step, "/", myconfig.train.num_steps, "loss:", loss)
 
-        if (saved_model is not None and
-                (step + 1) % myconfig.SAVE_MODEL_FREQUENCY == 0):
-            checkpoint = saved_model
+        if (myconfig.model.saved_model_path and
+                (step + 1) % myconfig.train.save_model_frequency == 0):
+            checkpoint = myconfig.model.saved_model_path
             if checkpoint.endswith(".msgpack"):
                 checkpoint = checkpoint[:-8]
             checkpoint += ".ckpt-" + str(step + 1) + ".msgpack"
@@ -189,8 +208,8 @@ def train_network(spk_to_utts: dataset.SpkToUtts,
 
     training_time = time.time() - start_time
     print("Finished training in", training_time, "seconds")
-    if saved_model is not None:
-        save_model(saved_model, state)
+    if myconfig.model.saved_model_path:
+        save_model(myconfig.model.saved_model_path, state)
     return losses
 
 
@@ -201,22 +220,30 @@ def visualize_losses(losses: list[float]) -> None:
     plt.show()
 
 
-def run_training() -> None:
-    if myconfig.TRAIN_DATA_CSV:
+def run_training(myconfig: munch.Munch) -> None:
+    if myconfig.data.train_csv:
         spk_to_utts = dataset.get_csv_spk_to_utts(
-            myconfig.TRAIN_DATA_CSV)
-        print("Training data:", myconfig.TRAIN_DATA_CSV)
+            myconfig.data.train_csv)
+        print("Training data:", myconfig.data.train_csv)
     else:
         spk_to_utts = dataset.get_librispeech_spk_to_utts(
-            myconfig.TRAIN_DATA_DIR)
-        print("Training data:", myconfig.TRAIN_DATA_DIR)
-    with multiprocessing.Pool(myconfig.NUM_PROCESSES) as pool:
+            myconfig.data.train_librispeech_dir)
+        print("Training data:", myconfig.data.train_librispeech_dir)
+    with multiprocessing.Pool(myconfig.train.num_processes) as pool:
         losses = train_network(spk_to_utts,
-                               myconfig.TRAINING_STEPS,
-                               myconfig.SAVED_MODEL_PATH,
+                               myconfig,
                                pool)
     visualize_losses(losses)
 
 
 if __name__ == "__main__":
-    run_training()
+    args = sys.argv[1:]
+    if len(args) == 0:
+        config_file = "myconfig.yml"
+    elif len(args) == 1:
+        config_file = args[0]
+    else:
+        raise ValueError("Expecting a single argument: config file path")
+    with open(config_file) as f:
+        myconfig = munch.Munch.fromYAML(f.read())
+    run_training(myconfig)
