@@ -1,6 +1,6 @@
 # FlaxSpeaker
 
- [![PyPI Version](https://img.shields.io/pypi/v/flaxspeaker.svg)](https://pypi.python.org/pypi/flaxspeaker) [![Python Versions](https://img.shields.io/pypi/pyversions/flaxspeaker.svg)](https://pypi.org/project/flaxspeaker) [![Downloads](https://pepy.tech/badge/flaxspeaker)](https://pepy.tech/project/flaxspeaker)
+ [![Python application](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml/badge.svg)](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml) [![PyPI Version](https://img.shields.io/pypi/v/flaxspeaker.svg)](https://pypi.python.org/pypi/flaxspeaker) [![Python Versions](https://img.shields.io/pypi/pyversions/flaxspeaker.svg)](https://pypi.org/project/flaxspeaker) [![Downloads](https://pepy.tech/badge/flaxspeaker)](https://pepy.tech/project/flaxspeaker)
 
 
  A simple speaker recognition library in [JAX](https://jax.readthedocs.io) and [Flax](https://flax.readthedocs.io).
