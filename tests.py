@@ -23,6 +23,11 @@ class TestBase(unittest.TestCase):
         with open("myconfig.yml") as f:
             self.config = munch.Munch.fromYAML(f.read())
 
+        self.config.data.train_librispeech_dir = (
+            "testdata/LibriSpeech/train-clean-100")
+        self.config.data.test_librispeech_dir = (
+            "testdata/LibriSpeech/test-clean")
+
 
 class TestDataset(TestBase):
     def setUp(self):
@@ -31,8 +36,8 @@ class TestDataset(TestBase):
             self.config.data.test_librispeech_dir)
 
     def test_get_librispeech_spk_to_utts(self):
-        self.assertEqual(len(self.spk_to_utts.keys()), 40)
-        self.assertEqual(len(self.spk_to_utts["121"]), 62)
+        self.assertEqual(len(self.spk_to_utts.keys()), 3)
+        self.assertEqual(len(self.spk_to_utts["121"]), 6)
 
     def test_get_csv_spk_to_utts(self):
         csv_content = """
@@ -56,13 +61,16 @@ spk2 ,/path/to/utt3
         self.assertEqual(anchor1_spk, pos1_spk)
         self.assertNotEqual(anchor1_spk, neg1_spk)
 
-        anchor2, pos2, neg2 = dataset.get_triplet(self.spk_to_utts)
-        anchor2_spk = os.path.basename(anchor2).split("-")[0]
-        pos2_spk = os.path.basename(pos2).split("-")[0]
-        neg2_spk = os.path.basename(neg2).split("-")[0]
-        self.assertNotEqual(anchor1_spk, anchor2_spk)
-        self.assertNotEqual(pos1_spk, pos2_spk)
-        self.assertNotEqual(neg1_spk, neg2_spk)
+        # The following lines are commented out because the test data
+        # is too small to guarantee generating two different triplets.
+
+        # anchor2, pos2, neg2 = dataset.get_triplet(self.spk_to_utts)
+        # anchor2_spk = os.path.basename(anchor2).split("-")[0]
+        # pos2_spk = os.path.basename(pos2).split("-")[0]
+        # neg2_spk = os.path.basename(neg2).split("-")[0]
+        # self.assertNotEqual(anchor1_spk, anchor2_spk)
+        # self.assertNotEqual(pos1_spk, pos2_spk)
+        # self.assertNotEqual(neg1_spk, neg2_spk)
 
 
 class TestSpecAug(TestBase):
