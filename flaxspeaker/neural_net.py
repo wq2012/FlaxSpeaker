@@ -5,7 +5,6 @@ import jax.numpy as jnp
 import flax
 from flax.training import train_state
 from flax import linen as nn
-import tensorflow as tf
 import optax
 import matplotlib.pyplot as plt
 import multiprocessing
@@ -147,7 +146,6 @@ def get_speaker_encoder(
     else:
         encoder = LstmSpeakerEncoder(lstm_config=myconfig.model.lstm)
 
-    tf.random.set_seed(0)
     init_rng = jax.random.PRNGKey(0)
     state = create_train_state(encoder, init_rng, myconfig)
     if load_from:
