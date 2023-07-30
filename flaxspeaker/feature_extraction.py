@@ -5,8 +5,9 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from multiprocessing import pool
-from typing import Optional
+from typing import Optional, Any
 import munch
+import functools
 
 from flaxspeaker import dataset
 from flaxspeaker import specaug
@@ -65,29 +66,23 @@ def trim_features(features: np.ndarray,
     return trimmed_features
 
 
-class TrimmedTripletFeaturesFetcher:
-    """The fetcher of trimmed features for multi-processing."""
+def get_trimmed_triplet_features(_: Any, spk_to_utts: dataset.SpkToUtts,
+                                 myconfig: munch.Munch) -> np.ndarray:
+    """Get a triplet of trimmed anchor/pos/neg features."""
+    seq_len = myconfig.model.seq_len
+    specaug_config = myconfig.train.specaug
+    n_mfcc = myconfig.model.n_mfcc
 
-    def __init__(self,
-                 spk_to_utts: dataset.SpkToUtts,
-                 myconfig: munch.Munch):
-        self.spk_to_utts = spk_to_utts
-        self.seq_len = myconfig.model.seq_len
-        self.specaug_config = myconfig.train.specaug
-        self.n_mfcc = myconfig.model.n_mfcc
-
-    def __call__(self, _) -> np.ndarray:
-        """Get a triplet of trimmed anchor/pos/neg features."""
-        anchor, pos, neg = get_triplet_features(self.spk_to_utts, self.n_mfcc)
-        while (anchor.shape[0] < self.seq_len or
-               pos.shape[0] < self.seq_len or
-               neg.shape[0] < self.seq_len):
-            anchor, pos, neg = get_triplet_features(
-                self.spk_to_utts, self.n_mfcc)
-        return np.stack([
-            trim_features(anchor, self.seq_len, self.specaug_config),
-            trim_features(pos, self.seq_len, self.specaug_config),
-            trim_features(neg, self.seq_len, self.specaug_config)])
+    anchor, pos, neg = get_triplet_features(spk_to_utts, n_mfcc)
+    while (anchor.shape[0] < seq_len or
+            pos.shape[0] < seq_len or
+            neg.shape[0] < seq_len):
+        anchor, pos, neg = get_triplet_features(
+            spk_to_utts, n_mfcc)
+    return np.stack([
+        trim_features(anchor, seq_len, specaug_config),
+        trim_features(pos, seq_len, specaug_config),
+        trim_features(neg, seq_len, specaug_config)])
 
 
 def get_batched_triplet_input(
@@ -95,10 +90,15 @@ def get_batched_triplet_input(
         myconfig: munch.Munch,
         pool: Optional[pool.Pool] = None) -> jax.Array:
     """Get batched triplet input for Jax."""
-    fetcher = TrimmedTripletFeaturesFetcher(spk_to_utts, myconfig)
+    feature_fetcher = functools.partial(
+        get_trimmed_triplet_features,
+        spk_to_utts=spk_to_utts,
+        myconfig=myconfig)
     if pool is None:
-        input_arrays = list(map(fetcher, range(myconfig.train.batch_size)))
+        input_arrays = list(
+            map(feature_fetcher, range(myconfig.train.batch_size)))
     else:
-        input_arrays = pool.map(fetcher, range(myconfig.train.batch_size))
+        input_arrays = pool.map(
+            feature_fetcher, range(myconfig.train.batch_size))
     batch_input = np.concatenate(input_arrays)
     return jnp.asarray(batch_input)

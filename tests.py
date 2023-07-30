@@ -5,6 +5,7 @@ import numpy as np
 import multiprocessing
 import tempfile
 import munch
+import functools
 
 from flaxspeaker import dataset
 from flaxspeaker import specaug
@@ -113,9 +114,11 @@ class TestFeatureExtraction(TestBase):
         self.assertEqual(self.config.model.n_mfcc, neg.shape[1])
 
     def test_get_triplet_features_trimmed(self):
-        fetcher = feature_extraction.TrimmedTripletFeaturesFetcher(
-            self.spk_to_utts, self.config)
-        fetched = fetcher(None)
+        feature_fetcher = functools.partial(
+            feature_extraction.get_trimmed_triplet_features,
+            spk_to_utts=self.spk_to_utts,
+            myconfig=self.config)
+        fetched = feature_fetcher(None)
         anchor = fetched[0, :, :]
         pos = fetched[1, :, :]
         neg = fetched[2, :, :]
