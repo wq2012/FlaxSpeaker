@@ -117,7 +117,7 @@ class TestFeatureExtraction(TestBase):
         feature_fetcher = functools.partial(
             feature_extraction.get_trimmed_triplet_features,
             spk_to_utts=self.spk_to_utts,
-            myconfig=self.config)
+            config=self.config)
         fetched = feature_fetcher(None)
         anchor = fetched[0, :, :]
         pos = fetched[1, :, :]

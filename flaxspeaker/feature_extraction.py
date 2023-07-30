@@ -67,11 +67,11 @@ def trim_features(features: np.ndarray,
 
 
 def get_trimmed_triplet_features(_: Any, spk_to_utts: dataset.SpkToUtts,
-                                 myconfig: munch.Munch) -> np.ndarray:
+                                 config: munch.Munch) -> np.ndarray:
     """Get a triplet of trimmed anchor/pos/neg features."""
-    seq_len = myconfig.model.seq_len
-    specaug_config = myconfig.train.specaug
-    n_mfcc = myconfig.model.n_mfcc
+    seq_len = config.model.seq_len
+    specaug_config = config.train.specaug
+    n_mfcc = config.model.n_mfcc
 
     anchor, pos, neg = get_triplet_features(spk_to_utts, n_mfcc)
     while (anchor.shape[0] < seq_len or
@@ -93,7 +93,7 @@ def get_batched_triplet_input(
     feature_fetcher = functools.partial(
         get_trimmed_triplet_features,
         spk_to_utts=spk_to_utts,
-        myconfig=myconfig)
+        config=myconfig)
     if pool is None:
         input_arrays = list(
             map(feature_fetcher, range(myconfig.train.batch_size)))

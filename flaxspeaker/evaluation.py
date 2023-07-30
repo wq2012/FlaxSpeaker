@@ -6,6 +6,7 @@ import time
 from typing import Optional
 import munch
 import sys
+import functools
 
 from flaxspeaker import dataset
 from flaxspeaker import feature_extraction
@@ -37,38 +38,31 @@ def run_inference(features: jax.Array,
         return aggregated_output
 
 
-class TripletScoreFetcher:
-    """Class for computing triplet scores with multi-processing."""
-
-    def __init__(self,
-                 spk_to_utts: dataset.SpkToUtts,
-                 state: train_state.TrainState,
-                 myconfig: munch.Munch):
-        self.spk_to_utts = spk_to_utts
-        self.state = state
-        self.config = myconfig
-
-    def __call__(self, i: int) -> tuple[list[int], list[float]]:
-        """Get the labels and scores from a triplet."""
-        anchor, pos, neg = feature_extraction.get_triplet_features(
-            self.spk_to_utts, self.config.model.n_mfcc)
-        anchor_embedding = run_inference(
-            anchor, self.state, self.config)
-        pos_embedding = run_inference(
-            pos, self.state, self.config)
-        neg_embedding = run_inference(
-            neg, self.state, self.config)
-        if ((anchor_embedding is None) or
-            (pos_embedding is None) or
-                (neg_embedding is None)):
-            # Some utterances might be smaller than a single sliding window.
-            return ([], [])
-        triplet_labels = [1, 0]
-        triplet_scores = [
-            neural_net.cosine_similarity(anchor_embedding, pos_embedding),
-            neural_net.cosine_similarity(anchor_embedding, neg_embedding)]
-        print("triplets evaluated:", i, "/", self.config.eval.num_triplets)
-        return (triplet_labels, triplet_scores)
+def compute_triplet_scores(
+        i: int,
+        spk_to_utts: dataset.SpkToUtts,
+        state: train_state.TrainState,
+        config: munch.Munch) -> tuple[list[int], list[float]]:
+    """Get the labels and scores from a triplet."""
+    anchor, pos, neg = feature_extraction.get_triplet_features(
+        spk_to_utts, config.model.n_mfcc)
+    anchor_embedding = run_inference(
+        anchor, state, config)
+    pos_embedding = run_inference(
+        pos, state, config)
+    neg_embedding = run_inference(
+        neg, state, config)
+    if ((anchor_embedding is None) or
+        (pos_embedding is None) or
+            (neg_embedding is None)):
+        # Some utterances might be smaller than a single sliding window.
+        return ([], [])
+    triplet_labels = [1, 0]
+    triplet_scores = [
+        neural_net.cosine_similarity(anchor_embedding, pos_embedding),
+        neural_net.cosine_similarity(anchor_embedding, neg_embedding)]
+    print("triplets evaluated:", i, "/", config.eval.num_triplets)
+    return (triplet_labels, triplet_scores)
 
 
 def compute_scores(
@@ -79,11 +73,15 @@ def compute_scores(
     """Compute cosine similarity scores from testing data."""
     labels = []
     scores = []
-    fetcher = TripletScoreFetcher(spk_to_utts, state, myconfig)
+    score_fetcher = functools.partial(
+        compute_triplet_scores,
+        spk_to_utts=spk_to_utts,
+        state=state,
+        config=myconfig)
     # CUDA does not support multi-processing, so using a ThreadPool.
     with ThreadPool(myconfig.train.num_processes) as pool:
         while myconfig.eval.num_triplets > len(labels) // 2:
-            label_score_pairs = pool.map(fetcher, range(
+            label_score_pairs = pool.map(score_fetcher, range(
                 len(labels) // 2, myconfig.eval.num_triplets))
             for triplet_labels, triplet_scores in label_score_pairs:
                 labels += triplet_labels
