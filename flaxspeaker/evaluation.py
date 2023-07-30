@@ -38,12 +38,12 @@ def run_inference(features: jax.Array,
         return aggregated_output
 
 
-def compute_triplet_scores(
+def compute_single_triplet_scores(
         i: int,
         spk_to_utts: dataset.SpkToUtts,
         state: train_state.TrainState,
         config: munch.Munch) -> tuple[list[int], list[float]]:
-    """Get the labels and scores from a triplet."""
+    """Get the labels and scores from a single triplet."""
     anchor, pos, neg = feature_extraction.get_triplet_features(
         spk_to_utts, config.model.n_mfcc)
     anchor_embedding = run_inference(
@@ -74,7 +74,7 @@ def compute_scores(
     labels = []
     scores = []
     score_fetcher = functools.partial(
-        compute_triplet_scores,
+        compute_single_triplet_scores,
         spk_to_utts=spk_to_utts,
         state=state,
         config=myconfig)
