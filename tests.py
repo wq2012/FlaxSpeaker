@@ -243,10 +243,8 @@ class TestEvaluation(TestBase):
         super().setUp()
         self.config.model.frame_aggregation_mean = False
         self.config.model.use_transformer = False
-        _, self.state = neural_net.get_speaker_encoder(self.config)
         self.spk_to_utts = dataset.get_librispeech_spk_to_utts(
             self.config.data.test_librispeech_dir)
-        self.config.model.saved_model_path = "testdata/flax_model.msgpack"
 
     def test_run_lstm_inference(self):
         self.config.model.frame_aggregation_mean = False
@@ -255,6 +253,9 @@ class TestEvaluation(TestBase):
         features = feature_extraction.extract_features(os.path.join(
             self.config.data.test_librispeech_dir,
             "61/70968/61-70968-0000.flac"), self.config.model.n_mfcc)
+        _, self.state = neural_net.get_speaker_encoder(
+            self.config,
+            load_from="testdata/lstm_model.msgpack")
         embedding = evaluation.run_inference(features, self.state, self.config)
         self.assertTupleEqual(
             embedding.shape, (self.config.model.lstm.hidden_size,))
@@ -263,16 +264,33 @@ class TestEvaluation(TestBase):
         self.config.model.frame_aggregation_mean = True
         self.config.model.use_transformer = False
         self.config.model.full_sequence_inference = True
-        _, self.state = neural_net.get_speaker_encoder(self.config)
         features = feature_extraction.extract_features(os.path.join(
             self.config.data.test_librispeech_dir,
             "61/70968/61-70968-0000.flac"), self.config.model.n_mfcc)
+        _, self.state = neural_net.get_speaker_encoder(
+            self.config,
+            load_from="testdata/lstm_model.msgpack")
         embedding = evaluation.run_inference(features, self.state, self.config)
         self.assertTupleEqual(
             embedding.shape, (self.config.model.lstm.hidden_size,))
 
+    def test_run_transformer_inference(self):
+        self.config.model.use_transformer = True
+        features = feature_extraction.extract_features(os.path.join(
+            self.config.data.test_librispeech_dir,
+            "61/70968/61-70968-0000.flac"), self.config.model.n_mfcc)
+        _, self.state = neural_net.get_speaker_encoder(
+            self.config,
+            load_from="testdata/transformer_model.msgpack")
+        embedding = evaluation.run_inference(features, self.state, self.config)
+        self.assertTupleEqual(
+            embedding.shape, (self.config.model.transformer.dim,))
+
     def test_compute_scores(self):
         self.config.eval.num_triplets = 3
+        _, self.state = neural_net.get_speaker_encoder(
+            self.config,
+            load_from="testdata/lstm_model.msgpack")
         labels, scores = evaluation.compute_scores(
             self.state, self.spk_to_utts, self.config)
         self.assertListEqual(labels, [1, 0, 1, 0, 1, 0])

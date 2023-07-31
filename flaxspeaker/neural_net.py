@@ -104,24 +104,26 @@ def get_triplet_loss_from_batch_output(batch_output: jax.Array,
     return loss
 
 
-def save_model(saved_model_path: str, state: train_state.TrainState) -> None:
+def save_model(saved_model_path: str,
+               params: flax.core.frozen_dict.FrozenDict) -> None:
     """Save model to disk."""
     os.makedirs(os.path.dirname(saved_model_path), exist_ok=True)
     if not saved_model_path.endswith(".msgpack"):
         saved_model_path += ".msgpack"
-    bytes_output = flax.serialization.to_bytes(state)
+    bytes_output = flax.serialization.to_bytes(params)
     with open(saved_model_path, "wb") as f:
         f.write(bytes_output)
     print("Model saved to: ", saved_model_path)
 
 
-def load_model(saved_model_path: str, state: train_state.TrainState
-               ) -> train_state.TrainState:
+def load_model(saved_model_path: str,
+               params: flax.core.frozen_dict.FrozenDict
+               ) -> flax.core.frozen_dict.FrozenDict:
     """Load model from disk."""
     with open(saved_model_path, "rb") as f:
         bytes_output = f.read()
     print("Model loaded from:", saved_model_path)
-    return flax.serialization.from_bytes(state, bytes_output)
+    return flax.serialization.from_bytes(params, bytes_output)
 
 
 def create_train_state(module: nn.Module, rng: jax.Array, myconfig: munch.Munch
@@ -137,7 +139,7 @@ def create_train_state(module: nn.Module, rng: jax.Array, myconfig: munch.Munch
 
 def get_speaker_encoder(
     myconfig: munch.Munch,
-    load_from: bool = None,
+    load_from: str = "",
 ) -> tuple[BaseSpeakerEncoder, train_state.TrainState]:
     """Create speaker encoder model."""
     if myconfig.model.use_transformer:
@@ -149,7 +151,8 @@ def get_speaker_encoder(
     init_rng = jax.random.PRNGKey(0)
     state = create_train_state(encoder, init_rng, myconfig)
     if load_from:
-        state = load_model(load_from, state)
+        params = load_model(load_from, {"params": state.params})
+        state = state.replace(params=params["params"])
 
     return encoder, state
 
@@ -202,12 +205,12 @@ def train_network(spk_to_utts: dataset.SpkToUtts,
             if checkpoint.endswith(".msgpack"):
                 checkpoint = checkpoint[:-8]
             checkpoint += ".ckpt-" + str(step + 1) + ".msgpack"
-            save_model(checkpoint, state)
+            save_model(checkpoint, {"params": state.params})
 
     training_time = time.time() - start_time
     print("Finished training in", training_time, "seconds")
     if myconfig.model.saved_model_path:
-        save_model(myconfig.model.saved_model_path, state)
+        save_model(myconfig.model.saved_model_path, {"params": state.params})
     return losses
 
 
