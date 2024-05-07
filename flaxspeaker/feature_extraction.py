@@ -13,6 +13,8 @@ from flaxspeaker import dataset
 from flaxspeaker import specaug
 
 
+SAMPLE_RATE = 16000
+
 def extract_features(audio_file: str, n_mfcc: int) -> np.ndarray:
     """Extract MFCC features from an audio file, shape=(TIME, MFCC)."""
     waveform, sample_rate = sf.read(audio_file)
@@ -22,11 +24,11 @@ def extract_features(audio_file: str, n_mfcc: int) -> np.ndarray:
         waveform = librosa.to_mono(waveform.transpose())
 
     # Convert to 16kHz.
-    if sample_rate != 16000:
-        waveform = librosa.resample(waveform, sample_rate, 16000)
+    if sample_rate != SAMPLE_RATE:
+        waveform = librosa.resample(waveform, sample_rate, SAMPLE_RATE)
 
     features = librosa.feature.mfcc(
-        y=waveform, sr=sample_rate, n_mfcc=n_mfcc)
+        y=waveform, sr=SAMPLE_RATE, n_mfcc=n_mfcc)
     return features.transpose()
 
 
