@@ -12,8 +12,8 @@ import functools
 from flaxspeaker import dataset
 from flaxspeaker import specaug
 
-
 SAMPLE_RATE = 16000
+
 
 def extract_features(audio_file: str, n_mfcc: int) -> np.ndarray:
     """Extract MFCC features from an audio file, shape=(TIME, MFCC)."""
