@@ -18,13 +18,6 @@ from flax.training import train_state
 import jax
 import numpy as np
 
-try:
-    from jax.experimental import jax2tf
-    import tensorflow as tf
-except ImportError:
-    jax2tf = None  # type: ignore[assignment]
-    tf = None  # type: ignore[assignment]
-
 from flaxspeaker import neural_net
 
 
@@ -32,8 +25,11 @@ def _make_tf_module(
     state: train_state.TrainState,
     seq_len: int,
     feat_dim: int,
-) -> tuple[tf.Module, tf.TensorSpec]:
+) -> tuple[Any, Any]:
     """Wrap a Flax `TrainState` forward pass into a traceable `tf.Module`."""
+    from jax.experimental import jax2tf
+    import tensorflow as tf
+
     encoder_params = {
         k: v for k, v in state.params.items() if not k.startswith("_aux_")
     }
@@ -66,6 +62,9 @@ def export_to_tflite(
     Returns:
         Dictionary with `tflite_path`, `size_bytes`, `size_kb`, and `quantize_int8`.
     """
+    from jax.experimental import jax2tf
+    import tensorflow as tf
+
     parent = os.path.dirname(os.path.abspath(output_tflite_path))
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -136,6 +135,8 @@ def export_to_saved_model(
     saved_model_dir: str,
 ) -> str:
     """Export a trained Flax speaker encoder to a TensorFlow `SavedModel` directory."""
+    import tensorflow as tf
+
     os.makedirs(saved_model_dir, exist_ok=True)
     seq_len = int(getattr(myconfig.model, "seq_len", 100))
     feat_dim = neural_net._get_feature_dim(myconfig)
@@ -158,6 +159,8 @@ class TFLiteSpeakerRunner:
 
             self.interpreter = litert_interpreter.Interpreter(model_path=tflite_path)
         except ImportError:
+            import tensorflow as tf
+
             self.interpreter = tf.lite.Interpreter(model_path=tflite_path)
         self.interpreter.allocate_tensors()
         self.input_details = self.interpreter.get_input_details()

@@ -246,10 +246,8 @@ def evaluate_verification_trials(
     infer_elapsed = time.time() - infer_start
     latency_ms = (infer_elapsed * 1000.0) / max(1, len(unique_utts))
 
-    scoring_type = scoring_override or (
-        exp_cfg.train.loss.scoring_type.value
-        if hasattr(exp_cfg.train.loss.scoring_type, "value")
-        else str(exp_cfg.train.loss.scoring_type)
+    scoring_type = scoring_override or str(
+        getattr(exp_cfg.train.loss.scoring_type, "value", exp_cfg.train.loss.scoring_type)
     )
 
     labels = [int(lbl) for lbl, _, _ in trials]
@@ -369,10 +367,8 @@ def evaluate_multi_enroll_trials(
         for u, e in zip(batch_utts, embs):
             utt_to_emb[u] = e
 
-    scoring_type = (
-        exp_cfg.train.loss.scoring_type.value
-        if hasattr(exp_cfg.train.loss.scoring_type, "value")
-        else str(exp_cfg.train.loss.scoring_type)
+    scoring_type = str(
+        getattr(exp_cfg.train.loss.scoring_type, "value", exp_cfg.train.loss.scoring_type)
     )
     labels = [int(lbl) for lbl, _, _ in trials]
     scores_list = []

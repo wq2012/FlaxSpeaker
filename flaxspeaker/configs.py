@@ -143,11 +143,7 @@ class FrontendConfig:
 
     @property
     def feature_dim(self) -> int:
-        ftype = (
-            self.feature_type.value
-            if hasattr(self.feature_type, "value")
-            else str(self.feature_type).lower()
-        )
+        ftype = str(getattr(self.feature_type, "value", self.feature_type)).lower()
         base_dim = self.n_mfcc if ftype == FeatureType.MFCC.value else self.n_mels
         return base_dim * (1 + self.stack_left_context + self.stack_right_context)
 
@@ -370,16 +366,12 @@ class ModelConfig:
 
     @property
     def output_embedding_dim(self) -> int:
-        p_type = (
-            self.pooling.pooling_type.value
-            if hasattr(self.pooling.pooling_type, "value")
-            else str(self.pooling.pooling_type).lower()
-        )
-        s_type = (
-            self.scoring_type.value
-            if hasattr(self.scoring_type, "value")
-            else str(self.scoring_type).lower()
-        )
+        p_type = str(
+            getattr(self.pooling.pooling_type, "value", self.pooling.pooling_type)
+        ).lower()
+        s_type = str(
+            getattr(self.scoring_type, "value", self.scoring_type)
+        ).lower()
         if p_type == "pfas" or s_type == "pfas":
             return self.pfas.representation_dim
         return self.embedding_dim

@@ -231,7 +231,14 @@ class TestBackbonesAndPooling(unittest.TestCase):
         x = jnp.ones((2, 40, 80), dtype=jnp.float32)
         rng = jax.random.PRNGKey(0)
 
-        for b_type in configs.BackboneType:
+        for b_type in (
+            configs.BackboneType.LSTM,
+            configs.BackboneType.TRANSFORMER,
+            configs.BackboneType.CONFORMER,
+            configs.BackboneType.MAMBA,
+            configs.BackboneType.ECAPA_TDNN,
+            configs.BackboneType.RESNET,
+        ):
             cfg = configs.ExperimentConfig()
             cfg.model.backbone = b_type
             cfg.model.apply_size_variant(configs.SizeVariant.TINY)

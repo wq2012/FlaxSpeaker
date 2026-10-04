@@ -166,8 +166,24 @@ def run_all_benchmarks(
         # Study 2: Loss Functions & Scoring Mechanisms (Conformer-Small on LibriSpeech)
         ("ls_conformer_small_triplet", "librispeech", "conformer", "small", "triplet", "cosine", "asp"),
         ("ls_conformer_small_ge2e_contrast", "librispeech", "conformer", "small", "ge2e_contrast", "cosine", "asp"),
-        ("ls_conformer_small_ext_softmax", "librispeech", "conformer", "small", "extended_set_softmax", "cosine", "asp"),
-        ("ls_conformer_small_dr_vectors", "librispeech", "conformer", "small", "extended_set_softmax", "dr_vector", "asp"),
+        (
+            "ls_conformer_small_ext_softmax",
+            "librispeech",
+            "conformer",
+            "small",
+            "extended_set_softmax",
+            "cosine",
+            "asp",
+        ),
+        (
+            "ls_conformer_small_dr_vectors",
+            "librispeech",
+            "conformer",
+            "small",
+            "extended_set_softmax",
+            "dr_vector",
+            "asp",
+        ),
         ("ls_conformer_small_pfas", "librispeech", "conformer", "small", "extended_set_softmax", "pfas", "pfas"),
         ("ls_conformer_small_arcface", "librispeech", "conformer", "small", "arcface", "cosine", "asp"),
         ("ls_conformer_small_cosface", "librispeech", "conformer", "small", "cosface", "cosine", "asp"),
@@ -183,7 +199,15 @@ def run_all_benchmarks(
         ("cn_conformer_small_dr_vectors", "cnceleb2", "conformer", "small", "extended_set_softmax", "dr_vector", "asp"),
         ("cn_conformer_small_pfas", "cnceleb2", "conformer", "small", "extended_set_softmax", "pfas", "pfas"),
         ("vox_conformer_small_ge2e", "voxceleb1", "conformer", "small", "ge2e_softmax", "cosine", "asp"),
-        ("vox_ecapa_tdnn_small_ext_softmax", "voxceleb1", "ecapa_tdnn", "small", "extended_set_softmax", "cosine", "asp"),
+        (
+            "vox_ecapa_tdnn_small_ext_softmax",
+            "voxceleb1",
+            "ecapa_tdnn",
+            "small",
+            "extended_set_softmax",
+            "cosine",
+            "asp",
+        ),
     ]
 
     results: dict[str, Any] = {
@@ -207,7 +231,10 @@ def run_all_benchmarks(
                 results["experiments"][exp_name] = json.load(f)
             continue
 
-        print(f"\n[{idx + 1}/{len(experiments)}] Running {exp_name} ({backbone}-{size_var}, loss={loss_type}, scoring={scoring_type})...")
+        print(
+            f"\n[{idx + 1}/{len(experiments)}] Running {exp_name} "
+            f"({backbone}-{size_var}, loss={loss_type}, scoring={scoring_type})..."
+        )
         d_info = ds_summary[dname]
         exp_cfg = make_exp_config(
             dataset_name=dname,

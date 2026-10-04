@@ -177,16 +177,10 @@ def build_modern_encoder_from_config(
         exp_cfg = myconfig
 
     m_cfg = exp_cfg.model
-    b_type = m_cfg.backbone.value if hasattr(m_cfg.backbone, "value") else str(m_cfg.backbone)
-    p_type = (
-        m_cfg.pooling.pooling_type.value
-        if hasattr(m_cfg.pooling.pooling_type, "value")
-        else str(m_cfg.pooling.pooling_type)
-    )
-    scoring_type = (
-        exp_cfg.train.loss.scoring_type.value
-        if hasattr(exp_cfg.train.loss.scoring_type, "value")
-        else str(exp_cfg.train.loss.scoring_type)
+    b_type = str(getattr(m_cfg.backbone, "value", m_cfg.backbone))
+    p_type = str(getattr(m_cfg.pooling.pooling_type, "value", m_cfg.pooling.pooling_type))
+    scoring_type = str(
+        getattr(exp_cfg.train.loss.scoring_type, "value", exp_cfg.train.loss.scoring_type)
     )
     if scoring_type == "pfas":
         p_type = "pfas"
@@ -342,16 +336,8 @@ def create_train_state(
             else configs.ExperimentConfig.from_munch(myconfig)
         )
         loss_cfg = exp_cfg.train.loss
-        loss_type = (
-            loss_cfg.loss_type.value
-            if hasattr(loss_cfg.loss_type, "value")
-            else str(loss_cfg.loss_type)
-        )
-        scoring_type = (
-            loss_cfg.scoring_type.value
-            if hasattr(loss_cfg.scoring_type, "value")
-            else str(loss_cfg.scoring_type)
-        )
+        loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
+        scoring_type = str(getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type))
 
         # Initialize trainable scale w and bias b for GE2E / Extended-Set / Pairwise
         if loss_type in ("ge2e_softmax", "ge2e_contrast", "extended_set_softmax", "pairwise"):
@@ -446,16 +432,8 @@ def train_step(
 def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     """Build a JIT-compiled training step function for the configured loss & scoring."""
     loss_cfg = exp_cfg.train.loss
-    loss_type = (
-        loss_cfg.loss_type.value
-        if hasattr(loss_cfg.loss_type, "value")
-        else str(loss_cfg.loss_type)
-    )
-    scoring_type = (
-        loss_cfg.scoring_type.value
-        if hasattr(loss_cfg.scoring_type, "value")
-        else str(loss_cfg.scoring_type)
-    )
+    loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
+    scoring_type = str(getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type))
     n_spk = int(loss_cfg.num_speakers_per_batch)
     n_utt = int(loss_cfg.num_utts_per_speaker)
     split_batch = bool(loss_cfg.ge2e_split_batch)
@@ -652,10 +630,8 @@ def train_network(
         if isinstance(myconfig, configs.ExperimentConfig)
         else configs.ExperimentConfig.from_munch(myconfig)
     )
-    loss_type = (
-        exp_cfg.train.loss.loss_type.value
-        if hasattr(exp_cfg.train.loss.loss_type, "value")
-        else str(exp_cfg.train.loss.loss_type)
+    loss_type = str(
+        getattr(exp_cfg.train.loss.loss_type, "value", exp_cfg.train.loss.loss_type)
     )
     is_cls_loss = loss_type in ("arcface", "cosface", "sphereface", "softmax")
     speaker_to_id = {spk: idx for idx, spk in enumerate(sorted(spk_to_utts.keys()))}
