@@ -9,14 +9,21 @@ Provides:
   `ai_edge_litert` / `tf.lite.Interpreter` for embedded/on-device deployment.
 """
 
+from __future__ import annotations
+
 import os
 from typing import Any
 
 from flax.training import train_state
 import jax
-from jax.experimental import jax2tf
 import numpy as np
-import tensorflow as tf
+
+try:
+    from jax.experimental import jax2tf
+    import tensorflow as tf
+except ImportError:
+    jax2tf = None  # type: ignore[assignment]
+    tf = None  # type: ignore[assignment]
 
 from flaxspeaker import neural_net
 
