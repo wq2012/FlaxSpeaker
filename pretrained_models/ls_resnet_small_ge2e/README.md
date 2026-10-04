@@ -1,0 +1,96 @@
+---
+library_name: flaxspeaker
+tags:
+- audio
+- speaker-verification
+- speaker-recognition
+- jax
+- flax
+---
+# FlaxSpeaker Model (`resnet` - `small`)
+
+## Model Summary
+- **Backbone**: `resnet` (`small`)
+- **Pooling**: `asp`
+- **Scoring**: `cosine`
+- **Loss Function**: `ge2e_softmax`
+- **Output Embedding Dimension**: `192`
+- **Parameter Count**: `2,165,426`
+
+## Usage
+```python
+from flaxspeaker.hf_compat import FlaxSpeakerModel
+
+model = FlaxSpeakerModel.from_pretrained("/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models/ls_resnet_small_ge2e")
+emb = model.extract_embedding("path/to/audio.flac")
+score = model.verify("path/to/enroll.flac", "path/to/test.flac")
+```
+
+## Evaluation Results
+```json
+{
+  "experiment_name": "ls_resnet_small_ge2e",
+  "train_dataset": "librispeech",
+  "backbone": "resnet",
+  "size_variant": "small",
+  "pooling_type": "asp",
+  "loss_type": "ge2e_softmax",
+  "scoring_type": "cosine",
+  "embedding_dim": 192,
+  "num_parameters": 2165426,
+  "num_steps": 200,
+  "train_time_sec": 444.24,
+  "initial_loss": 2.0545,
+  "final_loss": 1.0299,
+  "in_domain_eval": {
+    "eer": 0.19866666666666666,
+    "eer_percent": 19.8667,
+    "eer_threshold": 0.7117735743522644,
+    "min_dcf_001": 0.994,
+    "min_dcf_005": 0.994,
+    "roc_auc": 0.8784,
+    "num_trials": 3000,
+    "num_unique_utterances": 999,
+    "latency_ms_per_utterance": 28.45,
+    "eval_time_sec": 28.606,
+    "scoring_type": "cosine"
+  },
+  "multi_enroll_3utt_eval": {
+    "eer": 0.15700000000000003,
+    "eer_percent": 15.7,
+    "eer_threshold": 0.7712435126304626,
+    "min_dcf_001": 0.986,
+    "roc_auc": 0.9195,
+    "num_trials": 1000
+  },
+  "cross_dataset_eval": {
+    "voxceleb1_o_official": {
+      "eer": 0.32599999999999996,
+      "eer_percent": 32.6,
+      "eer_threshold": 0.6413348913192749,
+      "min_dcf_001": 0.9945,
+      "min_dcf_005": 0.9945,
+      "roc_auc": 0.7417,
+      "num_trials": 4000,
+      "num_unique_utterances": 3892,
+      "latency_ms_per_utterance": 19.746,
+      "eval_time_sec": 77.012,
+      "scoring_type": "cosine"
+    },
+    "cnceleb2_zero_shot": {
+      "eer": 0.352,
+      "eer_percent": 35.2,
+      "eer_threshold": 0.736173152923584,
+      "min_dcf_001": 0.9973,
+      "min_dcf_005": 0.9973,
+      "roc_auc": 0.7026,
+      "num_trials": 3000,
+      "num_unique_utterances": 739,
+      "latency_ms_per_utterance": 25.217,
+      "eval_time_sec": 18.65,
+      "scoring_type": "cosine"
+    }
+  },
+  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/ls_resnet_small_ge2e.yml"
+}
+```

@@ -153,3 +153,7 @@ cython_debug/
 
 # Other
 saved_model/
+*.safetensors
+*.msgpack
+*.tflite
+checkpoint_*

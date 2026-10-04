@@ -1,0 +1,69 @@
+---
+library_name: flaxspeaker
+tags:
+- audio
+- speaker-verification
+- speaker-recognition
+- jax
+- flax
+---
+# FlaxSpeaker Model (`conformer` - `small`)
+
+## Model Summary
+- **Backbone**: `conformer` (`small`)
+- **Pooling**: `pfas`
+- **Scoring**: `pfas`
+- **Loss Function**: `extended_set_softmax`
+- **Output Embedding Dimension**: `256`
+- **Parameter Count**: `1,772,678`
+
+## Usage
+```python
+from flaxspeaker.hf_compat import FlaxSpeakerModel
+
+model = FlaxSpeakerModel.from_pretrained("/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models/cn_conformer_small_pfas")
+emb = model.extract_embedding("path/to/audio.flac")
+score = model.verify("path/to/enroll.flac", "path/to/test.flac")
+```
+
+## Evaluation Results
+```json
+{
+  "experiment_name": "cn_conformer_small_pfas",
+  "train_dataset": "cnceleb2",
+  "backbone": "conformer",
+  "size_variant": "small",
+  "pooling_type": "pfas",
+  "loss_type": "extended_set_softmax",
+  "scoring_type": "pfas",
+  "embedding_dim": 256,
+  "num_parameters": 1772678,
+  "num_steps": 200,
+  "train_time_sec": 161.47,
+  "initial_loss": 3.8905,
+  "final_loss": 3.2632,
+  "in_domain_eval": {
+    "eer": 0.30466666666666664,
+    "eer_percent": 30.4667,
+    "eer_threshold": 0.7975859642028809,
+    "min_dcf_001": 0.9987,
+    "min_dcf_005": 0.9987,
+    "roc_auc": 0.763,
+    "num_trials": 3000,
+    "num_unique_utterances": 739,
+    "latency_ms_per_utterance": 12.567,
+    "eval_time_sec": 9.498,
+    "scoring_type": "pfas"
+  },
+  "multi_enroll_3utt_eval": {
+    "eer": 0.26,
+    "eer_percent": 26.0,
+    "eer_threshold": 0.8134407997131348,
+    "min_dcf_001": 0.984,
+    "roc_auc": 0.8147,
+    "num_trials": 1000
+  },
+  "cross_dataset_eval": {},
+  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/cn_conformer_small_pfas.yml"
+}
+```

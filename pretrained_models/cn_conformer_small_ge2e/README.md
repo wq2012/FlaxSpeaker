@@ -1,0 +1,69 @@
+---
+library_name: flaxspeaker
+tags:
+- audio
+- speaker-verification
+- speaker-recognition
+- jax
+- flax
+---
+# FlaxSpeaker Model (`conformer` - `small`)
+
+## Model Summary
+- **Backbone**: `conformer` (`small`)
+- **Pooling**: `asp`
+- **Scoring**: `cosine`
+- **Loss Function**: `ge2e_softmax`
+- **Output Embedding Dimension**: `192`
+- **Parameter Count**: `1,871,362`
+
+## Usage
+```python
+from flaxspeaker.hf_compat import FlaxSpeakerModel
+
+model = FlaxSpeakerModel.from_pretrained("/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models/cn_conformer_small_ge2e")
+emb = model.extract_embedding("path/to/audio.flac")
+score = model.verify("path/to/enroll.flac", "path/to/test.flac")
+```
+
+## Evaluation Results
+```json
+{
+  "experiment_name": "cn_conformer_small_ge2e",
+  "train_dataset": "cnceleb2",
+  "backbone": "conformer",
+  "size_variant": "small",
+  "pooling_type": "asp",
+  "loss_type": "ge2e_softmax",
+  "scoring_type": "cosine",
+  "embedding_dim": 192,
+  "num_parameters": 1871362,
+  "num_steps": 200,
+  "train_time_sec": 166.75,
+  "initial_loss": 2.0013,
+  "final_loss": 1.2403,
+  "in_domain_eval": {
+    "eer": 0.2916666666666667,
+    "eer_percent": 29.1667,
+    "eer_threshold": 0.8242502212524414,
+    "min_dcf_001": 0.98,
+    "min_dcf_005": 0.98,
+    "roc_auc": 0.7864,
+    "num_trials": 3000,
+    "num_unique_utterances": 739,
+    "latency_ms_per_utterance": 25.913,
+    "eval_time_sec": 19.48,
+    "scoring_type": "cosine"
+  },
+  "multi_enroll_3utt_eval": {
+    "eer": 0.246,
+    "eer_percent": 24.6,
+    "eer_threshold": 0.8585169911384583,
+    "min_dcf_001": 0.952,
+    "roc_auc": 0.8393,
+    "num_trials": 1000
+  },
+  "cross_dataset_eval": {},
+  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/cn_conformer_small_ge2e.yml"
+}
+```

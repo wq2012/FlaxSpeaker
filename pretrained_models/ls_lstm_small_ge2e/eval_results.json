@@ -1,0 +1,65 @@
+{
+  "experiment_name": "ls_lstm_small_ge2e",
+  "train_dataset": "librispeech",
+  "backbone": "lstm",
+  "size_variant": "small",
+  "pooling_type": "asp",
+  "loss_type": "ge2e_softmax",
+  "scoring_type": "cosine",
+  "embedding_dim": 192,
+  "num_parameters": 1628226,
+  "num_steps": 200,
+  "train_time_sec": 101.89,
+  "initial_loss": 1.9318,
+  "final_loss": 0.5498,
+  "in_domain_eval": {
+    "eer": 0.15233333333333332,
+    "eer_percent": 15.2333,
+    "eer_threshold": 0.45503637194633484,
+    "min_dcf_001": 0.9753,
+    "min_dcf_005": 0.8213,
+    "roc_auc": 0.9231,
+    "num_trials": 3000,
+    "num_unique_utterances": 999,
+    "latency_ms_per_utterance": 10.628,
+    "eval_time_sec": 10.794,
+    "scoring_type": "cosine"
+  },
+  "multi_enroll_3utt_eval": {
+    "eer": 0.11299999999999999,
+    "eer_percent": 11.3,
+    "eer_threshold": 0.5040749311447144,
+    "min_dcf_001": 0.776,
+    "roc_auc": 0.958,
+    "num_trials": 1000
+  },
+  "cross_dataset_eval": {
+    "voxceleb1_o_official": {
+      "eer": 0.275,
+      "eer_percent": 27.5,
+      "eer_threshold": 0.39457693696022034,
+      "min_dcf_001": 0.9875,
+      "min_dcf_005": 0.948,
+      "roc_auc": 0.8073,
+      "num_trials": 4000,
+      "num_unique_utterances": 3892,
+      "latency_ms_per_utterance": 7.389,
+      "eval_time_sec": 28.924,
+      "scoring_type": "cosine"
+    },
+    "cnceleb2_zero_shot": {
+      "eer": 0.3456666666666667,
+      "eer_percent": 34.5667,
+      "eer_threshold": 0.44311702251434326,
+      "min_dcf_001": 0.9833,
+      "min_dcf_005": 0.9587,
+      "roc_auc": 0.73,
+      "num_trials": 3000,
+      "num_unique_utterances": 739,
+      "latency_ms_per_utterance": 10.344,
+      "eval_time_sec": 7.661,
+      "scoring_type": "cosine"
+    }
+  },
+  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/ls_lstm_small_ge2e.yml"
+}

@@ -1,0 +1,62 @@
+---
+library_name: flaxspeaker
+tags:
+- audio
+- speaker-verification
+- speaker-recognition
+- jax
+- flax
+---
+# FlaxSpeaker Model (`ecapa_tdnn` - `small`)
+
+## Model Summary
+- **Backbone**: `ecapa_tdnn` (`small`)
+- **Pooling**: `asp`
+- **Scoring**: `cosine`
+- **Loss Function**: `extended_set_softmax`
+- **Output Embedding Dimension**: `192`
+- **Parameter Count**: `1,568,962`
+
+## Usage
+```python
+from flaxspeaker.hf_compat import FlaxSpeakerModel
+
+model = FlaxSpeakerModel.from_pretrained("/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models/vox_ecapa_tdnn_small_ext_softmax")
+emb = model.extract_embedding("path/to/audio.flac")
+score = model.verify("path/to/enroll.flac", "path/to/test.flac")
+```
+
+## Evaluation Results
+```json
+{
+  "experiment_name": "vox_ecapa_tdnn_small_ext_softmax",
+  "train_dataset": "voxceleb1",
+  "backbone": "ecapa_tdnn",
+  "size_variant": "small",
+  "pooling_type": "asp",
+  "loss_type": "extended_set_softmax",
+  "scoring_type": "cosine",
+  "embedding_dim": 192,
+  "num_parameters": 1568962,
+  "num_steps": 200,
+  "train_time_sec": 84.02,
+  "initial_loss": 4.0512,
+  "final_loss": 3.0432,
+  "in_domain_eval": {
+    "eer": 0.265,
+    "eer_percent": 26.5,
+    "eer_threshold": 0.8265013694763184,
+    "min_dcf_001": 0.993,
+    "min_dcf_005": 0.993,
+    "roc_auc": 0.8193,
+    "num_trials": 2000,
+    "num_unique_utterances": 250,
+    "latency_ms_per_utterance": 22.157,
+    "eval_time_sec": 5.568,
+    "scoring_type": "cosine"
+  },
+  "multi_enroll_3utt_eval": null,
+  "cross_dataset_eval": {},
+  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/vox_ecapa_tdnn_small_ext_softmax.yml"
+}
+```

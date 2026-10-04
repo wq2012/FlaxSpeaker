@@ -1,0 +1,38 @@
+{
+  "experiment_name": "cn_ecapa_tdnn_small_arcface",
+  "train_dataset": "cnceleb2",
+  "backbone": "ecapa_tdnn",
+  "size_variant": "small",
+  "pooling_type": "asp",
+  "loss_type": "arcface",
+  "scoring_type": "cosine",
+  "embedding_dim": 192,
+  "num_parameters": 1568960,
+  "num_steps": 200,
+  "train_time_sec": 82.83,
+  "initial_loss": 13.3337,
+  "final_loss": 10.4448,
+  "in_domain_eval": {
+    "eer": 0.37433333333333335,
+    "eer_percent": 37.4333,
+    "eer_threshold": 0.9952793717384338,
+    "min_dcf_001": 0.9953,
+    "min_dcf_005": 0.9953,
+    "roc_auc": 0.6822,
+    "num_trials": 3000,
+    "num_unique_utterances": 739,
+    "latency_ms_per_utterance": 17.915,
+    "eval_time_sec": 13.562,
+    "scoring_type": "cosine"
+  },
+  "multi_enroll_3utt_eval": {
+    "eer": 0.344,
+    "eer_percent": 34.4,
+    "eer_threshold": 0.9963411092758179,
+    "min_dcf_001": 0.998,
+    "roc_auc": 0.7164,
+    "num_trials": 1000
+  },
+  "cross_dataset_eval": {},
+  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/cn_ecapa_tdnn_small_arcface.yml"
+}

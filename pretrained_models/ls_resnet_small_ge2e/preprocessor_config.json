@@ -1,0 +1,9 @@
+{
+  "feature_extractor_type": "WhisperFeatureExtractor",
+  "feature_size": 80,
+  "sampling_rate": 16000,
+  "hop_length": 160,
+  "n_fft": 512,
+  "padding_value": 0.0,
+  "return_attention_mask": false
+}

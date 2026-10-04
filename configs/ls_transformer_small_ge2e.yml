@@ -1,0 +1,266 @@
+data:
+  dataset_type: librispeech
+  dataset_name: librispeech
+  train_dir: ''
+  test_dir: ''
+  train_librispeech_dir: ''
+  test_librispeech_dir: ''
+  train_csv: /usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/train.csv
+  test_csv: /usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/eval.csv
+  trials_file: /usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/trials.tsv
+  audio_format: .flac
+  speaker_label_index: -2
+vad:
+  enabled: true
+  mode: energy
+  sample_rate: 16000
+  frame_size_ms: 25.0
+  frame_step_ms: 10.0
+  energy_threshold_db: -35.0
+  energy_db_threshold: 30.0
+  adaptive_percentile: 15.0
+  snr_margin_db: 6.0
+  spectral_flatness_threshold: 0.65
+  min_speech_frames: 3
+  hangover_frames: 5
+frontend:
+  feature_type: log_mel
+  sample_rate: 16000
+  n_mfcc: 80
+  n_mels: 80
+  frame_size_ms: 25.0
+  frame_step_ms: 10.0
+  n_fft: 512
+  fmin: 20.0
+  fmax: 7600.0
+  preemph: 0.97
+  log_offset: 1.0e-06
+  apply_cmvn: true
+  cmvn_norm_vars: false
+  stack_left_context: 0
+  stack_right_context: 0
+  frame_stride: 1
+  hf_extractor_name: openai/whisper-tiny
+model:
+  backbone: transformer
+  size_variant: small
+  embedding_dim: 192
+  normalize_embedding: true
+  n_mfcc: 80
+  seq_len: 160
+  sliding_window_step: 50
+  use_transformer: false
+  frame_aggregation_mean: true
+  full_sequence_inference: true
+  l2_normalize_embeddings: true
+  scoring_type: cosine
+  saved_model_path: ''
+  lstm:
+    hidden_size: 256
+    proj_size: 0
+    num_layers: 3
+    bidirectional: false
+    dropout_rate: 0.1
+    use_layer_norm: true
+    frame_aggregation_mean: true
+  transformer:
+    dim: 192
+    num_encoder_layers: 3
+    num_heads: 4
+    mlp_dim: 384
+    dropout_rate: 0.1
+    use_positional_encoding: true
+    use_rope: false
+  conformer:
+    dim: 192
+    num_layers: 3
+    num_heads: 4
+    ffn_expansion: 2
+    ffn_dim: 384
+    conv_kernel_size: 15
+    dropout_rate: 0.1
+    subsample_factor: 1
+  mamba:
+    dim: 192
+    num_layers: 3
+    d_state: 16
+    state_dim: 16
+    d_conv: 4
+    conv_kernel_size: 4
+    expand_factor: 2
+    dt_rank: 16
+    dropout_rate: 0.1
+  ecapa_tdnn:
+    channels: 256
+    scale: 4
+    kernel_sizes:
+    - 5
+    - 3
+    - 3
+    - 3
+    dilations:
+    - 1
+    - 2
+    - 3
+    - 4
+    attention_channels: 64
+    se_channels: 64
+    se_bottleneck_dim: 64
+    mfa_channels: 512
+    mfa_dim: 512
+  resnet:
+    base_channels: 24
+    stage_blocks:
+    - 2
+    - 2
+    - 2
+    - 2
+    num_blocks:
+    - 2
+    - 2
+    - 2
+    - 2
+    use_se: true
+    se_reduction: 8
+    out_dim: 192
+  pooling:
+    pooling_type: asp
+    attention_dim: 128
+    use_global_context: true
+    share_params: true
+    nonlinear_attention: true
+    divide_layer: false
+    max_pooling_mode: 'off'
+    top_k: 10
+    window_size: 10
+    window_stride: 5
+    use_weighted_frames: false
+    epsilon: 1.0e-05
+  pfas:
+    num_keys: 4
+    key_dim: 32
+    value_dim: 32
+    attention_dim: 128
+    attention_type: shared_nonlinear
+    use_keys_and_queries: false
+    scale_factor: 5.0
+    use_trainable_scale_factor: false
+    normalize_keys_and_values: true
+    normalize_overall_output: true
+    per_trial_softmax: true
+    apply_l2_norm_to_keys: true
+    apply_l2_norm_to_values: true
+    apply_global_l2_norm_to_concat_form: true
+    apply_softmax_per_test_key: false
+  dr_vector:
+    hidden_dims:
+    - 128
+    - 64
+    activation: relu
+    use_layer_norm: true
+    include_cosine_in_input: true
+    residual_weight: 0.25
+    add_cosine_to_network_output: true
+    append_cosine_as_feature_to_network_input: true
+    num_cosine_terms: 128
+    layer_type: relu
+    num_cells:
+    - 128
+    - 64
+loss:
+  loss_type: ge2e_softmax
+  scoring_type: cosine
+  num_speakers_per_batch: 8
+  num_utts_per_speaker: 4
+  triplet_alpha: 0.1
+  ge2e_learn_wb: true
+  ge2e_init_w: 10.0
+  ge2e_init_b: -5.0
+  ge2e_split_batch: false
+  ge2e_exact_leave_one_out: true
+  ge2e_vary_enroll_utts: false
+  ge2e_mask_dup_spk: false
+  multi_row_window: 0
+  scale: 30.0
+  margin: 0.2
+  margin_scale: 30.0
+  margin_m: 0.2
+  sphereface_m: 1.35
+  sphereface_lambda_min: 5.0
+  sphereface_lambda_base: 1000.0
+  sphereface_lambda_gamma: 0.12
+  sphereface_lambda_power: 1.0
+  label_smoothing: 0.0
+  num_classes: 256
+train:
+  batch_size: 32
+  num_spks_per_batch: 8
+  num_utts_per_spk: 4
+  triplet_alpha: 0.1
+  learning_rate: 0.0015
+  min_learning_rate: 1.0e-05
+  optimizer: adamw
+  weight_decay: 0.0001
+  warmup_steps: 20
+  lr_schedule_cosine: true
+  lr_schedule: cosine
+  grad_clip_norm: 3.0
+  ge2e_grad_scale: 0.01
+  save_model_frequency: 0
+  eval_frequency: 200
+  num_steps: 200
+  num_processes: 4
+  seed: 42
+  specaug:
+    use_specaug: true
+    freq_mask_prob: 0.3
+    time_mask_prob: 0.3
+    freq_mask_max_width: 10
+    time_mask_max_width: 10
+    num_freq_masks: 1
+    num_time_masks: 1
+    gaussian_noise_std: 0.0
+  loss:
+    loss_type: ge2e_softmax
+    scoring_type: cosine
+    num_speakers_per_batch: 8
+    num_utts_per_speaker: 4
+    triplet_alpha: 0.1
+    ge2e_learn_wb: true
+    ge2e_init_w: 10.0
+    ge2e_init_b: -5.0
+    ge2e_split_batch: false
+    ge2e_exact_leave_one_out: true
+    ge2e_vary_enroll_utts: false
+    ge2e_mask_dup_spk: false
+    multi_row_window: 0
+    scale: 30.0
+    margin: 0.2
+    margin_scale: 30.0
+    margin_m: 0.2
+    sphereface_m: 1.35
+    sphereface_lambda_min: 5.0
+    sphereface_lambda_base: 1000.0
+    sphereface_lambda_gamma: 0.12
+    sphereface_lambda_power: 1.0
+    label_smoothing: 0.0
+    num_classes: 256
+eval:
+  full_sequence_inference: true
+  num_triplets: 1000
+  threshold_step: 0.001
+  num_enroll_utts: 1
+  use_as_norm: false
+  apply_as_norm: false
+  as_norm_top_k: 100
+  as_norm_cohort_size: 100
+  dcf_p_target: 0.01
+  dcf_c_miss: 1.0
+  dcf_c_fa: 1.0
+export:
+  output_dir: exported_model
+  export_tflite: true
+  quantize_tflite: true
+  export_safetensors: true
+  export_hf_format: true
+  sequence_length: 100

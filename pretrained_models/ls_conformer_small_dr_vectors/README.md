@@ -1,0 +1,96 @@
+---
+library_name: flaxspeaker
+tags:
+- audio
+- speaker-verification
+- speaker-recognition
+- jax
+- flax
+---
+# FlaxSpeaker Model (`conformer` - `small`)
+
+## Model Summary
+- **Backbone**: `conformer` (`small`)
+- **Pooling**: `asp`
+- **Scoring**: `dr_vector`
+- **Loss Function**: `extended_set_softmax`
+- **Output Embedding Dimension**: `192`
+- **Parameter Count**: `1,929,475`
+
+## Usage
+```python
+from flaxspeaker.hf_compat import FlaxSpeakerModel
+
+model = FlaxSpeakerModel.from_pretrained("/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models/ls_conformer_small_dr_vectors")
+emb = model.extract_embedding("path/to/audio.flac")
+score = model.verify("path/to/enroll.flac", "path/to/test.flac")
+```
+
+## Evaluation Results
+```json
+{
+  "experiment_name": "ls_conformer_small_dr_vectors",
+  "train_dataset": "librispeech",
+  "backbone": "conformer",
+  "size_variant": "small",
+  "pooling_type": "asp",
+  "loss_type": "extended_set_softmax",
+  "scoring_type": "dr_vector",
+  "embedding_dim": 192,
+  "num_parameters": 1929475,
+  "num_steps": 200,
+  "train_time_sec": 157.27,
+  "initial_loss": 4.1361,
+  "final_loss": 2.9017,
+  "in_domain_eval": {
+    "eer": 0.22666666666666668,
+    "eer_percent": 22.6667,
+    "eer_threshold": 0.8460111618041992,
+    "min_dcf_001": 0.9993,
+    "min_dcf_005": 0.9993,
+    "roc_auc": 0.853,
+    "num_trials": 3000,
+    "num_unique_utterances": 999,
+    "latency_ms_per_utterance": 12.996,
+    "eval_time_sec": 14.823,
+    "scoring_type": "dr_vector"
+  },
+  "multi_enroll_3utt_eval": {
+    "eer": 0.19299999999999998,
+    "eer_percent": 19.3,
+    "eer_threshold": 0.8734894394874573,
+    "min_dcf_001": 0.992,
+    "roc_auc": 0.8915,
+    "num_trials": 1000
+  },
+  "cross_dataset_eval": {
+    "voxceleb1_o_official": {
+      "eer": 0.32199999999999995,
+      "eer_percent": 32.2,
+      "eer_threshold": 0.7820658683776855,
+      "min_dcf_001": 0.994,
+      "min_dcf_005": 0.994,
+      "roc_auc": 0.7481,
+      "num_trials": 4000,
+      "num_unique_utterances": 3892,
+      "latency_ms_per_utterance": 13.494,
+      "eval_time_sec": 54.147,
+      "scoring_type": "dr_vector"
+    },
+    "cnceleb2_zero_shot": {
+      "eer": 0.371,
+      "eer_percent": 37.1,
+      "eer_threshold": 0.7761187553405762,
+      "min_dcf_001": 0.9967,
+      "min_dcf_005": 0.9967,
+      "roc_auc": 0.6817,
+      "num_trials": 3000,
+      "num_unique_utterances": 739,
+      "latency_ms_per_utterance": 11.799,
+      "eval_time_sec": 8.778,
+      "scoring_type": "dr_vector"
+    }
+  },
+  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/ls_conformer_small_dr_vectors.yml"
+}
+```

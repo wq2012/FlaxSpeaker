@@ -1,7 +1,16 @@
 numpy
 jax
+jaxlib
 flax
+optax
 librosa
+soundfile
+scikit-learn
+scipy
 matplotlib
 pyyaml
 munch
+transformers
+safetensors
+tensorflow-cpu
+ai-edge-litert
