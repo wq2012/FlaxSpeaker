@@ -41,6 +41,7 @@ __version__ = "0.2.0"
 HF_DEFAULT_NAMESPACE = hf_compat.HF_DEFAULT_NAMESPACE
 HF_COLLECTION_URL = hf_compat.HF_COLLECTION_URL
 PRETRAINED_MODEL_IDS = hf_compat.PRETRAINED_MODEL_IDS
+HF_MODEL_REGISTRY = hf_compat.HF_MODEL_REGISTRY
 FlaxSpeakerConfig = hf_compat.FlaxSpeakerConfig
 FlaxSpeakerModel = hf_compat.FlaxSpeakerModel
 
@@ -59,6 +60,7 @@ __all__ = [
     "FlaxSpeakerModel",
     "HF_COLLECTION_URL",
     "HF_DEFAULT_NAMESPACE",
+    "HF_MODEL_REGISTRY",
     "PRETRAINED_MODEL_IDS",
     "backbones",
     "configs",

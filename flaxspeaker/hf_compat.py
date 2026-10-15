@@ -90,6 +90,8 @@ PRETRAINED_MODEL_IDS: tuple[str, ...] = (
     "vox_ecapa_tdnn_small_ext_softmax",
 )
 
+HF_MODEL_REGISTRY: tuple[str, ...] = PRETRAINED_MODEL_IDS
+
 
 class FlaxSpeakerConfig(PretrainedConfig):
     """HuggingFace `PretrainedConfig` for FlaxSpeaker models."""
@@ -612,6 +614,34 @@ class FlaxSpeakerModel:
             )
         )
 
+    @staticmethod
+    def _resolve_repo_id(pretrained_model_name_or_path: str) -> tuple[str, str]:
+        """Resolve a model reference or URL into `(repo_id, short_id)`."""
+        clean_ref = pretrained_model_name_or_path.strip().rstrip("/")
+        for url_prefix in (
+            "https://huggingface.co/",
+            "http://huggingface.co/",
+        ):
+            if clean_ref.startswith(url_prefix):
+                clean_ref = clean_ref.removeprefix(url_prefix).rstrip("/")
+                break
+        base_id = os.path.basename(os.path.normpath(clean_ref))
+        if clean_ref.startswith(f"{HF_DEFAULT_NAMESPACE}/"):
+            short_id = clean_ref.split("/", 1)[1]
+            return clean_ref, short_id
+        if base_id in PRETRAINED_MODEL_IDS:
+            return f"{HF_DEFAULT_NAMESPACE}/{base_id}", base_id
+        if (
+            not clean_ref.startswith(("/", "./", "../", "~"))
+            and clean_ref.count("/") == 1
+            and not os.path.exists(pretrained_model_name_or_path)
+        ):
+            return clean_ref, base_id
+        raise FileNotFoundError(
+            "Neither model.safetensors nor flax_model.msgpack found in "
+            f"{pretrained_model_name_or_path}"
+        )
+
     @classmethod
     def from_pretrained(
         cls,
@@ -627,26 +657,9 @@ class FlaxSpeakerModel:
         if not force_hub and cls._has_local_weights(pretrained_model_name_or_path):
             resolved_dir = pretrained_model_name_or_path
         else:
-            norm_path = os.path.normpath(pretrained_model_name_or_path)
-            base_id = os.path.basename(norm_path)
-            if pretrained_model_name_or_path.startswith(f"{HF_DEFAULT_NAMESPACE}/"):
-                short_id = pretrained_model_name_or_path.split("/", 1)[1]
-                repo_id = pretrained_model_name_or_path
-            elif base_id in PRETRAINED_MODEL_IDS:
-                short_id = base_id
-                repo_id = f"{HF_DEFAULT_NAMESPACE}/{short_id}"
-            elif (
-                not pretrained_model_name_or_path.startswith(("/", "./", "../", "~"))
-                and pretrained_model_name_or_path.count("/") == 1
-                and not os.path.exists(pretrained_model_name_or_path)
-            ):
-                short_id = base_id
-                repo_id = pretrained_model_name_or_path
-            else:
-                raise FileNotFoundError(
-                    "Neither model.safetensors nor flax_model.msgpack found in "
-                    f"{pretrained_model_name_or_path}"
-                )
+            repo_id, short_id = cls._resolve_repo_id(
+                pretrained_model_name_or_path
+            )
 
             if not force_hub:
                 repo_root = os.path.dirname(

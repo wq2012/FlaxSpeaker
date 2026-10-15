@@ -704,6 +704,49 @@ class TestExportAndHuggingFaceCompat(TestBase):
                     np.allclose(ref_model(x), m_fallback(x), atol=1e-5)
                 )
 
+                # Test default force_hub=False on a fresh git clone (no local weights anywhere)
+                mock_dl.reset_mock()
+                with mock.patch.object(
+                    hf_compat.FlaxSpeakerModel,
+                    "_has_local_weights",
+                    return_value=False,
+                ):
+                    hf_compat.load_pretrained(weightless_dir)
+                    mock_dl.assert_called_once_with(
+                        repo_id="wq2012/univ_conformer_tiny_ge2e",
+                        cache_dir=None,
+                        revision=None,
+                        local_files_only=False,
+                    )
+
+                # Test trailing slashes and full Hugging Face URLs
+                for ref_str, expected_repo in (
+                    (
+                        "wq2012/univ_conformer_tiny_ge2e/",
+                        "wq2012/univ_conformer_tiny_ge2e",
+                    ),
+                    (
+                        "https://huggingface.co/wq2012/univ_conformer_tiny_ge2e/",
+                        "wq2012/univ_conformer_tiny_ge2e",
+                    ),
+                    (
+                        "other_user/custom_model/",
+                        "other_user/custom_model",
+                    ),
+                    (
+                        "https://huggingface.co/other_user/custom_model",
+                        "other_user/custom_model",
+                    ),
+                ):
+                    mock_dl.reset_mock()
+                    hf_compat.load_pretrained(ref_str, force_hub=True)
+                    mock_dl.assert_called_once_with(
+                        repo_id=expected_repo,
+                        cache_dir=None,
+                        revision=None,
+                        local_files_only=False,
+                    )
+
                 # Invalid local paths must raise FileNotFoundError without calling snapshot_download
                 mock_dl.reset_mock()
                 with self.assertRaises(FileNotFoundError):
