@@ -256,6 +256,7 @@ class TestBackbonesAndPooling(unittest.TestCase):
             configs.PoolingType.STATS,
             configs.PoolingType.SAP,
             configs.PoolingType.ASP,
+            configs.PoolingType.ATP,
             configs.PoolingType.CUMULATIVE_STATS,
         ):
             cfg = configs.ExperimentConfig()
@@ -267,6 +268,44 @@ class TestBackbonesAndPooling(unittest.TestCase):
             params = enc.init(rng, x)["params"]
             out = enc.apply({"params": params}, x)
             self.assertEqual(out.shape, (2, 64))
+
+    def test_mask_padding_invariance_all_backbones(self):
+        rng = jax.random.PRNGKey(0)
+        x_short = jax.random.normal(rng, (2, 30, 80))
+        m_short = jnp.ones((2, 30), dtype=jnp.float32)
+        x_pad = jnp.pad(x_short, ((0, 0), (0, 30), (0, 0)))
+        m_pad = jnp.pad(m_short, ((0, 0), (0, 30)))
+
+        for b_type in (
+            configs.BackboneType.CONFORMER,
+            configs.BackboneType.TRANSFORMER,
+            configs.BackboneType.LSTM,
+            configs.BackboneType.MAMBA,
+            configs.BackboneType.ECAPA_TDNN,
+            configs.BackboneType.RESNET,
+        ):
+            cfg = configs.ExperimentConfig()
+            cfg.model.backbone = b_type
+            cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+            enc = neural_net.build_modern_encoder_from_config(cfg)
+            params = enc.init(rng, x_short, mask=m_short)["params"]
+            emb_short = enc.apply({"params": params}, x_short, mask=m_short)
+            emb_pad = enc.apply({"params": params}, x_pad, mask=m_pad)
+            cos = jnp.sum(emb_short * emb_pad, axis=-1)
+            self.assertTrue(np.all(np.asarray(cos) > 0.9999))
+
+    def test_mutually_exclusive_mtr_and_specaug_and_varlen(self):
+        rng = np.random.default_rng(123)
+        feats = np.ones((120, 80), dtype=np.float32)
+        w_cfg = configs.WaveformAugConfig(use_waveform_aug=True, aug_prob=1.0)
+        s_cfg = configs.SpecAugConfig(use_specaug=True, apply_prob=1.0)
+        out, applied_mtr, applied_spec = specaug.apply_mutually_exclusive_augmentation(
+            feats, waveform_aug_config=w_cfg, specaug_config=s_cfg, rng=rng
+        )
+        self.assertEqual(out.shape, (120, 80))
+        self.assertFalse(applied_mtr and applied_spec)
+        self.assertTrue(applied_mtr)
+        self.assertFalse(applied_spec)
 
 
 class TestAdvancedLossesAndScoring(unittest.TestCase):
@@ -601,6 +640,77 @@ class TestExportAndHuggingFaceCompat(TestBase):
             out1 = model(x)
             out2 = loaded(x)
             self.assertTrue(np.allclose(out1, out2, atol=1e-5))
+
+    def test_hf_pretrained_model_ids_and_hub_resolution(self):
+        from unittest import mock
+
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 44)
+        self.assertEqual(
+            hf_compat.HF_COLLECTION_URL,
+            "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595",
+        )
+        local_pm = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "pretrained_models",
+            "univ_conformer_tiny_ge2e",
+        )
+        if hf_compat.FlaxSpeakerModel._has_local_weights(local_pm):
+            m_local = hf_compat.load_pretrained(local_pm)
+            m_hub = hf_compat.load_pretrained("wq2012/univ_conformer_tiny_ge2e")
+            m_short = hf_compat.load_pretrained("univ_conformer_tiny_ge2e")
+            x = jnp.ones((1, 50, 80), dtype=jnp.float32)
+            out_local = m_local(x)
+            out_hub = m_hub(x)
+            out_short = m_short(x)
+            self.assertTrue(np.allclose(out_local, out_hub, atol=1e-5))
+            self.assertTrue(np.allclose(out_local, out_short, atol=1e-5))
+
+        # Test Hub snapshot_download fallback when local directory lacks weights
+        # (e.g. fresh git clone where .safetensors/.msgpack are gitignored) or force_hub=True
+        exp_cfg = configs.ExperimentConfig()
+        exp_cfg.model.backbone = configs.BackboneType.CONFORMER
+        exp_cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        exp_cfg.model.seq_len = 50
+        exp_cfg.model.embedding_dim = 64
+        hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(exp_cfg)
+        ref_model = hf_compat.FlaxSpeakerModel(config=hf_cfg)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hub_cache_dir = os.path.join(tmpdir, "hub_snapshot")
+            ref_model.save_pretrained(hub_cache_dir)
+
+            weightless_dir = os.path.join(
+                tmpdir, "pretrained_models", "univ_conformer_tiny_ge2e"
+            )
+            os.makedirs(weightless_dir, exist_ok=True)
+            hf_cfg.save_pretrained(weightless_dir)
+            self.assertFalse(
+                hf_compat.FlaxSpeakerModel._has_local_weights(weightless_dir)
+            )
+
+            with mock.patch(
+                "huggingface_hub.snapshot_download",
+                return_value=hub_cache_dir,
+            ) as mock_dl:
+                m_fallback = hf_compat.load_pretrained(weightless_dir, force_hub=True)
+                mock_dl.assert_called_once_with(
+                    repo_id="wq2012/univ_conformer_tiny_ge2e",
+                    cache_dir=None,
+                    revision=None,
+                    local_files_only=False,
+                )
+                x = jnp.ones((1, 50, 80), dtype=jnp.float32)
+                self.assertTrue(
+                    np.allclose(ref_model(x), m_fallback(x), atol=1e-5)
+                )
+
+                # Invalid local paths must raise FileNotFoundError without calling snapshot_download
+                mock_dl.reset_mock()
+                with self.assertRaises(FileNotFoundError):
+                    hf_compat.load_pretrained("/nonexistent/flaxspeaker/model_dir_xyz")
+                with self.assertRaises(FileNotFoundError):
+                    hf_compat.load_pretrained("./nonexistent_local_dir")
+                mock_dl.assert_not_called()
 
 
 if __name__ == "__main__":

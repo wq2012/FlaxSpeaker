@@ -125,9 +125,21 @@ class VadProcessor:
         if sample_rate is not None:
             self.config.sample_rate = sample_rate
 
+    def normalize_waveform(self, waveform: np.ndarray) -> np.ndarray:
+        """Applies automatic gain control (peak normalization) to [-1, 1] when enabled."""
+        waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
+        if waveform.size == 0:
+            return waveform
+        if getattr(self.config, "apply_agc", True):
+            peak = float(np.max(np.abs(waveform)))
+            if peak > 1e-8:
+                waveform = waveform / peak
+        return waveform
+
     def detect_frames_from_waveform(self, waveform: np.ndarray) -> np.ndarray:
         """Returns a boolean speech mask of shape (num_frames,) for a 1D waveform."""
         cfg = self.config
+        waveform = self.normalize_waveform(waveform)
         energy_db = compute_frame_energy_db(
             waveform,
             sample_rate=cfg.sample_rate,
@@ -135,12 +147,18 @@ class VadProcessor:
             frame_step_ms=cfg.frame_step_ms,
         )
         mode_str = str(cfg.mode).lower()
-        if mode_str == "none":
+        if mode_str == "none" or not cfg.enabled:
             return np.ones(energy_db.shape[0], dtype=bool)
 
-        noise_floor = np.percentile(energy_db, cfg.adaptive_percentile)
+        noise_floor = float(np.percentile(energy_db, cfg.adaptive_percentile))
+        speech_peak_db = float(np.percentile(energy_db, 95.0))
+        energy_db_span = float(getattr(cfg, "energy_db_threshold", 26.0))
+        rel_peak_thresh = speech_peak_db - energy_db_span
+        snr_thresh = noise_floor + cfg.snr_margin_db
         dynamic_thresh = max(
-            cfg.energy_threshold_db, float(noise_floor + cfg.snr_margin_db)
+            cfg.energy_threshold_db,
+            rel_peak_thresh,
+            snr_thresh,
         )
         energy_mask = energy_db >= dynamic_thresh
 
@@ -158,7 +176,7 @@ class VadProcessor:
             )
             raw_mask = (
                 (energy_mask & spectral_mask)
-                if cfg.mode == "hybrid"
+                if mode_str == "hybrid"
                 else (energy_mask | spectral_mask)
             )
         else:
@@ -170,24 +188,28 @@ class VadProcessor:
             hangover_frames=cfg.hangover_frames,
         )
 
-        # Ensure at least a few frames survive even for very quiet recordings
-        if not np.any(mask):
-            top_k = min(max(cfg.min_speech_frames, 5), energy_db.shape[0])
-            top_indices = np.argsort(energy_db)[-top_k:]
+        # Ensure at least a reasonable segment survives even for very quiet recordings
+        min_keep = min(max(cfg.min_speech_frames, 8), energy_db.shape[0])
+        if int(np.sum(mask)) < min_keep:
+            top_indices = np.argsort(energy_db)[-min_keep:]
             mask[top_indices] = True
 
         return mask
 
     def filter_waveform(self, waveform: np.ndarray) -> np.ndarray:
         """Removes non-speech regions from a 1D waveform."""
-        waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
+        waveform = self.normalize_waveform(waveform)
         if not self.config.enabled or waveform.size == 0:
             return waveform
 
         cfg = self.config
         mask = self.detect_frames_from_waveform(waveform)
-        frame_step = max(1, int(round(cfg.sample_rate * cfg.frame_step_ms / 1000.0)))
-        frame_length = max(1, int(round(cfg.sample_rate * cfg.frame_size_ms / 1000.0)))
+        frame_step = max(
+            1, int(round(cfg.sample_rate * cfg.frame_step_ms / 1000.0))
+        )
+        frame_length = max(
+            1, int(round(cfg.sample_rate * cfg.frame_size_ms / 1000.0))
+        )
 
         sample_mask = np.zeros(waveform.shape[0], dtype=bool)
         for idx, is_speech in enumerate(mask):
@@ -221,11 +243,12 @@ class VadProcessor:
         else:
             # Estimate frame energy directly from feature vectors (mean across bins)
             frame_energy = np.mean(features, axis=1)
-            noise_floor = np.percentile(
-                frame_energy, self.config.adaptive_percentile
+            noise_floor = float(
+                np.percentile(frame_energy, self.config.adaptive_percentile)
             )
-            std_energy = float(np.std(frame_energy)) + 1e-6
-            raw_mask = frame_energy >= (noise_floor + 0.25 * std_energy)
+            speech_peak = float(np.percentile(frame_energy, 95.0))
+            dynamic_span = max(0.5, (speech_peak - noise_floor) * 0.75)
+            raw_mask = frame_energy >= (speech_peak - dynamic_span)
             mask = smooth_vad_mask(
                 raw_mask,
                 min_speech_frames=self.config.min_speech_frames,

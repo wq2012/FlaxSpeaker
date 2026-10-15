@@ -11,7 +11,7 @@ Implements:
 - Adaptive Symmetric Score Normalization (AS-Norm)
 """
 
-from typing import Sequence
+from typing import Sequence, Union
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
@@ -60,89 +60,193 @@ def unpack_pfas_representation(
     return keys, values
 
 
+def _compute_pfas_weights(
+    key_dots: jax.Array,
+    scale_factor: Union[jax.Array, float] = 16.0,
+    per_trial_softmax: bool = True,
+    attention_weight_mode: str = "exp",
+    eps: float = 1e-6,
+) -> jax.Array:
+    """Computes normalized PFAS key-key attention weights over `(..., M_t, M_e)`.
+
+    Implements Eq. 5 of Pelecanos et al.
+    (Odyssey 2022, https://arxiv.org/pdf/2203.05642v3).
+    """
+    mode = attention_weight_mode.lower()
+    m_t = key_dots.shape[-2]
+    m_e = key_dots.shape[-1]
+    prefix_shape = key_dots.shape[:-2]
+
+    if mode == "outer":
+        logits = scale_factor * key_dots
+        w_row = jax.nn.softmax(logits, axis=-2)
+        w_col = jax.nn.softmax(logits, axis=-1)
+        weights = 0.5 * (w_row + w_col) + eps
+    elif mode == "square":
+        weights = jnp.square(key_dots) + eps
+    elif mode == "abs":
+        weights = jnp.abs(key_dots) + eps
+    else:
+        # Default "exp" (Full-Matrix Softmax over M_t * M_e when per_trial_softmax=True)
+        logits = scale_factor * key_dots
+        if per_trial_softmax:
+            flat_logits = logits.reshape(*prefix_shape, m_t * m_e)
+            weights = (
+                jax.nn.softmax(flat_logits, axis=-1).reshape(
+                    *prefix_shape, m_t, m_e
+                )
+                + eps
+            )
+        else:
+            weights = (jax.nn.softmax(logits, axis=-1) / float(m_t)) + eps
+
+    weights = weights / (
+        jnp.sum(weights, axis=(-2, -1), keepdims=True) + eps
+    )
+    return weights
+
+
 def pfas_score_pair(
     test_keys: jax.Array,
     test_values: jax.Array,
     enroll_keys: jax.Array,
     enroll_values: jax.Array,
-    scale_factor: float = 5.0,
+    scale_factor: Union[jax.Array, float] = 16.0,
     per_trial_softmax: bool = True,
+    apply_l2_norm_to_keys: bool = True,
+    apply_l2_norm_to_values: bool = False,
+    apply_global_l2_norm_to_concat_form: bool = True,
+    attention_weight_mode: str = "exp",
+    eps: float = 1e-6,
 ) -> jax.Array:
     """Compute Parameter-Free Attentive Score between one test and one enrollment set.
+
+    Implements the "Key & Global L2-Norm" formulation from Pelecanos et al.
+    (Odyssey 2022, https://arxiv.org/pdf/2203.05642v3, Eq. 5-6 & Table 2).
 
     Supports both single-utterance enrollment (`enroll_keys` has `M` keys) and
     multi-utterance enrollment (`enroll_keys` has `U * M` keys stacked across `U`
     enrollment utterances).
-
-    Args:
-        test_keys: `(M_t, d_k)`
-        test_values: `(M_t, d_v)`
-        enroll_keys: `(M_e, d_k)`
-        enroll_values: `(M_e, d_v)`
-        scale_factor: Softmax temperature scaling factor `s`.
-        per_trial_softmax: If True, softmax is computed over all `M_t * M_e` pairs
-            jointly (Full-Matrix Softmax). If False, softmax is computed across
-            enrollment keys `M_e` per test key and averaged over `M_t`.
-
-    Returns:
-        Scalar similarity score.
     """
+    t_k = (
+        test_keys / (jnp.linalg.norm(test_keys, axis=-1, keepdims=True) + eps)
+        if apply_l2_norm_to_keys
+        else test_keys
+    )
+    e_k = (
+        enroll_keys
+        / (jnp.linalg.norm(enroll_keys, axis=-1, keepdims=True) + eps)
+        if apply_l2_norm_to_keys
+        else enroll_keys
+    )
+    t_v = (
+        test_values
+        / (jnp.linalg.norm(test_values, axis=-1, keepdims=True) + eps)
+        if apply_l2_norm_to_values
+        else test_values
+    )
+    e_v = (
+        enroll_values
+        / (jnp.linalg.norm(enroll_values, axis=-1, keepdims=True) + eps)
+        if apply_l2_norm_to_values
+        else enroll_values
+    )
+
     # Key-key dot products: (M_t, M_e)
-    key_sim = scale_factor * jnp.matmul(test_keys, enroll_keys.T)
+    key_dots = jnp.matmul(t_k, e_k.T)
+    weights = _compute_pfas_weights(
+        key_dots,
+        scale_factor=scale_factor,
+        per_trial_softmax=per_trial_softmax,
+        attention_weight_mode=attention_weight_mode,
+        eps=eps,
+    )
+
     # Value-value dot products: (M_t, M_e)
-    val_sim = jnp.matmul(test_values, enroll_values.T)
+    val_dots = jnp.matmul(t_v, e_v.T)
+    score = jnp.sum(weights * val_dots)
 
-    if per_trial_softmax:
-        weights = jax.nn.softmax(key_sim.reshape(-1)).reshape(key_sim.shape)
-    else:
-        weights = jax.nn.softmax(key_sim, axis=-1) / float(test_keys.shape[0])
+    if apply_global_l2_norm_to_concat_form:
+        t_val_sq = jnp.sum(jnp.square(t_v), axis=-1)  # (M_t,)
+        e_val_sq = jnp.sum(jnp.square(e_v), axis=-1)  # (M_e,)
+        w_t = jnp.sum(weights, axis=-1)  # (M_t,)
+        w_e = jnp.sum(weights, axis=-2)  # (M_e,)
+        norm_t = jnp.sqrt(jnp.sum(w_t * t_val_sq) + eps)
+        norm_e = jnp.sqrt(jnp.sum(w_e * e_val_sq) + eps)
+        score = score / jnp.maximum(norm_t * norm_e, eps)
 
-    return jnp.sum(weights * val_sim)
+    return score
 
 
 def pfas_score_matrix(
     test_packed: jax.Array,
     enroll_packed: jax.Array,
-    num_keys: int = 4,
-    key_dim: int = 64,
-    value_dim: int = 64,
-    scale_factor: float = 5.0,
+    num_keys: int = 32,
+    key_dim: int = 16,
+    value_dim: int = 48,
+    scale_factor: Union[jax.Array, float] = 16.0,
     per_trial_softmax: bool = True,
+    apply_l2_norm_to_keys: bool = True,
+    apply_l2_norm_to_values: bool = False,
+    apply_global_l2_norm_to_concat_form: bool = True,
+    attention_weight_mode: str = "exp",
+    eps: float = 1e-6,
 ) -> jax.Array:
     """Compute `(N_test, N_enroll)` PFAS similarity matrix for batched training/eval.
 
-    Args:
-        test_packed: `(N_test, M * (key_dim + value_dim))`
-        enroll_packed: `(N_enroll, M_e * (key_dim + value_dim))`
-        num_keys: Number of keys `M` per test utterance.
-        key_dim: Dimension of each key vector.
-        value_dim: Dimension of each value vector.
-        scale_factor: Temperature scaling factor for key-key attention logits.
-        per_trial_softmax: Full-matrix trial softmax vs per-test-key softmax.
-
-    Returns:
-        Similarity matrix of shape `(N_test, N_enroll)`.
+    Implements Eq. 5-6 of Pelecanos et al. (`arXiv:2203.05642v3`).
     """
     kv_unit = key_dim + value_dim
     num_enroll_keys = enroll_packed.shape[-1] // kv_unit
-    t_keys, t_vals = unpack_pfas_representation(test_packed, num_keys, key_dim, value_dim)
+    t_keys, t_vals = unpack_pfas_representation(
+        test_packed, num_keys, key_dim, value_dim
+    )
     e_keys, e_vals = unpack_pfas_representation(
         enroll_packed, num_enroll_keys, key_dim, value_dim
     )
 
+    if apply_l2_norm_to_keys:
+        t_keys = t_keys / (
+            jnp.linalg.norm(t_keys, axis=-1, keepdims=True) + eps
+        )
+        e_keys = e_keys / (
+            jnp.linalg.norm(e_keys, axis=-1, keepdims=True) + eps
+        )
+    if apply_l2_norm_to_values:
+        t_vals = t_vals / (
+            jnp.linalg.norm(t_vals, axis=-1, keepdims=True) + eps
+        )
+        e_vals = e_vals / (
+            jnp.linalg.norm(e_vals, axis=-1, keepdims=True) + eps
+        )
+
     # t_keys: (N_t, M_t, d_k), e_keys: (N_e, M_e, d_k)
-    # key_logits: (N_t, N_e, M_t, M_e)
-    key_logits = scale_factor * jnp.einsum("tpd,eqd->tepq", t_keys, e_keys)
+    # key_dots: (N_t, N_e, M_t, M_e)
+    key_dots = jnp.einsum("tpd,eqd->tepq", t_keys, e_keys)
+    weights = _compute_pfas_weights(
+        key_dots,
+        scale_factor=scale_factor,
+        per_trial_softmax=per_trial_softmax,
+        attention_weight_mode=attention_weight_mode,
+        eps=eps,
+    )
+
     val_dots = jnp.einsum("tpd,eqd->tepq", t_vals, e_vals)
+    scores = jnp.sum(weights * val_dots, axis=(-2, -1))  # (N_t, N_e)
 
-    n_t, n_e, m_t, m_e = key_logits.shape
-    if per_trial_softmax:
-        flat_logits = key_logits.reshape(n_t, n_e, m_t * m_e)
-        weights = jax.nn.softmax(flat_logits, axis=-1).reshape(n_t, n_e, m_t, m_e)
-    else:
-        weights = jax.nn.softmax(key_logits, axis=-1) / float(m_t)
+    if apply_global_l2_norm_to_concat_form:
+        # _calc_l2_norm_for_concat_form:
+        # norm_t(t, e) = sqrt(sum_{p, q} w(t,e,p,q) ||t_vals(t,p)||^2)
+        # norm_e(t, e) = sqrt(sum_{p, q} w(t,e,p,q) ||e_vals(e,q)||^2)
+        t_val_sq = jnp.sum(jnp.square(t_vals), axis=-1)  # (N_t, M_t)
+        e_val_sq = jnp.sum(jnp.square(e_vals), axis=-1)  # (N_e, M_e)
+        w_t = jnp.sum(weights, axis=-1)  # (N_t, N_e, M_t)
+        w_e = jnp.sum(weights, axis=-2)  # (N_t, N_e, M_e)
+        norm_t = jnp.sqrt(jnp.einsum("tep,tp->te", w_t, t_val_sq) + eps)
+        norm_e = jnp.sqrt(jnp.einsum("teq,eq->te", w_e, e_val_sq) + eps)
+        scores = scores / jnp.maximum(norm_t * norm_e, eps)
 
-    return jnp.sum(weights * val_dots, axis=(-2, -1))
+    return scores
 
 
 def stack_multi_enroll_pfas(

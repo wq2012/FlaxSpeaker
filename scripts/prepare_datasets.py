@@ -9,15 +9,20 @@ Processes:
 
 import argparse
 import json
+from multiprocessing import pool as mp_pool
 import os
+import sys
 import time
 
-from multiprocessing import pool as mp_pool
 import soundfile as sf
 
-from flaxspeaker import configs
-from flaxspeaker import dataset
-from flaxspeaker import feature_extraction
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from flaxspeaker import configs  # noqa: E402
+from flaxspeaker import dataset  # noqa: E402
+from flaxspeaker import feature_extraction  # noqa: E402
 
 
 DEFAULT_DATA_ROOT = "/usr/local/google/home/quanw/Data/speaker_datasets"
@@ -216,6 +221,7 @@ def prepare_all_datasets(
         train_csv = os.path.join(vox_dir, "train.csv")
         eval_csv = os.path.join(vox_dir, "eval.csv")
         trials_path = os.path.join(vox_dir, "trials.tsv")
+        multi_trials_path = os.path.join(vox_dir, "multi_enroll_trials.tsv")
         official_trials_path = os.path.join(vox_dir, "vox1_o_official_4000.tsv")
 
         dataset.save_spk_to_utts_csv(vox_train, train_csv)
@@ -224,6 +230,12 @@ def prepare_all_datasets(
             vox_eval, num_trials=2000, seed=seed
         )
         dataset.save_trials_file(vox_trials, trials_path)
+        vox_multi = dataset.generate_multi_enroll_trials(
+            vox_eval, num_trials=1000, num_enroll_utts=3, seed=seed
+        )
+        with open(multi_trials_path, "w", encoding="utf-8") as f:
+            for lbl, e_list, t_u in vox_multi:
+                f.write(f"{lbl}\t{','.join(e_list)}\t{t_u}\n")
 
         veri_txt = os.path.join(vox_root, "veri_test2.txt")
         official_trials = []
@@ -240,7 +252,11 @@ def prepare_all_datasets(
         )
         cache.precompute_dataset(vox_train, num_workers=16)
         cache.precompute_dataset(vox_eval, num_workers=16)
-        official_utts = {"official": sorted({u for _, u1, u2 in official_trials for u in (u1, u2)})}
+        official_utts = {
+            "official": sorted(
+                {u for _, u1, u2 in official_trials for u in (u1, u2)}
+            )
+        }
         cache.precompute_dataset(official_utts, num_workers=16)
         print(f"VoxCeleb1 feature cache ready in {time.time() - t0:.1f}s")
 
@@ -249,11 +265,68 @@ def prepare_all_datasets(
             "train_stats": dataset.compute_dataset_stats(vox_train),
             "eval_stats": dataset.compute_dataset_stats(vox_eval),
             "num_split_trials": len(vox_trials),
+            "num_multi_enroll_trials": len(vox_multi),
             "num_official_veri_test2_trials": len(official_trials),
             "train_csv": train_csv,
             "eval_csv": eval_csv,
             "trials_file": trials_path,
+            "multi_trials_file": multi_trials_path,
             "official_trials_file": official_trials_path,
+        }
+
+    # -------------------------------------------------------------------------
+    # 4. Universal Multi-Domain Combined Split (LibriSpeech + CN-Celeb2 + VoxCeleb1)
+    # -------------------------------------------------------------------------
+    univ_train: dataset.SpkToUtts = {}
+    univ_eval: dataset.SpkToUtts = {}
+    univ_trials = []
+    univ_multi = []
+    for dom_name in ("librispeech", "cnceleb2", "voxceleb1"):
+        if dom_name not in summary:
+            continue
+        dom_info = summary[dom_name]
+        dom_train = dataset.get_csv_spk_to_utts(dom_info["train_csv"])
+        dom_eval = dataset.get_csv_spk_to_utts(dom_info["eval_csv"])
+        for spk, utts in dom_train.items():
+            univ_train[f"{dom_name}:{spk}"] = utts
+        for spk, utts in dom_eval.items():
+            univ_eval[f"{dom_name}:{spk}"] = utts
+        univ_trials.extend(dataset.load_trials_file(dom_info["trials_file"]))
+        if "multi_trials_file" in dom_info and os.path.exists(
+            dom_info["multi_trials_file"]
+        ):
+            with open(dom_info["multi_trials_file"], "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split("\t")
+                    if len(parts) == 3:
+                        univ_multi.append(
+                            (int(parts[0]), parts[1].split(","), parts[2])
+                        )
+
+    if univ_train:
+        univ_dir = os.path.join(splits_root, "universal")
+        os.makedirs(univ_dir, exist_ok=True)
+        os.makedirs(os.path.join(cache_root, "universal"), exist_ok=True)
+        u_train_csv = os.path.join(univ_dir, "train.csv")
+        u_eval_csv = os.path.join(univ_dir, "eval.csv")
+        u_trials_path = os.path.join(univ_dir, "trials.tsv")
+        u_multi_path = os.path.join(univ_dir, "multi_enroll_trials.tsv")
+        dataset.save_spk_to_utts_csv(univ_train, u_train_csv)
+        dataset.save_spk_to_utts_csv(univ_eval, u_eval_csv)
+        dataset.save_trials_file(univ_trials, u_trials_path)
+        with open(u_multi_path, "w", encoding="utf-8") as f:
+            for lbl, e_list, t_u in univ_multi:
+                f.write(f"{lbl}\t{','.join(e_list)}\t{t_u}\n")
+        summary["universal"] = {
+            "domains": ["librispeech", "cnceleb2", "voxceleb1"],
+            "train_stats": dataset.compute_dataset_stats(univ_train),
+            "eval_stats": dataset.compute_dataset_stats(univ_eval),
+            "num_trials": len(univ_trials),
+            "num_multi_enroll_trials": len(univ_multi),
+            "train_csv": u_train_csv,
+            "eval_csv": u_eval_csv,
+            "trials_file": u_trials_path,
+            "multi_trials_file": u_multi_path,
         }
 
     summary_path = os.path.join(splits_root, "dataset_summary.json")

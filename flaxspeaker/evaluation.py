@@ -193,12 +193,131 @@ def compute_roc_auc(
     return float(sk_metrics.roc_auc_score(np.asarray(labels), np.asarray(scores)))
 
 
+def compute_bootstrap_eer_ci(
+    labels: Sequence[int],
+    scores: Sequence[float],
+    num_resamples: int = 500,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> tuple[float, float]:
+    """Computes non-parametric bootstrap confidence interval for EER."""
+    y_true = np.asarray(labels, dtype=np.int32)
+    y_score = np.asarray(scores, dtype=np.float64)
+    n = len(y_true)
+    if n < 10 or np.all(y_true == y_true[0]):
+        eer, _ = compute_eer_exact(labels, scores)
+        return eer, eer
+    rng = np.random.default_rng(seed)
+    pos_idx = np.where(y_true == 1)[0]
+    neg_idx = np.where(y_true == 0)[0]
+    n_pos = len(pos_idx)
+    n_neg = len(neg_idx)
+    pos_scores = y_score[pos_idx]
+    neg_scores = y_score[neg_idx]
+    boot_eers = np.empty(num_resamples, dtype=np.float64)
+    quantiles = np.linspace(0.0, 1.0, 201)
+    for b in range(num_resamples):
+        b_pos = pos_scores[rng.integers(0, n_pos, size=n_pos)]
+        b_neg = neg_scores[rng.integers(0, n_neg, size=n_neg)]
+        thresh = np.quantile(np.concatenate([b_pos, b_neg]), quantiles)
+        fnr = np.mean(b_pos[:, None] < thresh[None, :], axis=0)
+        fpr = np.mean(b_neg[:, None] >= thresh[None, :], axis=0)
+        idx = int(np.argmin(np.abs(fnr - fpr)))
+        boot_eers[b] = 0.5 * (fnr[idx] + fpr[idx])
+    alpha = 0.5 * (1.0 - confidence)
+    low = float(np.quantile(boot_eers, alpha))
+    high = float(np.quantile(boot_eers, 1.0 - alpha))
+    return low, high
+
+
+def _extract_eval_embeddings(
+    unique_utts: Sequence[str],
+    state: train_state.TrainState,
+    exp_cfg: configs.ExperimentConfig,
+    frontend: feature_extraction.AudioFrontend,
+    feature_cache: Optional[feature_extraction.FeatureCache] = None,
+    batch_size: int = 64,
+    precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
+) -> tuple[dict[str, np.ndarray], float]:
+    """Extracts utterance embeddings with full/variable-length mask support."""
+    utt_to_emb: dict[str, np.ndarray] = (
+        precomputed_embeddings if precomputed_embeddings is not None else {}
+    )
+    missing_utts = [u for u in unique_utts if u not in utt_to_emb]
+    if not missing_utts:
+        return utt_to_emb, 0.0
+
+    seq_len = int(exp_cfg.model.seq_len)
+    max_eval_len = int(
+        getattr(exp_cfg.model, "max_eval_seq_len", max(400, seq_len * 2))
+    )
+    full_seq = bool(getattr(exp_cfg.eval, "full_sequence_inference", True))
+    target_pad_len = max_eval_len if full_seq else seq_len
+    min_valid_len = min(32, target_pad_len)
+
+    @jax.jit
+    def _jit_encode(params: Any, x_batch: jax.Array, m_batch: jax.Array) -> jax.Array:
+        return state.apply_fn({"params": params}, x_batch, mask=m_batch)
+
+    infer_start = time.time()
+    for start in range(0, len(missing_utts), batch_size):
+        batch_utts = missing_utts[start:start + batch_size]
+        feats = []
+        masks = []
+        for u in batch_utts:
+            raw = (
+                feature_cache.get(u)
+                if feature_cache is not None
+                else frontend.extract_from_file(u)
+            )
+            if raw.shape[0] < min_valid_len:
+                reps = (min_valid_len // max(1, raw.shape[0])) + 1
+                raw = np.tile(raw, (reps, 1))
+            if full_seq:
+                if raw.shape[0] >= target_pad_len:
+                    offset = (raw.shape[0] - target_pad_len) // 2
+                    seg = raw[offset:offset + target_pad_len]
+                    valid_len = target_pad_len
+                else:
+                    seg = raw
+                    valid_len = raw.shape[0]
+                padded = np.zeros(
+                    (target_pad_len, raw.shape[1]), dtype=np.float32
+                )
+                padded[:valid_len, :] = seg
+                mask = np.zeros((target_pad_len,), dtype=np.float32)
+                mask[:valid_len] = 1.0
+            else:
+                if raw.shape[0] >= seq_len:
+                    offset = (raw.shape[0] - seq_len) // 2
+                    padded = raw[offset:offset + seq_len].astype(np.float32)
+                else:
+                    reps = (seq_len // max(1, raw.shape[0])) + 1
+                    padded = np.tile(raw, (reps, 1))[:seq_len].astype(
+                        np.float32
+                    )
+                mask = np.ones((seq_len,), dtype=np.float32)
+            feats.append(padded)
+            masks.append(mask)
+
+        batch_arr = jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32)
+        mask_arr = jnp.asarray(np.stack(masks, axis=0), dtype=jnp.float32)
+        embs = np.asarray(_jit_encode(state.params, batch_arr, mask_arr))
+        for u, e in zip(batch_utts, embs):
+            utt_to_emb[u] = e
+
+    infer_elapsed = time.time() - infer_start
+    latency_ms = (infer_elapsed * 1000.0) / max(1, len(missing_utts))
+    return utt_to_emb, latency_ms
+
+
 def evaluate_verification_trials(
     state: train_state.TrainState,
     trials: Sequence[dataset.TrialPair],
     myconfig: Any,
     feature_cache: Optional[feature_extraction.FeatureCache] = None,
     scoring_override: Optional[str] = None,
+    precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
 ) -> dict[str, Any]:
     """Evaluate speaker verification on a list of `(label, enroll_utt, test_utt)` trials.
 
@@ -212,50 +331,41 @@ def evaluate_verification_trials(
         else configs.ExperimentConfig.from_munch(myconfig)
     )
     frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
-    seq_len = int(exp_cfg.model.seq_len)
 
     # Collect unique utterances
     unique_utts = sorted({u for _, u1, u2 in trials for u in (u1, u2)})
-
-    # Extract fixed-length center crops for deterministic batch inference
-    utt_to_emb: dict[str, np.ndarray] = {}
-    batch_size = 64
-    infer_start = time.time()
-    for start in range(0, len(unique_utts), batch_size):
-        batch_utts = unique_utts[start:start + batch_size]
-        feats = []
-        for u in batch_utts:
-            raw = (
-                feature_cache.get(u)
-                if feature_cache is not None
-                else frontend.extract_from_file(u)
-            )
-            # Center crop or pad to seq_len*2 (or seq_len) for consistent evaluation
-            eval_len = seq_len
-            if raw.shape[0] >= eval_len:
-                offset = (raw.shape[0] - eval_len) // 2
-                crop = raw[offset:offset + eval_len]
-            else:
-                reps = (eval_len // max(1, raw.shape[0])) + 1
-                crop = np.tile(raw, (reps, 1))[:eval_len]
-            feats.append(crop)
-        batch_arr = jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32)
-        embs = np.asarray(state.apply_fn({"params": state.params}, batch_arr))
-        for u, e in zip(batch_utts, embs):
-            utt_to_emb[u] = e
-    infer_elapsed = time.time() - infer_start
-    latency_ms = (infer_elapsed * 1000.0) / max(1, len(unique_utts))
+    utt_to_emb, latency_ms = _extract_eval_embeddings(
+        unique_utts,
+        state,
+        exp_cfg,
+        frontend,
+        feature_cache,
+        precomputed_embeddings=precomputed_embeddings,
+    )
 
     scoring_type = scoring_override or str(
-        getattr(exp_cfg.train.loss.scoring_type, "value", exp_cfg.train.loss.scoring_type)
+        getattr(
+            exp_cfg.train.loss.scoring_type,
+            "value",
+            exp_cfg.train.loss.scoring_type,
+        )
     )
 
     labels = [int(lbl) for lbl, _, _ in trials]
-    enroll_arr = jnp.asarray(np.stack([utt_to_emb[u1] for _, u1, _ in trials], axis=0))
-    test_arr = jnp.asarray(np.stack([utt_to_emb[u2] for _, _, u2 in trials], axis=0))
+    enroll_arr = jnp.asarray(
+        np.stack([utt_to_emb[u1] for _, u1, _ in trials], axis=0)
+    )
+    test_arr = jnp.asarray(
+        np.stack([utt_to_emb[u2] for _, _, u2 in trials], axis=0)
+    )
 
     if scoring_type == "pfas":
         pfas_cfg = exp_cfg.model.pfas
+        pfas_scale = (
+            float(np.exp(float(state.params["_aux_pfas_log_scale"])))
+            if "_aux_pfas_log_scale" in state.params
+            else float(pfas_cfg.scale_factor)
+        )
         t_keys, t_vals = scoring.unpack_pfas_representation(
             test_arr, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
         )
@@ -266,8 +376,20 @@ def evaluate_verification_trials(
             jax.vmap(
                 functools.partial(
                     scoring.pfas_score_pair,
-                    scale_factor=pfas_cfg.scale_factor,
+                    scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
                 )
             )
         )
@@ -291,8 +413,12 @@ def evaluate_verification_trials(
         )
     else:
         # Vectorized cosine similarity
-        e_norm = enroll_arr / (jnp.linalg.norm(enroll_arr, axis=-1, keepdims=True) + 1e-6)
-        t_norm = test_arr / (jnp.linalg.norm(test_arr, axis=-1, keepdims=True) + 1e-6)
+        e_norm = enroll_arr / (
+            jnp.linalg.norm(enroll_arr, axis=-1, keepdims=True) + 1e-6
+        )
+        t_norm = test_arr / (
+            jnp.linalg.norm(test_arr, axis=-1, keepdims=True) + 1e-6
+        )
         scores_arr = np.asarray(jnp.sum(e_norm * t_norm, axis=-1))
 
     if exp_cfg.eval.use_as_norm and len(utt_to_emb) >= 10:
@@ -307,17 +433,22 @@ def evaluate_verification_trials(
 
     scores_list = [float(s) for s in scores_arr]
     eer, eer_thresh = compute_eer_exact(labels, scores_list)
+    ci_low, ci_high = compute_bootstrap_eer_ci(labels, scores_list)
     min_dcf_001 = compute_min_dcf(labels, scores_list, p_target=0.01)
     min_dcf_005 = compute_min_dcf(labels, scores_list, p_target=0.05)
+    min_dcf_01 = compute_min_dcf(labels, scores_list, p_target=0.10)
     roc_auc = compute_roc_auc(labels, scores_list)
     total_time = time.time() - t0
 
     return {
         "eer": eer,
         "eer_percent": round(eer * 100.0, 4),
+        "eer_ci95_low_percent": round(ci_low * 100.0, 4),
+        "eer_ci95_high_percent": round(ci_high * 100.0, 4),
         "eer_threshold": eer_thresh,
         "min_dcf_001": round(min_dcf_001, 4),
         "min_dcf_005": round(min_dcf_005, 4),
+        "min_dcf_01": round(min_dcf_01, 4),
         "roc_auc": round(roc_auc, 4),
         "num_trials": len(trials),
         "num_unique_utterances": len(unique_utts),
@@ -332,6 +463,7 @@ def evaluate_multi_enroll_trials(
     trials: Sequence[dataset.MultiEnrollTrial],
     myconfig: Any,
     feature_cache: Optional[feature_extraction.FeatureCache] = None,
+    precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
 ) -> dict[str, Any]:
     """Evaluate multi-utterance enrollment trials `(label, [enroll_utts], test_utt)`."""
     exp_cfg = (
@@ -340,67 +472,106 @@ def evaluate_multi_enroll_trials(
         else configs.ExperimentConfig.from_munch(myconfig)
     )
     frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
-    seq_len = int(exp_cfg.model.seq_len)
 
     unique_utts = sorted(
         {u for _, e_list, t_u in trials for u in list(e_list) + [t_u]}
     )
-    utt_to_emb: dict[str, np.ndarray] = {}
-    for start in range(0, len(unique_utts), 64):
-        batch_utts = unique_utts[start:start + 64]
-        feats = []
-        for u in batch_utts:
-            raw = (
-                feature_cache.get(u)
-                if feature_cache is not None
-                else frontend.extract_from_file(u)
-            )
-            if raw.shape[0] >= seq_len:
-                offset = (raw.shape[0] - seq_len) // 2
-                crop = raw[offset:offset + seq_len]
-            else:
-                reps = (seq_len // max(1, raw.shape[0])) + 1
-                crop = np.tile(raw, (reps, 1))[:seq_len]
-            feats.append(crop)
-        batch_arr = jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32)
-        embs = np.asarray(state.apply_fn({"params": state.params}, batch_arr))
-        for u, e in zip(batch_utts, embs):
-            utt_to_emb[u] = e
+    utt_to_emb, _ = _extract_eval_embeddings(
+        unique_utts,
+        state,
+        exp_cfg,
+        frontend,
+        feature_cache,
+        precomputed_embeddings=precomputed_embeddings,
+    )
 
     scoring_type = str(
-        getattr(exp_cfg.train.loss.scoring_type, "value", exp_cfg.train.loss.scoring_type)
+        getattr(
+            exp_cfg.train.loss.scoring_type,
+            "value",
+            exp_cfg.train.loss.scoring_type,
+        )
     )
     labels = [int(lbl) for lbl, _, _ in trials]
     scores_list = []
 
     if scoring_type == "pfas":
         pfas_cfg = exp_cfg.model.pfas
-        for _, e_utts, t_utt in trials:
-            stacked_e = scoring.stack_multi_enroll_pfas(
+        pfas_scale = (
+            float(np.exp(float(state.params["_aux_pfas_log_scale"])))
+            if "_aux_pfas_log_scale" in state.params
+            else float(pfas_cfg.scale_factor)
+        )
+        stacked_e_list = [
+            scoring.stack_multi_enroll_pfas(
                 [utt_to_emb[u] for u in e_utts],
                 pfas_cfg.num_keys,
                 pfas_cfg.key_dim,
                 pfas_cfg.value_dim,
             )
-            num_e_keys = len(e_utts) * pfas_cfg.num_keys
-            e_keys, e_vals = scoring.unpack_pfas_representation(
-                stacked_e, num_e_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
+            for _, e_utts, _ in trials
+        ]
+        num_e_keys = len(trials[0][1]) * pfas_cfg.num_keys
+        e_arr = jnp.asarray(np.stack(stacked_e_list, axis=0))
+        t_arr = jnp.asarray(
+            np.stack([utt_to_emb[t_utt] for _, _, t_utt in trials], axis=0)
+        )
+        e_keys, e_vals = scoring.unpack_pfas_representation(
+            e_arr, num_e_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
+        )
+        t_keys, t_vals = scoring.unpack_pfas_representation(
+            t_arr, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
+        )
+        pair_fn = jax.jit(
+            jax.vmap(
+                functools.partial(
+                    scoring.pfas_score_pair,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
             )
-            t_keys, t_vals = scoring.unpack_pfas_representation(
-                jnp.asarray(utt_to_emb[t_utt]),
-                pfas_cfg.num_keys,
-                pfas_cfg.key_dim,
-                pfas_cfg.value_dim,
+        )
+        scores_arr = np.asarray(pair_fn(t_keys, t_vals, e_keys, e_vals))
+        scores_list = [float(s) for s in scores_arr]
+    elif scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
+        dr_cfg = exp_cfg.model.dr_vector
+        dr_net = scoring.DecisionResidualNetwork(
+            hidden_dims=tuple(dr_cfg.hidden_dims),
+            activation=dr_cfg.activation,
+            use_layer_norm=dr_cfg.use_layer_norm,
+            include_cosine_in_input=dr_cfg.include_cosine_in_input,
+            residual_weight=dr_cfg.residual_weight,
+        )
+        centroids = []
+        tests = []
+        for _, e_utts, t_utt in trials:
+            c = np.mean([utt_to_emb[u] for u in e_utts], axis=0)
+            c = c / (np.linalg.norm(c) + 1e-6)
+            centroids.append(c)
+            tests.append(utt_to_emb[t_utt])
+        e_arr = jnp.asarray(np.stack(centroids, axis=0))
+        t_arr = jnp.asarray(np.stack(tests, axis=0))
+        scores_arr = np.asarray(
+            dr_net.apply(
+                {"params": state.params["_aux_dr_net"]},
+                t_arr,
+                e_arr,
+                method=dr_net.score_pairs,
             )
-            s = scoring.pfas_score_pair(
-                t_keys,
-                t_vals,
-                e_keys,
-                e_vals,
-                scale_factor=pfas_cfg.scale_factor,
-                per_trial_softmax=pfas_cfg.per_trial_softmax,
-            )
-            scores_list.append(float(s))
+        )
+        scores_list = [float(s) for s in scores_arr]
     else:
         for _, e_utts, t_utt in trials:
             centroid = np.mean([utt_to_emb[u] for u in e_utts], axis=0)
@@ -412,13 +583,20 @@ def evaluate_multi_enroll_trials(
             scores_list.append(sim)
 
     eer, eer_thresh = compute_eer_exact(labels, scores_list)
+    ci_low, ci_high = compute_bootstrap_eer_ci(labels, scores_list)
     min_dcf_001 = compute_min_dcf(labels, scores_list, p_target=0.01)
+    min_dcf_005 = compute_min_dcf(labels, scores_list, p_target=0.05)
+    min_dcf_01 = compute_min_dcf(labels, scores_list, p_target=0.10)
     roc_auc = compute_roc_auc(labels, scores_list)
     return {
         "eer": eer,
         "eer_percent": round(eer * 100.0, 4),
+        "eer_ci95_low_percent": round(ci_low * 100.0, 4),
+        "eer_ci95_high_percent": round(ci_high * 100.0, 4),
         "eer_threshold": eer_thresh,
         "min_dcf_001": round(min_dcf_001, 4),
+        "min_dcf_005": round(min_dcf_005, 4),
+        "min_dcf_01": round(min_dcf_01, 4),
         "roc_auc": round(roc_auc, 4),
         "num_trials": len(trials),
     }

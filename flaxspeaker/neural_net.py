@@ -32,7 +32,6 @@ from flaxspeaker import dataset
 from flaxspeaker import feature_extraction
 from flaxspeaker import losses
 from flaxspeaker import scoring
-from flaxspeaker import specaug
 
 
 class BaseSpeakerEncoder(nn.Module):
@@ -199,6 +198,7 @@ def build_modern_encoder_from_config(
             "num_layers": m_cfg.transformer.num_encoder_layers,
             "mlp_dim": m_cfg.transformer.mlp_dim,
             "use_positional_encoding": m_cfg.transformer.use_positional_encoding,
+            "use_conv_stem": getattr(m_cfg.transformer, "use_conv_stem", True),
         }
     elif b_type == "conformer":
         b_kwargs = {
@@ -207,6 +207,14 @@ def build_modern_encoder_from_config(
             "num_layers": m_cfg.conformer.num_layers,
             "ffn_dim": m_cfg.conformer.ffn_dim,
             "conv_kernel_size": m_cfg.conformer.conv_kernel_size,
+            "use_positional_encoding": getattr(
+                m_cfg.conformer, "use_positional_encoding", False
+            ),
+            "normalize_output": getattr(
+                m_cfg.conformer, "normalize_output", False
+            ),
+            "use_conv_stem": getattr(m_cfg.conformer, "use_conv_stem", True),
+            "use_group_norm": getattr(m_cfg.conformer, "use_group_norm", True),
         }
     elif b_type == "mamba":
         b_kwargs = {
@@ -242,14 +250,32 @@ def build_modern_encoder_from_config(
             "key_dim": m_cfg.pfas.key_dim,
             "value_dim": m_cfg.pfas.value_dim,
             "attention_dim": m_cfg.pfas.attention_dim,
+            "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
+            "atp_num_heads": getattr(m_cfg.pooling, "num_heads", 1),
             "attention_type": m_cfg.pfas.attention_type,
+            "apply_l2_norm_to_keys": getattr(
+                m_cfg.pfas, "apply_l2_norm_to_keys", True
+            ),
+            "apply_l2_norm_to_values": getattr(
+                m_cfg.pfas, "apply_l2_norm_to_values", False
+            ),
             "normalize_keys_and_values": m_cfg.pfas.normalize_keys_and_values,
             "normalize_overall_output": m_cfg.pfas.normalize_overall_output,
         }
     else:
         p_kwargs = {
             "attention_dim": m_cfg.pooling.attention_dim,
+            "num_heads": getattr(m_cfg.pooling, "num_heads", 4),
+            "subspace_heads": getattr(m_cfg.pooling, "subspace_heads", True),
+            "pooling_stats": getattr(
+                m_cfg.pooling, "pooling_stats", "mean_std"
+            ),
+            "eps": getattr(m_cfg.pooling, "eps", 1e-4),
             "use_global_context": m_cfg.pooling.use_global_context,
+            "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
+            "use_nonlinear_bottleneck": getattr(
+                m_cfg.pooling, "use_nonlinear_bottleneck", True
+            ),
         }
 
     return backbones.ModernSpeakerEncoder(
@@ -286,7 +312,9 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
     grad_clip = float(getattr(train_cfg, "grad_clip_norm", 0.0))
     use_cosine = bool(getattr(train_cfg, "lr_schedule_cosine", False))
     num_steps = int(getattr(train_cfg, "num_steps", 500))
-    warmup_steps = min(int(getattr(train_cfg, "warmup_steps", 0)), max(0, num_steps - 1))
+    warmup_steps = min(
+        int(getattr(train_cfg, "warmup_steps", 0)), max(0, num_steps - 1)
+    )
 
     if use_cosine and num_steps > 2:
         if warmup_steps > 0:
@@ -311,7 +339,9 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
         transforms.append(optax.clip_by_global_norm(grad_clip))
 
     if opt_name == "adamw" and _is_modern_config(myconfig):
-        transforms.append(optax.adamw(learning_rate=schedule, weight_decay=weight_decay))
+        transforms.append(
+            optax.adamw(learning_rate=schedule, weight_decay=weight_decay)
+        )
     else:
         transforms.append(optax.adam(learning_rate=schedule))
 
@@ -337,12 +367,32 @@ def create_train_state(
         )
         loss_cfg = exp_cfg.train.loss
         loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
-        scoring_type = str(getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type))
+        scoring_type = str(
+            getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type)
+        )
 
         # Initialize trainable scale w and bias b for GE2E / Extended-Set / Pairwise
-        if loss_type in ("ge2e_softmax", "ge2e_contrast", "extended_set_softmax", "pairwise"):
-            params["_aux_w"] = jnp.array(float(loss_cfg.ge2e_init_w), dtype=jnp.float32)
-            params["_aux_b"] = jnp.array(float(loss_cfg.ge2e_init_b), dtype=jnp.float32)
+        if loss_type in (
+            "ge2e_softmax",
+            "ge2e_contrast",
+            "extended_set_softmax",
+            "pairwise",
+        ):
+            params["_aux_w"] = jnp.array(
+                float(loss_cfg.ge2e_init_w), dtype=jnp.float32
+            )
+            params["_aux_b"] = jnp.array(
+                float(loss_cfg.ge2e_init_b), dtype=jnp.float32
+            )
+
+        # Initialize trainable log scale factor for PFAS if enabled
+        if scoring_type == "pfas" and getattr(
+            exp_cfg.model.pfas, "use_trainable_scale_factor", True
+        ):
+            init_scale = max(float(exp_cfg.model.pfas.scale_factor), 1.0)
+            params["_aux_pfas_log_scale"] = jnp.array(
+                float(np.log(init_scale)), dtype=jnp.float32
+            )
 
         # Initialize Decision Residual Network (Dr-Vectors) parameters if enabled
         if scoring_type == "dr_vector":
@@ -364,17 +414,26 @@ def create_train_state(
             params["_aux_dr_net"] = dr_params
 
         # Initialize speaker classification weights for ArcFace / CosFace / SphereFace / Softmax
-        if loss_type in ("arcface", "cosface", "sphereface", "softmax") and num_classes > 0:
+        if (
+            loss_type in ("arcface", "cosface", "sphereface", "softmax")
+            and num_classes > 0
+        ):
             cls_rng = jax.random.fold_in(rng, 202)
             emb_dim = exp_cfg.model.output_embedding_dim
             w_init = jax.random.normal(cls_rng, (emb_dim, num_classes)) * 0.05
-            w_init = w_init / (jnp.linalg.norm(w_init, axis=0, keepdims=True) + 1e-6)
+            w_init = w_init / (
+                jnp.linalg.norm(w_init, axis=0, keepdims=True) + 1e-6
+            )
             params["_aux_class_weights"] = w_init
 
     tx = build_optimizer(myconfig)
     return train_state.TrainState.create(
         apply_fn=module.apply,
-        params=flax.core.freeze(params) if not _is_modern_config(myconfig) else params,
+        params=(
+            flax.core.freeze(params)
+            if not _is_modern_config(myconfig)
+            else params
+        ),
         tx=tx,
     )
 
@@ -394,12 +453,16 @@ def get_speaker_encoder(
     else:
         lstm_cfg = dict(myconfig.model.lstm)
         if "frame_aggregation_mean" in myconfig.model:
-            lstm_cfg["frame_aggregation_mean"] = myconfig.model.frame_aggregation_mean
+            lstm_cfg["frame_aggregation_mean"] = (
+                myconfig.model.frame_aggregation_mean
+            )
         encoder = LstmSpeakerEncoder(lstm_config=munch.Munch(lstm_cfg))
 
     seed = int(getattr(getattr(myconfig, "train", None), "seed", 0))
     init_rng = jax.random.PRNGKey(seed)
-    state = create_train_state(encoder, init_rng, myconfig, num_classes=num_classes)
+    state = create_train_state(
+        encoder, init_rng, myconfig, num_classes=num_classes
+    )
     if load_from:
         loaded = load_model(load_from, {"params": state.params})
         loaded_params = loaded["params"] if "params" in loaded else loaded
@@ -433,7 +496,9 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     """Build a JIT-compiled training step function for the configured loss & scoring."""
     loss_cfg = exp_cfg.train.loss
     loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
-    scoring_type = str(getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type))
+    scoring_type = str(
+        getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type)
+    )
     n_spk = int(loss_cfg.num_speakers_per_batch)
     n_utt = int(loss_cfg.num_utts_per_speaker)
     split_batch = bool(loss_cfg.ge2e_split_batch)
@@ -464,9 +529,12 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
         state: train_state.TrainState,
         batch_input: jax.Array,
         batch_labels: Optional[jax.Array] = None,
+        batch_mask: Optional[jax.Array] = None,
     ) -> tuple[train_state.TrainState, jax.Array]:
         def loss_fn(params: dict[str, Any]) -> jax.Array:
-            embeddings = state.apply_fn({"params": params}, batch_input)
+            embeddings = state.apply_fn(
+                {"params": params}, batch_input, mask=batch_mask
+            )
 
             score_fn = None
             if scoring_type == "dr_vector" and dr_net is not None:
@@ -477,13 +545,30 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
 
                 score_fn = _dr_score
             elif scoring_type == "pfas":
+                pfas_scale = (
+                    jnp.exp(params["_aux_pfas_log_scale"])
+                    if "_aux_pfas_log_scale" in params
+                    else pfas_cfg.scale_factor
+                )
                 score_fn = partial(
                     scoring.pfas_score_matrix,
                     num_keys=pfas_cfg.num_keys,
                     key_dim=pfas_cfg.key_dim,
                     value_dim=pfas_cfg.value_dim,
-                    scale_factor=pfas_cfg.scale_factor,
+                    scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
                 )
 
             if loss_type == "triplet":
@@ -621,7 +706,9 @@ def train_network(
         training_time = time.time() - start_time
         print("Finished training in", training_time, "seconds")
         if myconfig.model.saved_model_path:
-            save_model(myconfig.model.saved_model_path, {"params": state.params})
+            save_model(
+                myconfig.model.saved_model_path, {"params": state.params}
+            )
         return losses_history
 
     # Modern training path
@@ -631,10 +718,14 @@ def train_network(
         else configs.ExperimentConfig.from_munch(myconfig)
     )
     loss_type = str(
-        getattr(exp_cfg.train.loss.loss_type, "value", exp_cfg.train.loss.loss_type)
+        getattr(
+            exp_cfg.train.loss.loss_type, "value", exp_cfg.train.loss.loss_type
+        )
     )
     is_cls_loss = loss_type in ("arcface", "cosface", "sphereface", "softmax")
-    speaker_to_id = {spk: idx for idx, spk in enumerate(sorted(spk_to_utts.keys()))}
+    speaker_to_id = {
+        spk: idx for idx, spk in enumerate(sorted(spk_to_utts.keys()))
+    }
     num_classes = len(speaker_to_id) if is_cls_loss else 0
 
     _, state = get_speaker_encoder(exp_cfg, num_classes=num_classes)
@@ -642,9 +733,16 @@ def train_network(
     frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
     rng = np.random.default_rng(exp_cfg.train.seed)
 
+    max_seq_len = int(
+        getattr(exp_cfg.model, "max_seq_len", exp_cfg.model.seq_len)
+    )
+    min_seq_len = int(getattr(exp_cfg.model, "min_seq_len", max_seq_len // 2))
+    var_len = bool(getattr(exp_cfg.model, "variable_length_training", True))
+
     for step in range(exp_cfg.train.num_steps):
         if loss_type == "triplet":
             batch_list = []
+            mask_list = []
             for _ in range(exp_cfg.train.batch_size):
                 anchor_u, pos_u, neg_u = dataset.get_triplet(spk_to_utts)
                 for u in (anchor_u, pos_u, neg_u):
@@ -653,38 +751,64 @@ def train_network(
                         if feature_cache is not None
                         else frontend.extract_from_file(u)
                     )
-                    crop = feature_extraction.random_crop_or_pad(
-                        feat, exp_cfg.model.seq_len, rng=rng
+                    padded, mask, _ = (
+                        feature_extraction.sample_variable_length_features(
+                            feat,
+                            max_seq_len=max_seq_len,
+                            min_seq_len=min_seq_len,
+                            variable_length=var_len,
+                            specaug_config=exp_cfg.train.specaug,
+                            waveform_aug_config=exp_cfg.train.waveform_aug,
+                            random_crop=True,
+                            rng=rng,
+                        )
                     )
-                    crop = specaug.apply_specaug(crop, exp_cfg.train.specaug, rng=rng)
-                    batch_list.append(crop)
-            batch_input = jnp.asarray(np.stack(batch_list, axis=0), dtype=jnp.float32)
+                    batch_list.append(padded)
+                    mask_list.append(mask)
+            batch_input = jnp.asarray(
+                np.stack(batch_list, axis=0), dtype=jnp.float32
+            )
+            batch_mask = jnp.asarray(
+                np.stack(mask_list, axis=0), dtype=jnp.float32
+            )
             batch_labels = None
         elif is_cls_loss:
-            batch_input, batch_labels = feature_extraction.get_batched_classification_input(
-                spk_to_utts,
-                speaker_to_id,
-                batch_size=exp_cfg.train.batch_size,
-                seq_len=exp_cfg.model.seq_len,
-                frontend=frontend,
-                specaug_config=exp_cfg.train.specaug,
-                cache=feature_cache,
-                rng=rng,
+            batch_input, batch_labels, batch_mask = (
+                feature_extraction.get_batched_classification_input(
+                    spk_to_utts,
+                    speaker_to_id,
+                    batch_size=exp_cfg.train.batch_size,
+                    seq_len=max_seq_len,
+                    frontend=frontend,
+                    specaug_config=exp_cfg.train.specaug,
+                    waveform_aug_config=exp_cfg.train.waveform_aug,
+                    cache=feature_cache,
+                    rng=rng,
+                    min_seq_len=min_seq_len,
+                    variable_length=var_len,
+                    return_mask=True,
+                )
             )
         else:
             # Structured N x M batch for GE2E / Extended-Set Softmax / Pairwise
-            batch_input, batch_labels = feature_extraction.get_batched_nm_input(
-                spk_to_utts,
-                num_speakers=exp_cfg.train.loss.num_speakers_per_batch,
-                num_utts_per_speaker=exp_cfg.train.loss.num_utts_per_speaker,
-                seq_len=exp_cfg.model.seq_len,
-                frontend=frontend,
-                specaug_config=exp_cfg.train.specaug,
-                cache=feature_cache,
-                rng=rng,
+            batch_input, batch_labels, batch_mask = (
+                feature_extraction.get_batched_nm_input(
+                    spk_to_utts,
+                    num_speakers=exp_cfg.train.loss.num_speakers_per_batch,
+                    num_utts_per_speaker=exp_cfg.train.loss.num_utts_per_speaker,
+                    seq_len=max_seq_len,
+                    frontend=frontend,
+                    specaug_config=exp_cfg.train.specaug,
+                    waveform_aug_config=exp_cfg.train.waveform_aug,
+                    cache=feature_cache,
+                    rng=rng,
+                    min_seq_len=min_seq_len,
+                    variable_length=var_len,
+                    return_mask=True,
+                )
             )
 
-        state, loss_val = step_fn(state, batch_input, batch_labels)
+        state, loss_val = step_fn(state, batch_input, batch_labels, batch_mask)
         loss_scalar = float(loss_val.item())
         losses_history.append(loss_scalar)
 

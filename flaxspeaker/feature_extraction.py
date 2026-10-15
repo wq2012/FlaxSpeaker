@@ -109,11 +109,39 @@ class AudioFrontend:
             )
         return self._hf_extractor
 
-    def extract_from_waveform(self, waveform: np.ndarray) -> np.ndarray:
-        """Extracts 2D acoustic features (T, D) from a 1D waveform."""
+    def extract_from_waveform(
+        self,
+        waveform: np.ndarray,
+        waveform_aug_config: Optional[Any] = None,
+        rng: Optional[np.random.Generator] = None,
+    ) -> np.ndarray:
+        """Extracts 2D acoustic features (T, D) from a 1D waveform.
+
+        Applies AGC peak normalization first, extracts STFT/filterbank features
+        on the continuous waveform (avoiding splice boundary clicks), filters
+        non-speech frames via frame-level VAD, and then applies utterance CMVN
+        strictly over active speech frames.
+        """
         waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
-        if self.vad_processor is not None:
-            waveform = self.vad_processor.filter_waveform(waveform)
+        if waveform.size > 0:
+            apply_agc = (
+                True
+                if self.vad_processor is None
+                else getattr(self.vad_processor.config, "apply_agc", True)
+            )
+            if apply_agc:
+                peak = float(np.max(np.abs(waveform)))
+                if peak > 1e-8:
+                    waveform = waveform / peak
+
+        clean_waveform = waveform
+        if waveform_aug_config is not None:
+            waveform, _ = specaug.apply_waveform_augmentation(
+                waveform,
+                waveform_aug_config,
+                sample_rate=self.config.sample_rate,
+                rng=rng,
+            )
 
         cfg = self.config
         ftype = str(cfg.feature_type).lower()
@@ -130,20 +158,21 @@ class AudioFrontend:
             configs.FeatureType.LOG_MEL.value,
             configs.FeatureType.WHISPER_MEL.value,
         ):
-            if cfg.preemph > 0.0 and waveform.shape[0] > 1:
-                waveform = np.concatenate(
+            proc_wav = waveform
+            if cfg.preemph > 0.0 and proc_wav.shape[0] > 1:
+                proc_wav = np.concatenate(
                     [
-                        waveform[:1],
-                        waveform[1:] - cfg.preemph * waveform[:-1],
+                        proc_wav[:1],
+                        proc_wav[1:] - cfg.preemph * proc_wav[:-1],
                     ]
                 )
-            if waveform.shape[0] < self._frame_length:
-                waveform = np.pad(
-                    waveform, (0, self._frame_length - waveform.shape[0])
+            if proc_wav.shape[0] < self._frame_length:
+                proc_wav = np.pad(
+                    proc_wav, (0, self._frame_length - proc_wav.shape[0])
                 )
 
             stft = librosa.stft(
-                waveform,
+                proc_wav,
                 n_fft=self._n_fft,
                 hop_length=self._frame_step,
                 win_length=self._frame_length,
@@ -180,6 +209,12 @@ class AudioFrontend:
             features = arr
         else:
             raise ValueError(f"Unsupported feature_type: {ftype}")
+
+        # Apply frame-level VAD after STFT extraction and before CMVN
+        if self.vad_processor is not None and self.vad_processor.config.enabled:
+            features = self.vad_processor.filter_features(
+                features, waveform=clean_waveform
+            )
 
         if cfg.apply_cmvn and ftype != configs.FeatureType.WHISPER_MEL.value:
             mean = np.mean(features, axis=0, keepdims=True)
@@ -283,6 +318,8 @@ def pad_or_trim_features(
     seq_len: int,
     specaug_config: Optional[Any] = None,
     random_crop: bool = True,
+    waveform_aug_config: Optional[Any] = None,
+    rng: Optional[np.random.Generator] = None,
 ) -> np.ndarray:
     """Pads (via tiling/edge) or crops features to exact `seq_len` frames."""
     full_length = features.shape[0]
@@ -292,15 +329,87 @@ def pad_or_trim_features(
         full_length = features.shape[0]
 
     if random_crop and full_length > seq_len:
-        start = random.randint(0, full_length - seq_len)
+        if rng is not None:
+            start = int(rng.integers(0, full_length - seq_len + 1))
+        else:
+            start = random.randint(0, full_length - seq_len)
     else:
         start = (full_length - seq_len) // 2
     trimmed = features[start:start + seq_len, :].copy()
-    if specaug_config is not None and getattr(
-        specaug_config, "use_specaug", False
-    ):
-        trimmed = specaug.apply_specaug(trimmed, specaug_config)
+    trimmed, _ = specaug.augment_features_mutually_exclusive(
+        trimmed,
+        specaug_config=specaug_config,
+        waveform_aug_config=waveform_aug_config,
+        rng=rng,
+    )
     return trimmed
+
+
+def sample_variable_length_features(
+    features: np.ndarray,
+    max_seq_len: int,
+    min_seq_len: Optional[int] = None,
+    variable_length: bool = True,
+    specaug_config: Optional[Any] = None,
+    waveform_aug_config: Optional[Any] = None,
+    random_crop: bool = True,
+    rng: Optional[np.random.Generator] = None,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """Samples a variable-length segment in `[min_seq_len, max_seq_len]`,
+    applies mutually exclusive augmentation, and pads with mask.
+
+    Returns:
+        padded_features: np.ndarray of shape (max_seq_len, feat_dim)
+        mask: np.ndarray of shape (max_seq_len,) with 1.0 on valid frames and 0.0 on padding
+        aug_mode: one of `"clean"`, `"specaug"`, or `"mtr"`
+    """
+    features = np.asarray(features, dtype=np.float32)
+    full_length, feat_dim = features.shape
+    min_len = (
+        max(16, min(int(min_seq_len), max_seq_len))
+        if (variable_length and min_seq_len is not None)
+        else max_seq_len
+    )
+
+    if variable_length and min_len < max_seq_len:
+        if rng is not None:
+            target_len = int(rng.integers(min_len, max_seq_len + 1))
+        else:
+            target_len = random.randint(min_len, max_seq_len)
+    else:
+        target_len = max_seq_len
+
+    # Only tile-pad if shorter than min_len; if between min_len and target_len, keep natural length
+    if full_length < min_len:
+        repeats = (min_len // max(1, full_length)) + 1
+        features = np.tile(features, (repeats, 1))
+        full_length = features.shape[0]
+
+    valid_len = min(full_length, target_len)
+    if full_length > valid_len:
+        if random_crop:
+            if rng is not None:
+                start = int(rng.integers(0, full_length - valid_len + 1))
+            else:
+                start = random.randint(0, full_length - valid_len)
+        else:
+            start = (full_length - valid_len) // 2
+    else:
+        start = 0
+
+    segment = features[start:start + valid_len, :].copy()
+    aug_segment, aug_mode = specaug.augment_features_mutually_exclusive(
+        segment,
+        specaug_config=specaug_config,
+        waveform_aug_config=waveform_aug_config,
+        rng=rng,
+    )
+
+    padded = np.zeros((max_seq_len, feat_dim), dtype=np.float32)
+    padded[:valid_len, :] = aug_segment
+    mask = np.zeros((max_seq_len,), dtype=np.float32)
+    mask[:valid_len] = 1.0
+    return padded, mask, aug_mode
 
 
 def trim_features(
@@ -408,14 +517,44 @@ class FeatureCache:
         if self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
         self._cache: dict[str, np.ndarray] = {}
+        self._cfg_signature = self._build_signature()
+
+    def _build_signature(self) -> str:
+        if self.frontend is None:
+            return f"legacy_mfcc_{self.n_mfcc}"
+        fc = self.frontend.config
+        vp = self.frontend.vad_processor
+        vc_str = "novad"
+        if vp is not None and vp.config.enabled:
+            vc = vp.config
+            vc_str = (
+                f"vad_{vc.mode}_{vc.energy_threshold_db}_"
+                f"{getattr(vc, 'energy_db_threshold', 26.0)}_"
+                f"{getattr(vc, 'apply_agc', True)}_{vc.hangover_frames}"
+            )
+        return (
+            f"v2_{fc.feature_type}_{fc.n_mels}_{fc.apply_cmvn}_"
+            f"{fc.stack_left_context}_{fc.stack_right_context}_{fc.frame_stride}_{vc_str}"
+        )
 
     def _disk_path(self, audio_file: str) -> Optional[str]:
         if not self.cache_dir:
             return None
         import hashlib
 
-        digest = hashlib.md5(audio_file.encode("utf-8")).hexdigest()
-        return os.path.join(self.cache_dir, f"{digest}.npy")
+        key = f"{self._cfg_signature}::{audio_file}"
+        digest = hashlib.md5(key.encode("utf-8")).hexdigest()
+        fname = f"{digest}.npy"
+        primary = os.path.join(self.cache_dir, fname)
+        if os.path.exists(primary):
+            return primary
+        parent_dir = os.path.dirname(self.cache_dir.rstrip(os.sep))
+        if parent_dir and os.path.isdir(parent_dir):
+            for sub in ("librispeech", "cnceleb2", "voxceleb1"):
+                cand = os.path.join(parent_dir, sub, fname)
+                if os.path.exists(cand):
+                    return cand
+        return primary
 
     def get(self, audio_file: str) -> np.ndarray:
         if audio_file in self._cache:
@@ -456,6 +595,70 @@ class FeatureCache:
         return len(self._cache)
 
 
+def _group_speakers_by_domain(
+    speakers: list[str],
+) -> dict[str, list[str]]:
+    """Groups speaker IDs by `<domain>:<spk>` prefix (or `'default'` if unprefixed)."""
+    groups: dict[str, list[str]] = {}
+    for spk in speakers:
+        dom = spk.split(":", 1)[0] if ":" in spk else "default"
+        groups.setdefault(dom, []).append(spk)
+    return groups
+
+
+def _sample_speakers_domain_balanced(
+    eligible_spks: list[str],
+    n_spk: int,
+    rng: Optional[np.random.Generator] = None,
+    within_domain_prob: float = 0.75,
+) -> list[str]:
+    """Samples `n_spk` speakers with domain-balanced stratified + cross-domain mixing."""
+    if len(eligible_spks) < n_spk:
+        return [random.choice(eligible_spks) for _ in range(n_spk)]
+
+    domain_groups = _group_speakers_by_domain(eligible_spks)
+    if len(domain_groups) <= 1:
+        if rng is not None:
+            idxs = rng.choice(len(eligible_spks), size=n_spk, replace=False)
+            return [eligible_spks[int(i)] for i in idxs]
+        return random.sample(eligible_spks, n_spk)
+
+    domains = sorted(domain_groups.keys())
+    raw_weights = np.array(
+        [len(domain_groups[d]) ** 0.35 for d in domains], dtype=np.float64
+    )
+    dom_probs = raw_weights / np.sum(raw_weights)
+    u_draw = float(rng.random()) if rng is not None else random.random()
+
+    valid_within = [
+        i for i, d in enumerate(domains) if len(domain_groups[d]) >= n_spk
+    ]
+    if u_draw < within_domain_prob and valid_within:
+        sub_probs = dom_probs[valid_within]
+        sub_probs = sub_probs / np.sum(sub_probs)
+        if rng is not None:
+            chosen_idx = int(rng.choice(valid_within, p=sub_probs))
+            dom_spks = domain_groups[domains[chosen_idx]]
+            s_idxs = rng.choice(len(dom_spks), size=n_spk, replace=False)
+            return [dom_spks[int(i)] for i in s_idxs]
+        chosen_idx = random.choices(valid_within, weights=sub_probs.tolist(), k=1)[0]
+        return random.sample(domain_groups[domains[chosen_idx]], n_spk)
+
+    # Cross-domain balanced speaker sampling
+    spk_weights = np.zeros(len(eligible_spks), dtype=np.float64)
+    dom_to_prob = {d: dom_probs[i] for i, d in enumerate(domains)}
+    for idx, spk in enumerate(eligible_spks):
+        dom = spk.split(":", 1)[0] if ":" in spk else "default"
+        spk_weights[idx] = dom_to_prob[dom] / len(domain_groups[dom])
+    spk_weights /= np.sum(spk_weights)
+    if rng is not None:
+        idxs = rng.choice(
+            len(eligible_spks), size=n_spk, replace=False, p=spk_weights
+        )
+        return [eligible_spks[int(i)] for i in idxs]
+    return random.sample(eligible_spks, n_spk)
+
+
 def get_batched_nm_input(
     spk_to_utts: dataset.SpkToUtts,
     num_spks_per_batch: Optional[int] = None,
@@ -469,12 +672,16 @@ def get_batched_nm_input(
     num_utts_per_speaker: Optional[int] = None,
     cache: Optional[FeatureCache] = None,
     rng: Optional[np.random.Generator] = None,
-) -> tuple[jax.Array, jax.Array]:
+    min_seq_len: Optional[int] = None,
+    variable_length: bool = False,
+    waveform_aug_config: Optional[Any] = None,
+    return_mask: bool = False,
+) -> Any:
     """Builds an N x M speaker-utterance batch for GE2E, Extended-Set Softmax, PFAS, and Dr-Vectors.
 
     Returns:
-        batch_features: jax.Array of shape (N * M, seq_len, feat_dim)
-        batch_labels: jax.Array of shape (N * M,) with speaker indices 0..N-1
+        `(batch_features, batch_labels)` by default, or
+        `(batch_features, batch_labels, batch_mask)` when `return_mask=True`.
     """
     n_spk = num_speakers or num_spks_per_batch or 8
     n_utt = num_utts_per_speaker or num_utts_per_spk or 4
@@ -483,15 +690,12 @@ def get_batched_nm_input(
     eligible_spks = sorted(
         [spk for spk, utts in spk_to_utts.items() if len(utts) >= 2]
     )
-    if len(eligible_spks) < n_spk:
-        selected_spks = [random.choice(eligible_spks) for _ in range(n_spk)]
-    elif rng is not None:
-        idxs = rng.choice(len(eligible_spks), size=n_spk, replace=False)
-        selected_spks = [eligible_spks[int(i)] for i in idxs]
-    else:
-        selected_spks = random.sample(eligible_spks, n_spk)
+    selected_spks = _sample_speakers_domain_balanced(
+        eligible_spks, n_spk=n_spk, rng=rng
+    )
 
     features_list = []
+    masks_list = []
     labels_list = []
     for spk_idx, spk in enumerate(selected_spks):
         utts = spk_to_utts[spk]
@@ -510,16 +714,30 @@ def get_batched_nm_input(
                 raw_feat = extract_features(
                     utt, n_mfcc=n_mfcc, frontend=frontend
                 )
-            trimmed = pad_or_trim_features(
-                raw_feat, seq_len=seq_len, specaug_config=specaug_config
+            padded, mask, _ = sample_variable_length_features(
+                raw_feat,
+                max_seq_len=seq_len,
+                min_seq_len=min_seq_len,
+                variable_length=variable_length,
+                specaug_config=specaug_config,
+                waveform_aug_config=waveform_aug_config,
+                random_crop=True,
+                rng=rng,
             )
-            features_list.append(trimmed)
+            features_list.append(padded)
+            masks_list.append(mask)
             labels_list.append(spk_idx)
 
-    return (
-        jnp.asarray(np.stack(features_list, axis=0), dtype=jnp.float32),
-        jnp.asarray(np.array(labels_list, dtype=np.int32)),
+    batch_features = jnp.asarray(
+        np.stack(features_list, axis=0), dtype=jnp.float32
     )
+    batch_labels = jnp.asarray(np.array(labels_list, dtype=np.int32))
+    if return_mask:
+        batch_mask = jnp.asarray(
+            np.stack(masks_list, axis=0), dtype=jnp.float32
+        )
+        return batch_features, batch_labels, batch_mask
+    return batch_features, batch_labels
 
 
 def get_batched_classification_input(
@@ -533,14 +751,32 @@ def get_batched_classification_input(
     n_mfcc: int = 80,
     cache: Optional[FeatureCache] = None,
     rng: Optional[np.random.Generator] = None,
-) -> tuple[jax.Array, jax.Array]:
-    """Builds a classification batch (features, global_speaker_ids) for ArcFace/CosFace/SphereFace/Softmax."""
+    min_seq_len: Optional[int] = None,
+    variable_length: bool = False,
+    waveform_aug_config: Optional[Any] = None,
+    return_mask: bool = False,
+) -> Any:
+    """Builds a classification batch (features, global_speaker_ids[, mask]) for ArcFace/CosFace/SphereFace/Softmax."""
     active_cache = cache if cache is not None else feature_cache
     all_spks = sorted(spk_to_utts.keys())
+    domain_groups = _group_speakers_by_domain(all_spks)
+    domains = sorted(domain_groups.keys())
+    raw_weights = np.array(
+        [len(domain_groups[d]) ** 0.35 for d in domains], dtype=np.float64
+    )
+    dom_probs = raw_weights / np.sum(raw_weights)
+
     features_list = []
+    masks_list = []
     labels_list = []
     for _ in range(batch_size):
-        if rng is not None:
+        if len(domains) > 1 and rng is not None:
+            d_idx = int(rng.choice(len(domains), p=dom_probs))
+            dom_spks = domain_groups[domains[d_idx]]
+            spk = dom_spks[int(rng.integers(0, len(dom_spks)))]
+            utts = spk_to_utts[spk]
+            utt = utts[int(rng.integers(0, len(utts)))]
+        elif rng is not None:
             spk = all_spks[int(rng.integers(0, len(all_spks)))]
             utts = spk_to_utts[spk]
             utt = utts[int(rng.integers(0, len(utts)))]
@@ -551,13 +787,27 @@ def get_batched_classification_input(
             raw_feat = active_cache.get(utt)
         else:
             raw_feat = extract_features(utt, n_mfcc=n_mfcc, frontend=frontend)
-        trimmed = pad_or_trim_features(
-            raw_feat, seq_len=seq_len, specaug_config=specaug_config
+        padded, mask, _ = sample_variable_length_features(
+            raw_feat,
+            max_seq_len=seq_len,
+            min_seq_len=min_seq_len,
+            variable_length=variable_length,
+            specaug_config=specaug_config,
+            waveform_aug_config=waveform_aug_config,
+            random_crop=True,
+            rng=rng,
         )
-        features_list.append(trimmed)
+        features_list.append(padded)
+        masks_list.append(mask)
         labels_list.append(spk_to_id[spk])
 
-    return (
-        jnp.asarray(np.stack(features_list, axis=0), dtype=jnp.float32),
-        jnp.asarray(np.array(labels_list, dtype=np.int32)),
+    batch_features = jnp.asarray(
+        np.stack(features_list, axis=0), dtype=jnp.float32
     )
+    batch_labels = jnp.asarray(np.array(labels_list, dtype=np.int32))
+    if return_mask:
+        batch_mask = jnp.asarray(
+            np.stack(masks_list, axis=0), dtype=jnp.float32
+        )
+        return batch_features, batch_labels, batch_mask
+    return batch_features, batch_labels

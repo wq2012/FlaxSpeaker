@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlaxSpeaker v0.2.0 — Interactive Speaker Verification & Architecture Explorer</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 2rem;
+    }
+    .container { max-width: 1120px; margin: 0 auto; }
+    .banner {
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      font-size: 0.92rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.25rem;
+      margin-top: 1.25rem;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+    h1 { margin-top: 0; font-size: 1.75rem; }
+    h2 { margin-top: 0; font-size: 1.15rem; color: #93c5fd; }
+    code {
+      background: #0b1120;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.88rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      margin-top: 0.5rem;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 0.5rem;
+      text-align: left;
+    }
+    th { color: #cbd5e1; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>FlaxSpeaker v0.2.0 — Universal Speaker Recognition in JAX / Flax</h1>
+    <div class="banner">
+      <strong>Disclaimer &amp; Open-Source Reproduction Notice:</strong>
+      <strong>This is not an officially supported Google product.</strong>
+      This library is an independent, clean-room open-source reproduction of
+      <a href="https://arxiv.org/abs/1710.10467" style="color:#60a5fa">GE2E (ICASSP 2018)</a>,
+      <a href="https://arxiv.org/abs/2104.01989" style="color:#60a5fa">Dr-Vectors (Interspeech 2021)</a>,
+      <a href="https://arxiv.org/abs/2202.12163" style="color:#60a5fa">Conformer-ATP (Odyssey 2022)</a>, and
+      <a href="https://arxiv.org/abs/2203.05642v3" style="color:#60a5fa">PFAS (Odyssey 2022)</a>.
+      The original papers were conducted using Google's internal proprietary infrastructure, not this library.
+    </div>
+
+    <div class="banner">
+      <strong>Resources:</strong>
+      <a href="https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595" style="color:#60a5fa">Hugging Face Collection (44 Pretrained Models)</a> &middot;
+      <a href="https://github.com/wq2012/FlaxSpeaker" style="color:#60a5fa">GitHub Repository (<code>wq2012/FlaxSpeaker</code>)</a> &middot;
+      <a href="https://pypi.org/project/flaxspeaker/" style="color:#60a5fa">PyPI Package (<code>flaxspeaker</code>)</a>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>6 Neural Backbones (&lt; 100M Params)</h2>
+        <table>
+          <thead><tr><th>Backbone</th><th>Default Pooling</th><th>Universal Small Checkpoint</th><th>Params</th></tr></thead>
+          <tbody>
+            <tr><td><code>conformer</code></td><td>Attentive Temporal Pooling (ATP)</td><td><a href="https://huggingface.co/wq2012/univ_conformer_small_ge2e" style="color:#60a5fa"><code>wq2012/univ_conformer_small_ge2e</code></a></td><td>2.03M</td></tr>
+            <tr><td><code>transformer</code></td><td>Attentive Temporal Pooling (ATP)</td><td><a href="https://huggingface.co/wq2012/univ_transformer_small_ge2e" style="color:#60a5fa"><code>wq2012/univ_transformer_small_ge2e</code></a></td><td>1.24M</td></tr>
+            <tr><td><code>mamba</code></td><td>Attentive Statistics Pooling (ASP)</td><td><a href="https://huggingface.co/wq2012/univ_mamba_small_ge2e" style="color:#60a5fa"><code>wq2012/univ_mamba_small_ge2e</code></a></td><td>1.03M</td></tr>
+            <tr><td><code>lstm</code></td><td>Attentive Statistics Pooling (ASP)</td><td><a href="https://huggingface.co/wq2012/univ_lstm_small_ge2e" style="color:#60a5fa"><code>wq2012/univ_lstm_small_ge2e</code></a></td><td>1.71M</td></tr>
+            <tr><td><code>ecapa_tdnn</code></td><td>Attentive Statistics Pooling (ASP)</td><td><a href="https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e" style="color:#60a5fa"><code>wq2012/univ_ecapa_tdnn_small_ge2e</code></a></td><td>1.68M</td></tr>
+            <tr><td><code>resnet</code></td><td>Attentive Statistics Pooling (ASP)</td><td><a href="https://huggingface.co/wq2012/univ_resnet_small_ge2e" style="color:#60a5fa"><code>wq2012/univ_resnet_small_ge2e</code></a></td><td>2.24M</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>9 Losses &amp; 3 Scoring Backends</h2>
+        <ul>
+          <li><strong>GE2E-Softmax &amp; GE2E-Contrast</strong> (<code>arXiv:1710.10467</code>): <a href="https://huggingface.co/wq2012/univ_conformer_tiny_ge2e" style="color:#60a5fa"><code>wq2012/univ_conformer_tiny_ge2e</code></a> (18.75% Pooled 1-Utt / 15.03% 3-Utt EER)</li>
+          <li><strong>Extended-Set Softmax &amp; Dr-Vectors</strong> (<code>arXiv:2104.01989</code>): <a href="https://huggingface.co/wq2012/univ_conformer_small_dr_vectors" style="color:#60a5fa"><code>wq2012/univ_conformer_small_dr_vectors</code></a> (15.20% Macro 3-Utt EER)</li>
+          <li><strong>Parameter-Free Attentive Scoring (PFAS)</strong> (<code>arXiv:2203.05642v3</code>): <a href="https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e" style="color:#60a5fa"><code>wq2012/univ_conformer_small_pfas_ge2e</code></a> &amp; <a href="https://huggingface.co/wq2012/univ_conformer_small_pfas" style="color:#60a5fa"><code>wq2012/univ_conformer_small_pfas</code></a></li>
+          <li><strong>ArcFace, CosFace, SphereFace, Triplet</strong></li>
+          <li><strong>Universal Multi-Domain Training</strong> across LibriSpeech + CN-Celeb2 + VoxCeleb1 (381 speakers, 9,447 utterances)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

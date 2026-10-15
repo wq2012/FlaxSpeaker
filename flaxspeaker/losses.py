@@ -119,40 +119,22 @@ def compute_ge2e_similarity_matrix_leave_one_out(
     return sim_matrix, labels
 
 
-def compute_split_batch_similarity_matrix(
-    embeddings: jax.Array,
+def _score_one_split_direction(
+    enroll_utts: jax.Array,
+    test_utts: jax.Array,
     num_speakers: int,
-    num_utts_per_speaker: int,
-    w: jax.Array,
-    b: jax.Array,
-    score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
-    is_pfas: bool = False,
-    pfas_num_keys: int = 4,
-    pfas_key_dim: int = 64,
-    pfas_value_dim: int = 64,
-    eps: float = 1e-6,
-) -> tuple[jax.Array, jax.Array, int]:
-    """Compute Split-Batch Test-vs-Enrollment similarity matrix.
-
-    Splits the `M` utterances per speaker into `M_enroll = M // 2` enrollment
-    utterances and `M_test = M - M_enroll` test utterances, arranged in `M_test`
-    blocks of `N` speakers each `(M_test * N, N)`.
-    Compatible with Cosine, PFAS, and Decision Residual Network (Dr-Vectors) scoring.
-
-    Returns:
-        `(sim_matrix, labels, num_test_utts)` where `sim_matrix` has shape
-        `(M_test * N, N)` (each block of `N` rows has diagonal targets `0..N-1`).
-    """
-    dim = embeddings.shape[-1]
-    emb_grid = embeddings.reshape(num_speakers, num_utts_per_speaker, dim)
-    m_enroll = max(1, num_utts_per_speaker // 2)
-    m_test = num_utts_per_speaker - m_enroll
-
-    enroll_utts = emb_grid[:, :m_enroll, :]  # (N, M_enroll, D)
-    test_utts = emb_grid[:, m_enroll:, :]  # (N, M_test, D)
-
+    dim: int,
+    score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]],
+    is_pfas: bool,
+    pfas_num_keys: int,
+    pfas_key_dim: int,
+    pfas_value_dim: int,
+    eps: float,
+) -> jax.Array:
+    """Scores one direction `(test_utts vs enroll_utts)` -> `(M_test * N, N)`."""
+    m_enroll = enroll_utts.shape[1]
+    m_test = test_utts.shape[1]
     if is_pfas:
-        # Stack keys and values across M_enroll utterances for each speaker
         key_total = pfas_num_keys * pfas_key_dim
         e_keys = enroll_utts[:, :, :key_total].reshape(
             num_speakers, m_enroll * pfas_num_keys, pfas_key_dim
@@ -175,17 +157,100 @@ def compute_split_batch_similarity_matrix(
 
     # Transpose test utterances to (M_test, N, D) -> (M_test * N, D) so each N-row
     # block corresponds to one test utterance per speaker (diagonal targets!)
-    test_blocks = jnp.transpose(test_utts, (1, 0, 2)).reshape(m_test * num_speakers, dim)
+    test_blocks = jnp.transpose(test_utts, (1, 0, 2)).reshape(
+        m_test * num_speakers, dim
+    )
 
     if score_matrix_fn is not None:
-        raw_sim = score_matrix_fn(test_blocks, enroll_repr)
+        return score_matrix_fn(test_blocks, enroll_repr)
+    return scoring.cosine_similarity_matrix(test_blocks, enroll_repr, eps=eps)
+
+
+def compute_split_batch_similarity_matrix(
+    embeddings: jax.Array,
+    num_speakers: int,
+    num_utts_per_speaker: int,
+    w: jax.Array,
+    b: jax.Array,
+    score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
+    is_pfas: bool = False,
+    pfas_num_keys: int = 32,
+    pfas_key_dim: int = 16,
+    pfas_value_dim: int = 48,
+    two_way_split: bool = True,
+    eps: float = 1e-6,
+) -> tuple[jax.Array, jax.Array, int]:
+    """Compute Split-Batch Test-vs-Enrollment similarity matrix.
+
+    Follows the split-batch test-vs-enrollment formulation from Pelecanos et al.
+    (Interspeech 2021, `arXiv:2104.01989`; Odyssey 2022, `arXiv:2203.05642v3`):
+    Splits the `M` utterances per speaker into even (`0::2`) and odd (`1::2`) subsets.
+    When `two_way_split=True` (default), evaluates BOTH even-as-test vs odd-as-enroll
+    AND odd-as-test vs even-as-enroll, producing `M` blocks of `N x N` scores
+    (`(M * N, N)` total) so every utterance in the batch serves as both a test
+    utterance and an enrollment utterance in every training step.
+
+    Returns:
+        `(sim_matrix, labels, num_test_blocks)` where `sim_matrix` has shape
+        `(num_test_blocks * N, N)` (each block of `N` rows has diagonal targets `0..N-1`).
+    """
+    dim = embeddings.shape[-1]
+    emb_grid = embeddings.reshape(num_speakers, num_utts_per_speaker, dim)
+
+    if two_way_split and num_utts_per_speaker >= 2:
+        even_utts = emb_grid[:, 0::2, :]
+        odd_utts = emb_grid[:, 1::2, :]
+        raw_sim_0 = _score_one_split_direction(
+            enroll_utts=odd_utts,
+            test_utts=even_utts,
+            num_speakers=num_speakers,
+            dim=dim,
+            score_matrix_fn=score_matrix_fn,
+            is_pfas=is_pfas,
+            pfas_num_keys=pfas_num_keys,
+            pfas_key_dim=pfas_key_dim,
+            pfas_value_dim=pfas_value_dim,
+            eps=eps,
+        )
+        raw_sim_1 = _score_one_split_direction(
+            enroll_utts=even_utts,
+            test_utts=odd_utts,
+            num_speakers=num_speakers,
+            dim=dim,
+            score_matrix_fn=score_matrix_fn,
+            is_pfas=is_pfas,
+            pfas_num_keys=pfas_num_keys,
+            pfas_key_dim=pfas_key_dim,
+            pfas_value_dim=pfas_value_dim,
+            eps=eps,
+        )
+        raw_sim = jnp.concatenate([raw_sim_0, raw_sim_1], axis=0)
+        total_test_blocks = even_utts.shape[1] + odd_utts.shape[1]
     else:
-        raw_sim = scoring.cosine_similarity_matrix(test_blocks, enroll_repr, eps=eps)
+        m_enroll = max(1, num_utts_per_speaker // 2)
+        m_test = num_utts_per_speaker - m_enroll
+        enroll_utts = emb_grid[:, :m_enroll, :]
+        test_utts = emb_grid[:, m_enroll:, :]
+        raw_sim = _score_one_split_direction(
+            enroll_utts=enroll_utts,
+            test_utts=test_utts,
+            num_speakers=num_speakers,
+            dim=dim,
+            score_matrix_fn=score_matrix_fn,
+            is_pfas=is_pfas,
+            pfas_num_keys=pfas_num_keys,
+            pfas_key_dim=pfas_key_dim,
+            pfas_value_dim=pfas_value_dim,
+            eps=eps,
+        )
+        total_test_blocks = m_test
 
     w_pos = jnp.abs(w) + eps
     sim_matrix = w_pos * raw_sim + b
-    labels = jnp.tile(jnp.arange(num_speakers, dtype=jnp.int32), m_test)
-    return sim_matrix, labels, m_test
+    labels = jnp.tile(
+        jnp.arange(num_speakers, dtype=jnp.int32), total_test_blocks
+    )
+    return sim_matrix, labels, total_test_blocks
 
 
 def ge2e_softmax_loss(
@@ -306,23 +371,31 @@ def extended_set_softmax_loss(
     def _block_loss(block: jax.Array) -> jax.Array:
         # block: (N, N)
         diag_targets = jnp.diag(block)  # (N,)
+        row_log_probs = jax.nn.log_softmax(block, axis=-1)
+        row_loss = -jnp.mean(jnp.diag(row_log_probs))
         if window == num_speakers:
-            # All N*(N-1) off-diagonal entries in the block share the same logsumexp
+            # All N*(N-1) off-diagonal entries in the block share the same logsumexp,
+            # normalized by -log(N) so the effective imposter scale matches row softmax
             off_diag_logits = jnp.where(off_diag_mask, block, -1e9)
-            log_sum_non_target = jax.nn.logsumexp(off_diag_logits)
-            return jnp.mean(jax.nn.softplus(log_sum_non_target - diag_targets))
+            log_sum_non_target = jax.nn.logsumexp(off_diag_logits) - jnp.log(
+                float(max(1, num_speakers))
+            )
+            ext_loss = jnp.mean(jax.nn.softplus(log_sum_non_target - diag_targets))
+            return 0.5 * row_loss + 0.5 * ext_loss
         else:
             # Group rows into windows of size `window`
             losses = []
             for start in range(0, num_speakers, window):
                 end = min(num_speakers, start + window)
+                n_rows = max(1, end - start)
                 sub_block = block[start:end, :]
                 sub_mask = off_diag_mask[start:end, :]
                 sub_off_logits = jnp.where(sub_mask, sub_block, -1e9)
-                log_sum_neg = jax.nn.logsumexp(sub_off_logits)
+                log_sum_neg = jax.nn.logsumexp(sub_off_logits) - jnp.log(float(n_rows))
                 sub_targets = diag_targets[start:end]
                 losses.append(jnp.mean(jax.nn.softplus(log_sum_neg - sub_targets)))
-            return jnp.mean(jnp.stack(losses))
+            ext_loss = jnp.mean(jnp.stack(losses))
+            return 0.5 * row_loss + 0.5 * ext_loss
 
     block_losses = jax.vmap(_block_loss)(blocks)
     return jnp.mean(block_losses)

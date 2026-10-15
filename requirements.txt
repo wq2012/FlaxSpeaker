@@ -12,5 +12,6 @@ pyyaml
 munch
 transformers
 safetensors
+huggingface-hub
 tensorflow-cpu
 ai-edge-litert

@@ -67,6 +67,7 @@ class PoolingType(_StrEnum):
     STATS = "stats"
     SAP = "sap"
     ASP = "asp"
+    ATP = "atp"
     CUMULATIVE_STATS = "cumulative_stats"
     PFAS = "pfas"
 
@@ -102,13 +103,14 @@ class VadConfig:
     sample_rate: int = 16000
     frame_size_ms: float = 25.0
     frame_step_ms: float = 10.0
-    energy_threshold_db: float = -35.0
-    energy_db_threshold: float = 30.0
-    adaptive_percentile: float = 15.0
-    snr_margin_db: float = 6.0
+    apply_agc: bool = True
+    energy_threshold_db: float = -42.0
+    energy_db_threshold: float = 26.0
+    adaptive_percentile: float = 10.0
+    snr_margin_db: float = 4.5
     spectral_flatness_threshold: float = 0.65
     min_speech_frames: int = 3
-    hangover_frames: int = 5
+    hangover_frames: int = 8
 
 
 @dataclasses.dataclass
@@ -153,13 +155,34 @@ class SpecAugConfig:
     """Configuration for SpecAugment data augmentation."""
 
     use_specaug: bool = True
-    freq_mask_prob: float = 0.3
-    time_mask_prob: float = 0.3
-    freq_mask_max_width: int = 10
-    time_mask_max_width: int = 10
-    num_freq_masks: int = 1
-    num_time_masks: int = 1
+    apply_prob: float = 0.5
+    freq_mask_prob: float = 0.5
+    time_mask_prob: float = 0.5
+    freq_mask_max_width: int = 8
+    time_mask_max_width: int = 12
+    num_freq_masks: int = 2
+    num_time_masks: int = 2
     gaussian_noise_std: float = 0.0
+
+
+@dataclasses.dataclass
+class WaveformAugConfig:
+    """Configuration for Multi-Style Training (MTR) waveform / noise augmentation.
+
+    Follows arXiv:2202.12163 Section 3.2: applies additive background/ambient noise
+    at moderate SNR (`[snr_min_db, snr_max_db]`, never too high) and optional room
+    reverberation, strictly mutually exclusive with SpecAugment (`clean=0` vs `clean=1`).
+    """
+
+    enabled: bool = True
+    use_waveform_aug: bool = True
+    aug_prob: float = 0.35
+    snr_min_db: float = 8.0
+    snr_max_db: float = 20.0
+    reverb_prob: float = 0.4
+    reverb_rt60_min: float = 0.05
+    reverb_rt60_max: float = 0.20
+    noise_dir: str = ""
 
 
 @dataclasses.dataclass
@@ -184,22 +207,29 @@ class TransformerConfig:
     num_heads: int = 4
     mlp_dim: int = 512
     dropout_rate: float = 0.1
-    use_positional_encoding: bool = True
+    use_positional_encoding: bool = False
+    use_conv_stem: bool = True
     use_rope: bool = False
 
 
 @dataclasses.dataclass
 class ConformerConfig:
-    """Configuration for Conformer speaker encoder."""
+    """Configuration for Conformer speaker encoder (arXiv:2202.12163)."""
 
     dim: int = 256
     num_layers: int = 4
     num_heads: int = 4
-    ffn_expansion: int = 2
+    ffn_expansion: int = 4
     ffn_dim: int = 512
     conv_kernel_size: int = 15
     dropout_rate: float = 0.1
     subsample_factor: int = 1
+    layer_order: str = "mhsa_before_conv"
+    use_group_norm: bool = True
+    num_groups: int = 2
+    use_conv_stem: bool = True
+    use_positional_encoding: bool = False
+    normalize_output: bool = False
 
 
 @dataclasses.dataclass
@@ -248,7 +278,7 @@ class ResNetConfig:
 class PoolingConfig:
     """Configuration for temporal frame aggregation / pooling."""
 
-    pooling_type: str = PoolingType.ASP.value
+    pooling_type: str = PoolingType.ATP.value
     attention_dim: int = 128
     use_global_context: bool = True
     share_params: bool = True
@@ -258,27 +288,40 @@ class PoolingConfig:
     top_k: int = 10
     window_size: int = 10
     window_stride: int = 5
-    use_weighted_frames: bool = False
-    epsilon: float = 1e-5
+    stats_type: str = "MEAN_STD"
+    use_weighted_frames: bool = True
+    num_heads: int = 4
+    subspace_heads: bool = True
+    epsilon: float = 1e-4
+    bottleneck_dim: int = 256
 
 
 @dataclasses.dataclass
 class PfasConfig:
-    """Configuration for Parameter-Free Attentive Scoring (arXiv:2203.05642v3)."""
+    """Configuration for Parameter-Free Attentive Scoring (arXiv:2203.05642v3).
+
+    Combines multi-head temporal frame attention (`shared_nonlinear`, Section 2.1)
+    anchored on global `AttentiveTemporalPooling` bottleneck statistics with
+    Key & Global Concat L2-Normalization (`arXiv:2203.05642v3`, Eq. 5-6):
+    - `num_keys = 4`, `key_dim = 32`, `value_dim = 128` (total dim 640)
+    - `apply_l2_norm_to_keys = True`, `apply_l2_norm_to_values = False`
+    - `apply_global_l2_norm_to_concat_form = True` (Key & Global L2-Norm, Eq. 5-6)
+    - `scale_factor = 16.0`, `use_trainable_scale_factor = True`
+    """
 
     num_keys: int = 4
     key_dim: int = 32
-    value_dim: int = 32
+    value_dim: int = 128
     attention_dim: int = 128
     attention_type: str = "shared_nonlinear"
     use_keys_and_queries: bool = False
-    scale_factor: float = 5.0
-    use_trainable_scale_factor: bool = False
-    normalize_keys_and_values: bool = True
+    scale_factor: float = 16.0
+    use_trainable_scale_factor: bool = True
+    normalize_keys_and_values: bool = False
     normalize_overall_output: bool = False
     per_trial_softmax: bool = True
     apply_l2_norm_to_keys: bool = True
-    apply_l2_norm_to_values: bool = True
+    apply_l2_norm_to_values: bool = False
     apply_global_l2_norm_to_concat_form: bool = True
     apply_softmax_per_test_key: bool = False
 
@@ -345,6 +388,10 @@ class ModelConfig:
     normalize_embedding: bool = True
     n_mfcc: int = 80
     seq_len: int = 200
+    min_seq_len: int = 80
+    max_seq_len: int = 200
+    max_eval_seq_len: int = 500
+    variable_length_training: bool = True
     sliding_window_step: int = 50
     use_transformer: bool = False
     frame_aggregation_mean: bool = True
@@ -508,6 +555,9 @@ class TrainConfig:
     num_processes: int = 4
     seed: int = 42
     specaug: SpecAugConfig = dataclasses.field(default_factory=SpecAugConfig)
+    waveform_aug: WaveformAugConfig = dataclasses.field(
+        default_factory=WaveformAugConfig
+    )
     loss: LossConfig = dataclasses.field(default_factory=LossConfig)
 
 
@@ -590,6 +640,12 @@ class ExperimentConfig:
             train_d = dict(d["train"])
             if "specaug" in train_d and isinstance(train_d["specaug"], dict):
                 _update_dataclass(cfg.train.specaug, train_d.pop("specaug"))
+            if "waveform_aug" in train_d and isinstance(
+                train_d["waveform_aug"], dict
+            ):
+                _update_dataclass(
+                    cfg.train.waveform_aug, train_d.pop("waveform_aug")
+                )
             if "loss" in train_d and isinstance(train_d["loss"], dict):
                 _update_dataclass(cfg.train.loss, train_d.pop("loss"))
                 _update_dataclass(cfg.loss, cfg.train.loss.__dict__)
@@ -671,3 +727,90 @@ def _update_dataclass(instance: Any, updates: dict[str, Any]) -> None:
                 setattr(instance, k, tuple(v))
             else:
                 setattr(instance, k, v)
+
+
+def icassp2018_ge2e_config(
+    size: Union[str, ModelSize] = ModelSize.SMALL,
+) -> ExperimentConfig:
+    """Preset for Generalized End-to-End (GE2E) Loss (Wan et al., ICASSP 2018, arXiv:1710.10467)."""
+    cfg = ExperimentConfig()
+    cfg.model.backbone = BackboneType.LSTM.value
+    cfg.model.pooling.pooling_type = PoolingType.ASP.value
+    cfg.model.scoring_type = ScoringType.COSINE.value
+    cfg.model.apply_size_variant(size)
+    cfg.train.loss.loss_type = LossType.GE2E_SOFTMAX.value
+    cfg.train.loss.scoring_type = ScoringType.COSINE.value
+    return cfg
+
+
+def interspeech2021_dr_vectors_config(
+    size: Union[str, ModelSize] = ModelSize.SMALL,
+    backbone: str = BackboneType.CONFORMER.value,
+) -> ExperimentConfig:
+    """Preset for Dr-Vectors & Extended-Set Softmax (Pelecanos et al., Interspeech 2021, arXiv:2104.01989)."""
+    cfg = ExperimentConfig()
+    cfg.model.backbone = backbone
+    cfg.model.pooling.pooling_type = (
+        PoolingType.ATP.value
+        if backbone in ("conformer", "transformer")
+        else PoolingType.ASP.value
+    )
+    cfg.model.scoring_type = ScoringType.DR_VECTOR.value
+    cfg.model.apply_size_variant(size)
+    cfg.train.loss.loss_type = LossType.EXTENDED_SET_SOFTMAX.value
+    cfg.train.loss.scoring_type = ScoringType.DR_VECTOR.value
+    return cfg
+
+
+def odyssey2022_conformer_atp_config(
+    size: Union[str, ModelSize] = ModelSize.SMALL,
+) -> ExperimentConfig:
+    """Preset for Conformer + Attentive Temporal Pooling (Wang et al., Odyssey 2022, arXiv:2202.12163)."""
+    cfg = ExperimentConfig()
+    cfg.model.backbone = BackboneType.CONFORMER.value
+    cfg.model.pooling.pooling_type = PoolingType.ATP.value
+    cfg.model.scoring_type = ScoringType.COSINE.value
+    cfg.model.apply_size_variant(size)
+    cfg.train.loss.loss_type = LossType.GE2E_SOFTMAX.value
+    cfg.train.loss.scoring_type = ScoringType.COSINE.value
+    return cfg
+
+
+def odyssey2022_pfas_config(
+    size: Union[str, ModelSize] = ModelSize.SMALL,
+    loss_type: str = LossType.GE2E_SOFTMAX.value,
+) -> ExperimentConfig:
+    """Preset for Parameter-Free Attentive Scoring (Pelecanos et al., Odyssey 2022, arXiv:2203.05642v3)."""
+    cfg = ExperimentConfig()
+    cfg.model.backbone = BackboneType.CONFORMER.value
+    cfg.model.pooling.pooling_type = PoolingType.PFAS.value
+    cfg.model.scoring_type = ScoringType.PFAS.value
+    cfg.model.apply_size_variant(size)
+    cfg.model.embedding_dim = cfg.model.pfas.representation_dim
+    cfg.train.loss.loss_type = loss_type
+    cfg.train.loss.scoring_type = ScoringType.PFAS.value
+    return cfg
+
+
+def universal_multi_domain_config(
+    backbone: str = BackboneType.CONFORMER.value,
+    size: Union[str, ModelSize] = ModelSize.SMALL,
+    loss_type: str = LossType.GE2E_SOFTMAX.value,
+    scoring_type: str = ScoringType.COSINE.value,
+) -> ExperimentConfig:
+    """Preset for multi-domain universal speaker recognition across LibriSpeech, CN-Celeb2, and VoxCeleb1."""
+    cfg = ExperimentConfig()
+    cfg.model.backbone = backbone
+    if scoring_type == ScoringType.PFAS.value:
+        cfg.model.pooling.pooling_type = PoolingType.PFAS.value
+    elif backbone in ("conformer", "transformer"):
+        cfg.model.pooling.pooling_type = PoolingType.ATP.value
+    else:
+        cfg.model.pooling.pooling_type = PoolingType.ASP.value
+    cfg.model.scoring_type = scoring_type
+    cfg.model.apply_size_variant(size)
+    if scoring_type == ScoringType.PFAS.value:
+        cfg.model.embedding_dim = cfg.model.pfas.representation_dim
+    cfg.train.loss.loss_type = loss_type
+    cfg.train.loss.scoring_type = scoring_type
+    return cfg

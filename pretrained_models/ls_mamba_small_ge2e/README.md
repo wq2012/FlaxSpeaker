@@ -1,96 +1,140 @@
 ---
+license: apache-2.0
 library_name: flaxspeaker
+pipeline_tag: audio-classification
 tags:
 - audio
 - speaker-verification
 - speaker-recognition
+- speaker-embeddings
 - jax
 - flax
+- safetensors
+- mamba
+- ge2e_softmax
+- cosine
+datasets:
+- librispeech_asr
+- cnceleb
+- voxceleb
+metrics:
+- eer
+- min_dcf
+- roc_auc
 ---
-# FlaxSpeaker Model (`mamba` - `small`)
+
+# FlaxSpeaker: `ls_mamba_small_ge2e` (`mamba` - `small`)
+
+## Disclaimer & Open-Source Reproduction Notice
+
+> **This is not an officially supported Google product.**
+>
+> This model checkpoint and the accompanying `FlaxSpeaker` library are an independent, clean-room open-source reproduction in JAX/Flax of speaker recognition algorithms published in:
+> - **GE2E**: *Generalized End-to-End Loss for Speaker Verification* ([arXiv:1710.10467](https://arxiv.org/abs/1710.10467))
+> - **Dr-Vectors**: *Decision Residual Networks and an Improved Loss for Speaker Recognition* ([arXiv:2104.01989](https://arxiv.org/abs/2104.01989))
+> - **Conformer-ATP**: *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
+> - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642v3](https://arxiv.org/abs/2203.05642v3))
+>
+> The experiments in those original papers were conducted using Google's proprietary internal infrastructure and internal datasets, not this open-source library or public dataset split.
 
 ## Model Summary
-- **Backbone**: `mamba` (`small`)
-- **Pooling**: `asp`
-- **Scoring**: `cosine`
-- **Loss Function**: `ge2e_softmax`
-- **Output Embedding Dimension**: `192`
-- **Parameter Count**: `954,178`
 
-## Usage
+| Property | Value |
+| :--- | :--- |
+| **Model ID** | `ls_mamba_small_ge2e` |
+| **Hugging Face Repository** | [`wq2012/ls_mamba_small_ge2e`](https://huggingface.co/wq2012/ls_mamba_small_ge2e) |
+| **Hugging Face Collection** | [FlaxSpeaker Collection](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) |
+| **GitHub Repository** | [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker) |
+| **PyPI Package** | [`flaxspeaker`](https://pypi.org/project/flaxspeaker/) |
+| **Backbone Architecture** | `mamba` (`small`) |
+| **Temporal Pooling** | `asp` |
+| **Training Loss** | `ge2e_softmax` |
+| **Verification Scoring** | `cosine` |
+| **Output Embedding Dim** | `192` |
+| **Encoder Parameters** | `1,028,674` |
+| **Training Domain** | `librispeech` |
+| **Audio Frontend** | `80`-dim `log_mel` @ `16000` Hz + Energy VAD + CMVN |
+
+## Model Files Included
+
+- `model.safetensors`: Primary model weights in SafeTensors format
+- `flax_model.msgpack`: Native Flax Msgpack serialized parameters
+- `config.json`: `FlaxSpeakerConfig` model & training architecture configuration
+- `preprocessor_config.json`: `WhisperFeatureExtractor`-compatible frontend configuration
+- `eval_results.json`: Verified multi-domain evaluation metrics (1-utt & 3-utt EER, minDCF, ROC-AUC, 95% bootstrap CIs)
+
+## Quickstart Usage
+
+### Python API (from Hugging Face Hub or Local Directory)
+
 ```python
-from flaxspeaker.hf_compat import FlaxSpeakerModel
+from flaxspeaker import load_pretrained
 
-model = FlaxSpeakerModel.from_pretrained("/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models/ls_mamba_small_ge2e")
-emb = model.extract_embedding("path/to/audio.flac")
+model = load_pretrained("wq2012/ls_mamba_small_ge2e")
+emb = model.extract_embedding("path/to/utterance.flac")
 score = model.verify("path/to/enroll.flac", "path/to/test.flac")
+print(f"Embedding shape: {emb.shape}, Verification score: {score:.4f}")
 ```
 
-## Evaluation Results
-```json
-{
-  "experiment_name": "ls_mamba_small_ge2e",
-  "train_dataset": "librispeech",
-  "backbone": "mamba",
-  "size_variant": "small",
-  "pooling_type": "asp",
-  "loss_type": "ge2e_softmax",
-  "scoring_type": "cosine",
-  "embedding_dim": 192,
-  "num_parameters": 954178,
-  "num_steps": 200,
-  "train_time_sec": 293.25,
-  "initial_loss": 2.0677,
-  "final_loss": 0.6229,
-  "in_domain_eval": {
-    "eer": 0.15933333333333333,
-    "eer_percent": 15.9333,
-    "eer_threshold": 0.5354334115982056,
-    "min_dcf_001": 0.9527,
-    "min_dcf_005": 0.788,
-    "roc_auc": 0.9181,
-    "num_trials": 3000,
-    "num_unique_utterances": 999,
-    "latency_ms_per_utterance": 28.395,
-    "eval_time_sec": 28.38,
-    "scoring_type": "cosine"
-  },
-  "multi_enroll_3utt_eval": {
-    "eer": 0.11199999999999999,
-    "eer_percent": 11.2,
-    "eer_threshold": 0.6028130650520325,
-    "min_dcf_001": 0.794,
-    "roc_auc": 0.9533,
-    "num_trials": 1000
-  },
-  "cross_dataset_eval": {
-    "voxceleb1_o_official": {
-      "eer": 0.26875000000000004,
-      "eer_percent": 26.875,
-      "eer_threshold": 0.4243205785751343,
-      "min_dcf_001": 0.994,
-      "min_dcf_005": 0.9745,
-      "roc_auc": 0.8151,
-      "num_trials": 4000,
-      "num_unique_utterances": 3892,
-      "latency_ms_per_utterance": 49.051,
-      "eval_time_sec": 190.936,
-      "scoring_type": "cosine"
-    },
-    "cnceleb2_zero_shot": {
-      "eer": 0.3203333333333333,
-      "eer_percent": 32.0333,
-      "eer_threshold": 0.43069010972976685,
-      "min_dcf_001": 0.9747,
-      "min_dcf_005": 0.9533,
-      "roc_auc": 0.7509,
-      "num_trials": 3000,
-      "num_unique_utterances": 739,
-      "latency_ms_per_utterance": 70.632,
-      "eval_time_sec": 52.224,
-      "scoring_type": "cosine"
-    }
-  },
-  "config_yaml": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs/ls_mamba_small_ge2e.yml"
+### Command-Line Inference
+
+```bash
+python scripts/inference.py --model_dir wq2012/ls_mamba_small_ge2e \
+    --enroll_audio path/to/enroll.flac --test_audio path/to/test.flac
+```
+
+## Multi-Domain Evaluation Results
+
+### 1-Utterance Verification Across Evaluation Domains
+
+| Evaluation Split | Trials | EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **LibriSpeech (English Read)** | 3,000 | **12.17%** | [10.92, 13.27] | 0.9080 | 0.5653 | 0.9495 |
+| **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **29.13%** | [27.38, 30.77] | 0.9760 | 0.8807 | 0.7892 |
+| **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **21.05%** | [19.25, 22.90] | 0.8780 | 0.8540 | 0.8749 |
+| **Universal Pooled (All 3 Domains)** | 8,000 | **21.30%** | [20.40, 22.10] | 0.9523 | 0.7735 | 0.8768 |
+| **Universal Macro-Average (3 Domains)** | 8,000 | **20.78%** | — | 0.9207 | 0.7667 | 0.8712 |
+
+### 3-Utterance Multi-Enrollment Verification Across Evaluation Domains
+
+| Evaluation Split | Trials | 3-Utt EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | ROC-AUC |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **LibriSpeech (3-Utt)** | 1,000 | **7.90%** | [6.30, 10.00] | 0.6500 | 0.9758 |
+| **CN-Celeb2 (3-Utt)** | 1,000 | **23.30%** | [20.80, 26.05] | 0.8920 | 0.8528 |
+| **VoxCeleb1 (3-Utt)** | 1,000 | **16.10%** | [13.95, 19.05] | 0.9060 | 0.9178 |
+| **Universal Pooled (3-Utt)** | 3,000 | **17.10%** | [15.53, 18.37] | 0.9047 | 0.9215 |
+| **Universal Macro-Average (3-Utt)** | 3,000 | **15.77%** | — | 0.8160 | 0.9155 |
+
+## Citation
+
+```bibtex
+@inproceedings{wan2018generalized,
+  title={Generalized End-to-End Loss for Speaker Verification},
+  author={Wan, Li and Wang, Quan and Papir, Alan and Moreno, Ignacio Lopez},
+  booktitle={IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},
+  pages={4879--4883},
+  year={2018}
+}
+
+@inproceedings{pelecanos2021dr,
+  title={Dr-Vectors: Decision Residual Networks and an Improved Loss for Speaker Recognition},
+  author={Pelecanos, Jason and Wang, Quan and Moreno, Ignacio Lopez},
+  booktitle={Interspeech},
+  pages={4603--4607},
+  year={2021}
+}
+
+@inproceedings{wang2022attentive,
+  title={Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech},
+  author={Wang, Quan and Yu, Yang and Pelecanos, Jason and Huang, Yiling and Moreno, Ignacio Lopez},
+  booktitle={The Speaker and Language Recognition Workshop (Odyssey)},
+  year={2022}
+}
+
+@inproceedings{pelecanos2022parameter,
+  title={Parameter-Free Attentive Scoring for Speaker Verification},
+  author={Pelecanos, Jason and Wang, Quan and Huang, Yiling and Moreno, Ignacio Lopez},
+  booktitle={The Speaker and Language Recognition Workshop (Odyssey)},
+  year={2022}
 }
 ```

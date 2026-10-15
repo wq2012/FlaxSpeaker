@@ -19,6 +19,13 @@ setuptools.setup(
     long_description=LONG_DESCRIPTION,
     long_description_content_type="text/markdown",
     url="https://github.com/wq2012/FlaxSpeaker",
+    project_urls={
+        "Repository": "https://github.com/wq2012/FlaxSpeaker",
+        "Hugging Face Models Collection": (
+            "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595"
+        ),
+        "Bug Tracker": "https://github.com/wq2012/FlaxSpeaker/issues",
+    },
     packages=setuptools.find_packages(include=["flaxspeaker", "flaxspeaker.*"]),
     python_requires=">=3.10",
     install_requires=[
@@ -36,6 +43,7 @@ setuptools.setup(
         "munch",
         "transformers",
         "safetensors",
+        "huggingface-hub",
     ],
     extras_require={
         "export": ["tensorflow", "ai-edge-litert"],

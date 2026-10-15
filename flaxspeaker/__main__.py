@@ -1,4 +1,8 @@
-"""Command-line interface for FlaxSpeaker."""
+"""Command-line interface for FlaxSpeaker.
+
+All 44 pretrained models are hosted on the Hugging Face Hub (`wq2012/<model_id>`):
+https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595
+"""
 
 import argparse
 import os
@@ -15,7 +19,10 @@ from flaxspeaker import neural_net
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="flaxspeaker",
-        description="FlaxSpeaker: JAX/Flax Speaker Recognition & Verification CLI.",
+        description=(
+            "FlaxSpeaker: JAX/Flax Speaker Recognition & Verification CLI "
+            f"(Models: {hf_compat.HF_COLLECTION_URL})."
+        ),
         add_help=True,
     )
 

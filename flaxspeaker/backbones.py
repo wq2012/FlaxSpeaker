@@ -2,15 +2,15 @@
 
 Supported backbones:
 - `LstmBackbone`: Multi-layer uni/bidirectional LSTM with optional projections
-- `TransformerBackbone`: Pre-LN Transformer encoder with sinusoidal positional encoding
-- `ConformerBackbone`: Macaron-style Conformer (FFN + MHSA + Depthwise Conv + FFN)
+- `TransformerBackbone`: Pre-LN Transformer encoder with local conv stem and mask support
+- `ConformerBackbone`: Macaron-style Conformer (FFN + MHSA + Depthwise Conv + FFN, arXiv:2202.12163)
 - `MambaBackbone`: Selective State Space Model (SSM) using `jax.lax.associative_scan`
 - `EcapaTdnnBackbone`: Emphasized Channel Attention, Propagation and Aggregation TDNN
   (SE-Res2Net blocks + Multi-layer Feature Aggregation)
 - `ResNetBackbone`: 2D Time-Frequency SE-ResNet (WeSpeaker / Thin-ResNet style)
 """
 
-from typing import Any, Sequence
+from typing import Any, Optional, Sequence
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
@@ -18,7 +18,9 @@ import jax.numpy as jnp
 from flaxspeaker import pooling
 
 
-def sinusoidal_positional_encoding(seq_len: int, dim: int, dtype: Any = jnp.float32) -> jax.Array:
+def sinusoidal_positional_encoding(
+    seq_len: int, dim: int, dtype: Any = jnp.float32
+) -> jax.Array:
     """Create sinusoidal positional encodings of shape `(1, seq_len, dim)`."""
     position = jnp.arange(seq_len, dtype=dtype)[:, None]
     div_term = jnp.exp(
@@ -41,9 +43,17 @@ class LstmBackbone(nn.Module):
     proj_size: int = 0
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
         # x: (B, T, F)
-        h = x
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        h = x * mask_f if mask_f is not None else x
         for i in range(self.num_layers):
             fwd_rnn = nn.RNN(
                 nn.OptimizedLSTMCell(features=self.hidden_size),
@@ -68,6 +78,8 @@ class LstmBackbone(nn.Module):
                 h = nn.LayerNorm(name=f"lstm_ln_{i}")(h + y)
             else:
                 h = nn.LayerNorm(name=f"lstm_ln_{i}")(y)
+            if mask_f is not None:
+                h = h * mask_f
         return h
 
 
@@ -79,61 +91,121 @@ class TransformerBlock(nn.Module):
     mlp_dim: int = 512
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        attn_mask = None
+        if mask is not None:
+            attn_mask = nn.make_attention_mask(
+                jnp.ones_like(mask, dtype=jnp.bool_),
+                mask > 0,
+                dtype=x.dtype,
+            )
         h = nn.LayerNorm(name="ln1")(x)
         h = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             qkv_features=self.dim,
             out_features=self.dim,
             name="mhsa",
-        )(h, h)
+        )(h, h, mask=attn_mask)
         x = x + h
+        if mask_f is not None:
+            x = x * mask_f
 
         h = nn.LayerNorm(name="ln2")(x)
         h = nn.Dense(self.mlp_dim, name="ffn1")(h)
         h = nn.gelu(h)
         h = nn.Dense(self.dim, name="ffn2")(h)
-        return x + h
+        x = x + h
+        if mask_f is not None:
+            x = x * mask_f
+        return x
 
 
 class TransformerBackbone(nn.Module):
-    """Transformer encoder backbone with sinusoidal positional encoding."""
+    """Transformer encoder backbone for speaker recognition."""
 
     dim: int = 256
     num_heads: int = 4
     num_layers: int = 4
     mlp_dim: int = 512
-    use_positional_encoding: bool = True
+    use_positional_encoding: bool = False
+    use_conv_stem: bool = True
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
         h = nn.Dense(self.dim, name="input_proj")(x)
+        if self.use_conv_stem:
+            c = nn.Conv(
+                features=self.dim,
+                kernel_size=(3,),
+                padding="SAME",
+                name="stem_conv",
+            )(x)
+            c = nn.silu(nn.LayerNorm(name="stem_ln")(c))
+            h = h + c
         if self.use_positional_encoding:
             pe = sinusoidal_positional_encoding(h.shape[1], self.dim, h.dtype)
             h = h + pe
+        if mask_f is not None:
+            h = h * mask_f
+        layer_outs = []
         for i in range(self.num_layers):
             h = TransformerBlock(
                 dim=self.dim,
                 num_heads=self.num_heads,
                 mlp_dim=self.mlp_dim,
                 name=f"block_{i}",
-            )(h, deterministic=deterministic)
-        return nn.LayerNorm(name="final_ln")(h)
+            )(h, deterministic=deterministic, mask=mask)
+            layer_outs.append(h)
+        cat = jnp.concatenate(layer_outs, axis=-1)
+        out = nn.Dense(self.dim, name="mfa_proj")(nn.LayerNorm(name="final_ln")(cat))
+        if mask_f is not None:
+            out = out * mask_f
+        return out
 
 
 class ConformerConvModule(nn.Module):
-    """Conformer depthwise separable convolution module with GLU gating."""
+    """Conformer depthwise separable convolution module with GLU gating and Mask-Aware GroupNorm.
+
+    Follows Google's Conformer Speaker ID design (`arXiv:2202.12163`, `gn_num_groups=2`).
+    """
 
     dim: int = 256
     kernel_size: int = 15
+    use_group_norm: bool = True
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(
+        self, x: jax.Array, mask: Optional[jax.Array] = None
+    ) -> jax.Array:
+        bsz, seq_len, _ = x.shape
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
         h = nn.LayerNorm(name="ln")(x)
         h = nn.Dense(2 * self.dim, name="pw_conv1")(h)
         # Gated Linear Unit (GLU)
         h_a, h_b = jnp.split(h, 2, axis=-1)
         h = h_a * jax.nn.sigmoid(h_b)
+        if mask_f is not None:
+            h = h * mask_f
         # 1D Depthwise Convolution
         h = nn.Conv(
             features=self.dim,
@@ -142,45 +214,104 @@ class ConformerConvModule(nn.Module):
             padding="SAME",
             name="dw_conv",
         )(h)
-        h = nn.LayerNorm(name="conv_ln")(h)
+        if mask_f is not None:
+            h = h * mask_f
+        if self.use_group_norm and (self.dim % 2 == 0):
+            num_groups = 2
+            group_dim = self.dim // num_groups
+            h_g = h.reshape(bsz, seq_len, num_groups, group_dim)
+            if mask_f is not None:
+                m_g = mask_f[..., None]  # (B, T, 1, 1)
+                denom = jnp.maximum(
+                    jnp.sum(m_g, axis=(1, 3), keepdims=True) * float(group_dim),
+                    1.0,
+                )
+                mean = jnp.sum(h_g * m_g, axis=(1, 3), keepdims=True) / denom
+                var = (
+                    jnp.sum(jnp.square(h_g - mean) * m_g, axis=(1, 3), keepdims=True)
+                    / denom
+                )
+            else:
+                mean = jnp.mean(h_g, axis=(1, 3), keepdims=True)
+                var = jnp.var(h_g, axis=(1, 3), keepdims=True)
+            h = ((h_g - mean) * jax.lax.rsqrt(var + 1e-5)).reshape(
+                bsz, seq_len, self.dim
+            )
+            gn_scale = self.param(
+                "conv_gn_scale", nn.initializers.ones, (self.dim,)
+            )
+            gn_bias = self.param(
+                "conv_gn_bias", nn.initializers.zeros, (self.dim,)
+            )
+            h = h * gn_scale[None, None, :] + gn_bias[None, None, :]
+        else:
+            h = nn.LayerNorm(name="conv_ln")(h)
+        if mask_f is not None:
+            h = h * mask_f
         h = nn.silu(h)
         h = nn.Dense(self.dim, name="pw_conv2")(h)
+        if mask_f is not None:
+            h = h * mask_f
         return h
 
 
 class ConformerBlock(nn.Module):
-    """Macaron-style Conformer block (FFN/2 + MHSA + Conv + FFN/2 + LayerNorm)."""
+    """Macaron-style Conformer block (FFN/2 + MHSA + Conv + FFN/2 + optional LayerNorm)."""
 
     dim: int = 256
     num_heads: int = 4
     ffn_dim: int = 512
     conv_kernel_size: int = 15
+    use_group_norm: bool = True
+    normalize_output: bool = True
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
         # 1. First half-step FFN
         h = nn.LayerNorm(name="ffn1_ln")(x)
         h = nn.Dense(self.ffn_dim, name="ffn1_up")(h)
         h = nn.silu(h)
         h = nn.Dense(self.dim, name="ffn1_down")(h)
         x = x + 0.5 * h
+        if mask_f is not None:
+            x = x * mask_f
 
         # 2. Multi-Head Self-Attention
+        attn_mask = None
+        if mask is not None:
+            attn_mask = nn.make_attention_mask(
+                jnp.ones_like(mask, dtype=jnp.bool_),
+                mask > 0,
+                dtype=x.dtype,
+            )
         h = nn.LayerNorm(name="mhsa_ln")(x)
         h = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             qkv_features=self.dim,
             out_features=self.dim,
             name="mhsa",
-        )(h, h)
+        )(h, h, mask=attn_mask)
         x = x + h
+        if mask_f is not None:
+            x = x * mask_f
 
         # 3. Convolution module
         x = x + ConformerConvModule(
             dim=self.dim,
             kernel_size=self.conv_kernel_size,
+            use_group_norm=self.use_group_norm,
             name="conv_mod",
-        )(x)
+        )(x, mask=mask)
+        if mask_f is not None:
+            x = x * mask_f
 
         # 4. Second half-step FFN
         h = nn.LayerNorm(name="ffn2_ln")(x)
@@ -188,33 +319,87 @@ class ConformerBlock(nn.Module):
         h = nn.silu(h)
         h = nn.Dense(self.dim, name="ffn2_down")(h)
         x = x + 0.5 * h
+        if mask_f is not None:
+            x = x * mask_f
 
-        return nn.LayerNorm(name="out_ln")(x)
+        if self.normalize_output:
+            x = nn.LayerNorm(name="out_ln")(x)
+            if mask_f is not None:
+                x = x * mask_f
+        return x
 
 
 class ConformerBackbone(nn.Module):
-    """Conformer encoder backbone for speaker representation learning."""
+    """Conformer encoder backbone for speaker representation learning (`arXiv:2202.12163`).
+
+    Key speaker recognition design choices:
+    - Shift-invariant self-attention (`use_positional_encoding=False` by default)
+      so randomly cropped segments and variable-length utterances do not suffer
+      from absolute frame-index bias.
+    - Local 1D convolutional input stem (`use_conv_stem=True`) for immediate
+      short-range time-frequency context.
+    - Mask-aware `GroupNorm(num_groups=2)` inside the depthwise convolution module.
+    - `normalize_output=False` before Attentive Temporal Pooling (`MEAN_STD`) so
+      frame-to-frame magnitude variations are preserved for sigmoid frame weighting
+      and standard deviation computation.
+    """
 
     dim: int = 256
     num_heads: int = 4
     num_layers: int = 4
     ffn_dim: int = 512
     conv_kernel_size: int = 15
+    use_positional_encoding: bool = False
+    normalize_output: bool = False
+    use_conv_stem: bool = True
+    use_group_norm: bool = True
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
         h = nn.Dense(self.dim, name="input_proj")(x)
-        pe = sinusoidal_positional_encoding(h.shape[1], self.dim, h.dtype)
-        h = h + pe
+        if self.use_conv_stem:
+            c = nn.Conv(
+                features=self.dim,
+                kernel_size=(3,),
+                padding="SAME",
+                name="stem_conv",
+            )(x)
+            c = nn.silu(nn.LayerNorm(name="stem_ln")(c))
+            h = h + c
+        if self.use_positional_encoding:
+            pe = sinusoidal_positional_encoding(h.shape[1], self.dim, h.dtype)
+            h = h + pe
+        if mask_f is not None:
+            h = h * mask_f
+        layer_outs = []
         for i in range(self.num_layers):
             h = ConformerBlock(
                 dim=self.dim,
                 num_heads=self.num_heads,
                 ffn_dim=self.ffn_dim,
                 conv_kernel_size=self.conv_kernel_size,
+                use_group_norm=self.use_group_norm,
+                normalize_output=False,
                 name=f"conformer_{i}",
-            )(h, deterministic=deterministic)
-        return h
+            )(h, deterministic=deterministic, mask=mask)
+            layer_outs.append(h)
+        cat = jnp.concatenate(layer_outs, axis=-1)
+        out = nn.Dense(self.dim, name="mfa_proj")(nn.LayerNorm(name="mfa_ln")(cat))
+        if self.normalize_output:
+            out = nn.LayerNorm(name="out_ln")(out)
+        if mask_f is not None:
+            out = out * mask_f
+        return out
 
 
 def _selective_ssm_scan(
@@ -225,30 +410,22 @@ def _selective_ssm_scan(
     C: jax.Array,
     D: jax.Array,
 ) -> jax.Array:
-    """Parallel Selective State Space scan using `jax.lax.associative_scan`.
-
-    Args:
-        u: `(B, T, d_inner)` input sequence
-        delta: `(B, T, d_inner)` step sizes (positive after softplus)
-        A: `(d_inner, d_state)` negative state transition rates
-        B: `(B, T, d_state)` input-dependent B matrix
-        C: `(B, T, d_state)` input-dependent C matrix
-        D: `(d_inner,)` skip connection weights
-
-    Returns:
-        Output sequence of shape `(B, T, d_inner)`.
-    """
+    """Parallel Selective State Space scan using `jax.lax.associative_scan`."""
     # Discretize: A_bar = exp(delta * A) -> (B, T, d_inner, d_state)
     a_bar = jnp.exp(jnp.einsum("btd,dn->btdn", delta, A))
     # B_bar * u = delta * u * B -> (B, T, d_inner, d_state)
     bu_bar = jnp.einsum("btd,btn->btdn", delta * u, B)
 
-    def _binary_assoc(left: tuple[jax.Array, jax.Array], right: tuple[jax.Array, jax.Array]):
+    def _binary_assoc(
+        left: tuple[jax.Array, jax.Array], right: tuple[jax.Array, jax.Array]
+    ):
         a_l, b_l = left
         a_r, b_r = right
         return a_r * a_l, a_r * b_l + b_r
 
-    _, h_states = jax.lax.associative_scan(_binary_assoc, (a_bar, bu_bar), axis=1)
+    _, h_states = jax.lax.associative_scan(
+        _binary_assoc, (a_bar, bu_bar), axis=1
+    )
     y = jnp.einsum("btdn,btn->btd", h_states, C) + u * D[None, None, :]
     return y
 
@@ -263,11 +440,19 @@ class MambaBlock(nn.Module):
     dt_rank: int = 16
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(
+        self, x: jax.Array, mask: Optional[jax.Array] = None
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
         d_inner = self.dim * self.expand_factor
         h = nn.LayerNorm(name="ln")(x)
         xz = nn.Dense(2 * d_inner, use_bias=False, name="in_proj")(h)
         u, z = jnp.split(xz, 2, axis=-1)
+        if mask_f is not None:
+            u = u * mask_f
+            z = z * mask_f
 
         # Depthwise 1D convolution over u
         u_conv = nn.Conv(
@@ -278,6 +463,8 @@ class MambaBlock(nn.Module):
             name="conv1d",
         )(u)
         u_act = nn.silu(u_conv)
+        if mask_f is not None:
+            u_act = u_act * mask_f
 
         # Selective parameters (dt_raw, B, C) from u_act
         dbc = nn.Dense(
@@ -289,7 +476,9 @@ class MambaBlock(nn.Module):
         delta = jax.nn.softplus(nn.Dense(d_inner, name="dt_proj")(dt_raw))
 
         # Diagonal state matrix A initialized with log(1..d_state) (HiPPO-inspired)
-        def _a_log_init(rng: jax.Array, shape: tuple[int, int], dtype: Any = jnp.float32):
+        def _a_log_init(
+            rng: jax.Array, shape: tuple[int, int], dtype: Any = jnp.float32
+        ):
             base = jnp.log(jnp.arange(1, shape[1] + 1, dtype=dtype))
             return jnp.broadcast_to(base[None, :], shape)
 
@@ -300,7 +489,10 @@ class MambaBlock(nn.Module):
         y = _selective_ssm_scan(u_act, delta, A, B_mat, C_mat, D)
         y = y * nn.silu(z)
         out = nn.Dense(self.dim, use_bias=False, name="out_proj")(y)
-        return x + out
+        res = x + out
+        if mask_f is not None:
+            res = res * mask_f
+        return res
 
 
 class MambaBackbone(nn.Module):
@@ -314,8 +506,20 @@ class MambaBackbone(nn.Module):
     dt_rank: int = 16
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
         h = nn.Dense(self.dim, name="input_proj")(x)
+        if mask_f is not None:
+            h = h * mask_f
         for i in range(self.num_layers):
             h = MambaBlock(
                 dim=self.dim,
@@ -324,8 +528,11 @@ class MambaBackbone(nn.Module):
                 expand_factor=self.expand_factor,
                 dt_rank=self.dt_rank,
                 name=f"mamba_{i}",
-            )(h)
-        return nn.LayerNorm(name="final_ln")(h)
+            )(h, mask=mask)
+        out = nn.LayerNorm(name="final_ln")(h)
+        if mask_f is not None:
+            out = out * mask_f
+        return out
 
 
 class SqueezeExcitation1D(nn.Module):
@@ -335,12 +542,22 @@ class SqueezeExcitation1D(nn.Module):
     bottleneck_dim: int = 64
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(
+        self, x: jax.Array, mask: Optional[jax.Array] = None
+    ) -> jax.Array:
         # x: (B, T, C)
-        s = jnp.mean(x, axis=1, keepdims=True)  # (B, 1, C)
+        if mask is not None:
+            mask_f = (mask > 0).astype(x.dtype)[..., None]
+            denom = jnp.maximum(jnp.sum(mask_f, axis=1, keepdims=True), 1.0)
+            s = jnp.sum(x * mask_f, axis=1, keepdims=True) / denom
+        else:
+            s = jnp.mean(x, axis=1, keepdims=True)  # (B, 1, C)
         s = nn.relu(nn.Dense(self.bottleneck_dim, name="se_fc1")(s))
         s = jax.nn.sigmoid(nn.Dense(self.channels, name="se_fc2")(s))
-        return x * s
+        out = x * s
+        if mask is not None:
+            out = out * (mask > 0).astype(x.dtype)[..., None]
+        return out
 
 
 class SERes2Block(nn.Module):
@@ -353,9 +570,20 @@ class SERes2Block(nn.Module):
     se_bottleneck_dim: int = 64
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(
+        self, x: jax.Array, mask: Optional[jax.Array] = None
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
         residual = x
-        h = nn.relu(nn.LayerNorm(name="ln1")(nn.Dense(self.channels, name="pw1")(x)))
+        h = nn.relu(
+            nn.LayerNorm(name="ln1")(nn.Dense(self.channels, name="pw1")(x))
+        )
+        if mask_f is not None:
+            h = h * mask_f
 
         # Split channels into `scale` sub-bands for hierarchical multi-scale conv
         width = self.channels // self.scale
@@ -364,6 +592,8 @@ class SERes2Block(nn.Module):
         prev = None
         for s_idx in range(1, self.scale):
             cur = splits[s_idx] if prev is None else splits[s_idx] + prev
+            if mask_f is not None:
+                cur = cur * mask_f
             cur = nn.Conv(
                 features=width,
                 kernel_size=(self.kernel_size,),
@@ -372,17 +602,24 @@ class SERes2Block(nn.Module):
                 name=f"res2_conv_{s_idx}",
             )(cur)
             cur = nn.relu(nn.LayerNorm(name=f"res2_ln_{s_idx}")(cur))
+            if mask_f is not None:
+                cur = cur * mask_f
             outs.append(cur)
             prev = cur
 
         h = jnp.concatenate(outs, axis=-1)
-        h = nn.relu(nn.LayerNorm(name="ln2")(nn.Dense(self.channels, name="pw2")(h)))
+        h = nn.relu(
+            nn.LayerNorm(name="ln2")(nn.Dense(self.channels, name="pw2")(h))
+        )
         h = SqueezeExcitation1D(
             channels=self.channels,
             bottleneck_dim=self.se_bottleneck_dim,
             name="se",
-        )(h)
-        return residual + h
+        )(h, mask=mask)
+        res = residual + h
+        if mask_f is not None:
+            res = res * mask_f
+        return res
 
 
 class EcapaTdnnBackbone(nn.Module):
@@ -400,7 +637,17 @@ class EcapaTdnnBackbone(nn.Module):
     se_bottleneck_dim: int = 64
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
         # Stem 1D Conv
         h = nn.Conv(
             features=self.channels,
@@ -409,6 +656,8 @@ class EcapaTdnnBackbone(nn.Module):
             name="stem_conv",
         )(x)
         h = nn.relu(nn.LayerNorm(name="stem_ln")(h))
+        if mask_f is not None:
+            h = h * mask_f
 
         block_outputs = []
         num_blocks = min(len(self.kernel_sizes) - 1, len(self.dilations) - 1)
@@ -422,12 +671,18 @@ class EcapaTdnnBackbone(nn.Module):
                 scale=self.scale,
                 se_bottleneck_dim=self.se_bottleneck_dim,
                 name=f"se_res2_{i}",
-            )(h)
+            )(h, mask=mask)
             block_outputs.append(h)
 
         # Multi-layer Feature Aggregation (MFA)
         cat = jnp.concatenate(block_outputs, axis=-1)
-        out = nn.relu(nn.LayerNorm(name="mfa_ln")(nn.Dense(self.mfa_dim, name="mfa_proj")(cat)))
+        out = nn.relu(
+            nn.LayerNorm(name="mfa_ln")(
+                nn.Dense(self.mfa_dim, name="mfa_proj")(cat)
+            )
+        )
+        if mask_f is not None:
+            out = out * mask_f
         return out
 
 
@@ -439,7 +694,16 @@ class ResNetBasicBlock2D(nn.Module):
     use_se: bool = True
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(
+        self, x: jax.Array, mask: Optional[jax.Array] = None
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[:, :, None, None]
+            if mask is not None
+            else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
         residual = x
         h = nn.Conv(
             features=self.channels,
@@ -450,6 +714,8 @@ class ResNetBasicBlock2D(nn.Module):
             name="conv1",
         )(x)
         h = nn.relu(nn.LayerNorm(name="ln1")(h))
+        if mask_f is not None:
+            h = h * mask_f
         h = nn.Conv(
             features=self.channels,
             kernel_size=(3, 3),
@@ -459,9 +725,19 @@ class ResNetBasicBlock2D(nn.Module):
             name="conv2",
         )(h)
         h = nn.LayerNorm(name="ln2")(h)
+        if mask_f is not None:
+            h = h * mask_f
 
         if self.use_se:
-            se = jnp.mean(h, axis=(1, 2), keepdims=True)
+            if mask_f is not None:
+                denom = jnp.maximum(
+                    jnp.sum(mask_f, axis=(1, 2), keepdims=True)
+                    * float(h.shape[2]),
+                    1.0,
+                )
+                se = jnp.sum(h * mask_f, axis=(1, 2), keepdims=True) / denom
+            else:
+                se = jnp.mean(h, axis=(1, 2), keepdims=True)
             bottleneck = max(8, self.channels // 4)
             se = nn.relu(nn.Dense(bottleneck, name="se1")(se))
             se = jax.nn.sigmoid(nn.Dense(self.channels, name="se2")(se))
@@ -478,7 +754,10 @@ class ResNetBasicBlock2D(nn.Module):
             )(residual)
             residual = nn.LayerNorm(name="downsample_ln")(residual)
 
-        return nn.relu(residual + h)
+        out = nn.relu(residual + h)
+        if mask_f is not None:
+            out = out * mask_f
+        return out
 
 
 class ResNetBackbone(nn.Module):
@@ -490,7 +769,17 @@ class ResNetBackbone(nn.Module):
     out_dim: int = 256
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
         # x: (B, T, F) -> (B, T, F, 1)
         h = x[..., None]
         h = nn.Conv(
@@ -502,6 +791,8 @@ class ResNetBackbone(nn.Module):
             name="stem_conv",
         )(h)
         h = nn.relu(nn.LayerNorm(name="stem_ln")(h))
+        if mask_f is not None:
+            h = h * mask_f[..., None]
 
         for stage_idx, n_blocks in enumerate(self.num_blocks):
             ch = self.base_channels * (2 ** stage_idx)
@@ -513,78 +804,127 @@ class ResNetBackbone(nn.Module):
                     stride=stride,
                     use_se=self.use_se,
                     name=f"stage{stage_idx}_block{b_idx}",
-                )(h)
+                )(h, mask=mask)
 
         # Collapse frequency & channel dimensions: (B, T, F', C) -> (B, T, F'*C)
         bsz, seq_len, freq_bins, ch = h.shape
         h = h.reshape(bsz, seq_len, freq_bins * ch)
-        h = nn.relu(nn.LayerNorm(name="out_ln")(nn.Dense(self.out_dim, name="out_proj")(h)))
+        h = nn.relu(
+            nn.LayerNorm(name="out_ln")(
+                nn.Dense(self.out_dim, name="out_proj")(h)
+            )
+        )
+        if mask_f is not None:
+            h = h * mask_f
         return h
 
 
 class ModernSpeakerEncoder(nn.Module):
     """Unified configurable speaker encoder supporting all backbones and pooling heads.
 
-    Architecture flow:
-    `Input (B, T, F) -> Backbone -> Temporal Pooling -> Bottleneck Projection -> Output (B, D)`
+    Architecture flow (`arXiv:2202.12163` / `arXiv:2203.05642v3`):
+    `Input (B, T, F) -> Backbone -> Temporal Pooling -> Bottleneck FFN (ReLU) -> Linear Proj -> Output (B, D)`
     (When `pooling_type == "pfas"`, the output is the packed Key-Value representation
     of shape `(B, num_keys * (key_dim + value_dim))` directly from `PfasRepresentationHead`.)
     """
 
     backbone_type: str = "conformer"
-    pooling_type: str = "asp"
+    pooling_type: str = "atp"
     embedding_dim: int = 192
     normalize_embedding: bool = True
-    backbone_kwargs: dict[str, Any] = None
-    pooling_kwargs: dict[str, Any] = None
+    backbone_kwargs: Optional[dict[str, Any]] = None
+    pooling_kwargs: Optional[dict[str, Any]] = None
 
     @nn.compact
-    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
         b_kwargs = dict(self.backbone_kwargs or {})
         p_kwargs = dict(self.pooling_kwargs or {})
         b_type = self.backbone_type.lower()
 
         if b_type == "lstm":
-            frames = LstmBackbone(**b_kwargs, name="backbone")(x, deterministic=deterministic)
+            frames = LstmBackbone(**b_kwargs, name="backbone")(
+                x, deterministic=deterministic, mask=mask
+            )
         elif b_type == "transformer":
-            frames = TransformerBackbone(**b_kwargs, name="backbone")(x, deterministic=deterministic)
+            frames = TransformerBackbone(**b_kwargs, name="backbone")(
+                x, deterministic=deterministic, mask=mask
+            )
         elif b_type == "conformer":
-            frames = ConformerBackbone(**b_kwargs, name="backbone")(x, deterministic=deterministic)
+            frames = ConformerBackbone(**b_kwargs, name="backbone")(
+                x, deterministic=deterministic, mask=mask
+            )
         elif b_type == "mamba":
-            frames = MambaBackbone(**b_kwargs, name="backbone")(x, deterministic=deterministic)
+            frames = MambaBackbone(**b_kwargs, name="backbone")(
+                x, deterministic=deterministic, mask=mask
+            )
         elif b_type == "ecapa_tdnn":
-            frames = EcapaTdnnBackbone(**b_kwargs, name="backbone")(x, deterministic=deterministic)
+            frames = EcapaTdnnBackbone(**b_kwargs, name="backbone")(
+                x, deterministic=deterministic, mask=mask
+            )
         elif b_type == "resnet":
-            frames = ResNetBackbone(**b_kwargs, name="backbone")(x, deterministic=deterministic)
+            frames = ResNetBackbone(**b_kwargs, name="backbone")(
+                x, deterministic=deterministic, mask=mask
+            )
         else:
-            raise ValueError(f"Unsupported backbone_type: {self.backbone_type}")
+            raise ValueError(
+                f"Unsupported backbone_type: {self.backbone_type}"
+            )
 
         p_type = self.pooling_type.lower()
         if p_type == "pfas":
-            return pooling.PfasRepresentationHead(**p_kwargs, name="pfas_head")(frames)
+            return pooling.PfasRepresentationHead(
+                **p_kwargs, name="pfas_head"
+            )(frames, mask=mask)
+        elif p_type == "atp":
+            pooled = pooling.AttentiveTemporalPooling(
+                num_heads=int(p_kwargs.get("num_heads", 4)),
+                attention_dim=int(p_kwargs.get("attention_dim", 128)),
+                pooling_stats=str(p_kwargs.get("pooling_stats", "mean_std")),
+                subspace_heads=bool(p_kwargs.get("subspace_heads", True)),
+                eps=float(p_kwargs.get("eps", 1e-4)),
+                name="pool",
+            )(frames, mask=mask)
         elif p_type == "mean":
-            pooled = pooling.MeanPooling(name="pool")(frames)
+            pooled = pooling.MeanPooling(name="pool")(frames, mask=mask)
         elif p_type == "last":
-            pooled = pooling.LastFramePooling(name="pool")(frames)
+            pooled = pooling.LastFramePooling(name="pool")(frames, mask=mask)
         elif p_type == "stats":
-            pooled = pooling.StatsPooling(name="pool")(frames)
+            pooled = pooling.StatsPooling(name="pool")(frames, mask=mask)
         elif p_type == "sap":
             pooled = pooling.SelfAttentivePooling(
                 attention_dim=int(p_kwargs.get("attention_dim", 128)),
                 name="pool",
-            )(frames)
+            )(frames, mask=mask)
         elif p_type == "asp":
             pooled = pooling.AttentiveStatsPooling(
                 attention_dim=int(p_kwargs.get("attention_dim", 128)),
-                use_global_context=bool(p_kwargs.get("use_global_context", True)),
+                use_global_context=bool(
+                    p_kwargs.get("use_global_context", True)
+                ),
                 name="pool",
-            )(frames)
+            )(frames, mask=mask)
         elif p_type == "cumulative_stats":
-            pooled = pooling.CumulativeStatsPooling(name="pool")(frames)
+            pooled = pooling.CumulativeStatsPooling(name="pool")(
+                frames, mask=mask
+            )
         else:
             raise ValueError(f"Unsupported pooling_type: {self.pooling_type}")
 
+        # Post-pooling bottleneck FFN:
+        # LayerNorm -> [Dense(bottleneck_dim) -> LayerNorm -> ReLU] -> Dense(embedding_dim)
         emb = nn.LayerNorm(name="bottleneck_ln")(pooled)
+        use_nonlinear = bool(p_kwargs.get("use_nonlinear_bottleneck", True))
+        if use_nonlinear:
+            bottleneck_dim = int(p_kwargs.get("bottleneck_dim", 256))
+            emb = nn.Dense(bottleneck_dim, name="bottleneck_fc")(emb)
+            emb = nn.LayerNorm(name="bottleneck_act_ln")(emb)
+            emb = nn.relu(emb)
+
         emb = nn.Dense(self.embedding_dim, name="embedding_proj")(emb)
         if self.normalize_embedding:
             emb = emb / (jnp.linalg.norm(emb, axis=-1, keepdims=True) + 1e-6)
