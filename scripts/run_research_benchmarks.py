@@ -44,9 +44,11 @@ from flaxspeaker import neural_net  # noqa: E402
 from scripts import prepare_datasets  # noqa: E402
 
 
-DEFAULT_DATA_ROOT = "/usr/local/google/home/quanw/Data/speaker_datasets"
-DEFAULT_OUTPUT_ROOT = "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models"
-DEFAULT_CONFIGS_DIR = "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/configs"
+DEFAULT_DATA_ROOT = os.environ.get(
+    "FLAXSPEAKER_DATA_ROOT", os.path.expanduser("~/Data/speaker_datasets")
+)
+DEFAULT_OUTPUT_ROOT = os.path.join(REPO_ROOT, "pretrained_models")
+DEFAULT_CONFIGS_DIR = os.path.join(REPO_ROOT, "configs")
 
 
 def load_multi_enroll_trials(path: str) -> list[dataset.MultiEnrollTrial]:
@@ -472,6 +474,9 @@ def run_all_benchmarks(
             preloaded_train_domains.add(dname)
 
         loss_curve: list[float] = []
+        var_len = bool(getattr(exp_cfg.model, "variable_length_training", True))
+        within_prob = float(getattr(exp_cfg.data, "within_domain_prob", 0.75))
+        temp_alpha = float(getattr(exp_cfg.data, "domain_temp_alpha", 0.35))
         for step in range(exp_cfg.train.num_steps):
             if loss_type == "triplet":
                 batch_list = []
@@ -485,7 +490,7 @@ def run_all_benchmarks(
                                 feat,
                                 max_seq_len=exp_cfg.model.seq_len,
                                 min_seq_len=exp_cfg.model.min_seq_len,
-                                variable_length=True,
+                                variable_length=var_len,
                                 specaug_config=exp_cfg.train.specaug,
                                 waveform_aug_config=exp_cfg.train.waveform_aug,
                                 rng=rng,
@@ -510,7 +515,9 @@ def run_all_benchmarks(
                     cache=train_cache,
                     rng=rng,
                     min_seq_len=exp_cfg.model.min_seq_len,
+                    variable_length=var_len,
                     return_mask=True,
+                    domain_temp_alpha=temp_alpha,
                 )
             else:
                 batch_input, batch_labels, batch_mask = feature_extraction.get_batched_nm_input(
@@ -524,7 +531,10 @@ def run_all_benchmarks(
                     cache=train_cache,
                     rng=rng,
                     min_seq_len=exp_cfg.model.min_seq_len,
+                    variable_length=var_len,
                     return_mask=True,
+                    within_domain_prob=within_prob,
+                    domain_temp_alpha=temp_alpha,
                 )
 
             state, loss_val = step_fn(state, batch_input, batch_labels, batch_mask)

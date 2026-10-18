@@ -25,6 +25,18 @@ def cosine_similarity(a: jax.Array, b: jax.Array, eps: float = 1e-6) -> jax.Arra
 
 
 @jax.jit
+def compute_speaker_centroid(
+    embeddings: jax.Array, eps: float = 1e-6
+) -> jax.Array:
+    """Compute L2-normalized centroid of `(K, D)` enrollment embeddings."""
+    normed = embeddings / (
+        jnp.linalg.norm(embeddings, axis=-1, keepdims=True) + eps
+    )
+    mean_vec = jnp.mean(normed, axis=0)
+    return mean_vec / (jnp.linalg.norm(mean_vec, axis=-1, keepdims=True) + eps)
+
+
+@jax.jit
 def cosine_similarity_matrix(
     test_embs: jax.Array,
     enroll_embs: jax.Array,
@@ -38,9 +50,9 @@ def cosine_similarity_matrix(
 
 def unpack_pfas_representation(
     packed: jax.Array,
-    num_keys: int,
-    key_dim: int,
-    value_dim: int,
+    num_keys: int = 4,
+    key_dim: int = 32,
+    value_dim: int = 128,
 ) -> tuple[jax.Array, jax.Array]:
     """Unpack flat PFAS embedding `(..., M*(key_dim + value_dim))` into `(keys, values)`.
 
@@ -64,6 +76,7 @@ def _compute_pfas_weights(
     key_dots: jax.Array,
     scale_factor: Union[jax.Array, float] = 16.0,
     per_trial_softmax: bool = True,
+    apply_softmax_per_test_key: bool = False,
     attention_weight_mode: str = "exp",
     eps: float = 1e-6,
 ) -> jax.Array:
@@ -76,6 +89,7 @@ def _compute_pfas_weights(
     m_t = key_dots.shape[-2]
     m_e = key_dots.shape[-1]
     prefix_shape = key_dots.shape[:-2]
+    use_per_trial = bool(per_trial_softmax and not apply_softmax_per_test_key)
 
     if mode == "outer":
         logits = scale_factor * key_dots
@@ -89,7 +103,7 @@ def _compute_pfas_weights(
     else:
         # Default "exp" (Full-Matrix Softmax over M_t * M_e when per_trial_softmax=True)
         logits = scale_factor * key_dots
-        if per_trial_softmax:
+        if use_per_trial:
             flat_logits = logits.reshape(*prefix_shape, m_t * m_e)
             weights = (
                 jax.nn.softmax(flat_logits, axis=-1).reshape(
@@ -113,6 +127,7 @@ def pfas_score_pair(
     enroll_values: jax.Array,
     scale_factor: Union[jax.Array, float] = 16.0,
     per_trial_softmax: bool = True,
+    apply_softmax_per_test_key: bool = False,
     apply_l2_norm_to_keys: bool = True,
     apply_l2_norm_to_values: bool = False,
     apply_global_l2_norm_to_concat_form: bool = True,
@@ -158,6 +173,7 @@ def pfas_score_pair(
         key_dots,
         scale_factor=scale_factor,
         per_trial_softmax=per_trial_softmax,
+        apply_softmax_per_test_key=apply_softmax_per_test_key,
         attention_weight_mode=attention_weight_mode,
         eps=eps,
     )
@@ -181,11 +197,12 @@ def pfas_score_pair(
 def pfas_score_matrix(
     test_packed: jax.Array,
     enroll_packed: jax.Array,
-    num_keys: int = 32,
-    key_dim: int = 16,
-    value_dim: int = 48,
+    num_keys: int = 4,
+    key_dim: int = 32,
+    value_dim: int = 128,
     scale_factor: Union[jax.Array, float] = 16.0,
     per_trial_softmax: bool = True,
+    apply_softmax_per_test_key: bool = False,
     apply_l2_norm_to_keys: bool = True,
     apply_l2_norm_to_values: bool = False,
     apply_global_l2_norm_to_concat_form: bool = True,
@@ -227,6 +244,7 @@ def pfas_score_matrix(
         key_dots,
         scale_factor=scale_factor,
         per_trial_softmax=per_trial_softmax,
+        apply_softmax_per_test_key=apply_softmax_per_test_key,
         attention_weight_mode=attention_weight_mode,
         eps=eps,
     )
@@ -251,9 +269,9 @@ def pfas_score_matrix(
 
 def stack_multi_enroll_pfas(
     enroll_embeddings: Sequence[jax.Array],
-    num_keys: int,
-    key_dim: int,
-    value_dim: int,
+    num_keys: int = 4,
+    key_dim: int = 32,
+    value_dim: int = 128,
 ) -> jax.Array:
     """Stack multiple enrollment utterance PFAS embeddings into `(U*M, d_k)` & `(U*M, d_v)`.
 
@@ -281,13 +299,20 @@ class DecisionResidualNetwork(nn.Module):
     https://arxiv.org/pdf/2104.01989).
 
     Given a test embedding `e_t` and enrollment embedding `e_e`, computes:
-    `score(e_t, e_e) = cos(e_t, e_e) + w_res * MLP([e_t_norm, e_e_norm, cos(e_t, e_e)])`
+    `score(e_t, e_e) = cos(e_t, e_e) + w_res * MLP([e_t_norm, e_e_norm, cos^1, ..., cos^K])`
+    Supports polynomial cosine features (`num_cosine_terms = 3` for `[cos, cos^2, cos^3]`
+    as in Eq. 7 of Pelecanos et al., 2021, or `num_cosine_terms = 1` default) and
+    optional symmetric pair features (`symmetric_input = True`).
     """
 
     hidden_dims: Sequence[int] = (128, 64)
     activation: str = "relu"
     use_layer_norm: bool = True
     include_cosine_in_input: bool = True
+    append_cosine_as_feature_to_network_input: bool = True
+    add_cosine_to_network_output: bool = True
+    num_cosine_terms: int = 1
+    symmetric_input: bool = False
     residual_weight: float = 0.25
     eps: float = 1e-6
 
@@ -308,10 +333,32 @@ class DecisionResidualNetwork(nn.Module):
         e_norm = enroll_embs / (jnp.linalg.norm(enroll_embs, axis=-1, keepdims=True) + self.eps)
         cos_sim = jnp.sum(t_norm * e_norm, axis=-1, keepdims=True)  # (B, 1)
 
-        if self.include_cosine_in_input:
-            h = jnp.concatenate([t_norm, e_norm, cos_sim], axis=-1)
+        if self.symmetric_input:
+            pair_feats = [0.5 * (t_norm + e_norm), jnp.abs(t_norm - e_norm)]
         else:
-            h = jnp.concatenate([t_norm, e_norm], axis=-1)
+            pair_feats = [t_norm, e_norm]
+
+        use_cos_in_input = bool(
+            self.include_cosine_in_input and self.append_cosine_as_feature_to_network_input
+        )
+        if use_cos_in_input:
+            n_terms = max(1, int(self.num_cosine_terms))
+            if n_terms == 1:
+                pair_feats.append(cos_sim)
+            elif n_terms == 3:
+                # Pelecanos et al. (Interspeech 2021, Eq. 7): [c, c^2, sqrt(max(c, 0))]
+                pair_feats.extend(
+                    [
+                        cos_sim,
+                        jnp.square(cos_sim),
+                        jnp.sqrt(jnp.maximum(cos_sim, 0.0) + self.eps),
+                    ]
+                )
+            else:
+                powers = [jnp.power(cos_sim, p) for p in range(1, n_terms + 1)]
+                pair_feats.extend(powers)
+
+        h = jnp.concatenate(pair_feats, axis=-1)
 
         for idx, h_dim in enumerate(self.hidden_dims):
             h = nn.Dense(h_dim, name=f"dr_fc_{idx}")(h)
@@ -324,7 +371,9 @@ class DecisionResidualNetwork(nn.Module):
             kernel_init=nn.initializers.normal(stddev=0.01),
             name="dr_out",
         )(h)
-        return (cos_sim + self.residual_weight * res).squeeze(-1)
+        if self.add_cosine_to_network_output:
+            return (cos_sim + self.residual_weight * res).squeeze(-1)
+        return (self.residual_weight * res).squeeze(-1)
 
     @nn.compact
     def __call__(self, test_embs: jax.Array, enroll_embs: jax.Array) -> jax.Array:

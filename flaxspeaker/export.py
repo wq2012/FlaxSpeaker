@@ -12,13 +12,28 @@ Provides:
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Optional
+import warnings
 
 from flax.training import train_state
 import jax
 import numpy as np
 
 from flaxspeaker import neural_net
+
+
+def _resolve_export_seq_len(
+    myconfig: Any, seq_len: Optional[int] = None
+) -> int:
+    if seq_len is not None and seq_len > 0:
+        return int(seq_len)
+    model_cfg = getattr(myconfig, "model", None)
+    export_cfg = getattr(myconfig, "export", None)
+    if model_cfg is not None and hasattr(model_cfg, "seq_len"):
+        return int(getattr(model_cfg, "seq_len"))
+    if export_cfg is not None and hasattr(export_cfg, "sequence_length"):
+        return int(getattr(export_cfg, "sequence_length"))
+    return 100
 
 
 def _make_tf_module(
@@ -38,10 +53,18 @@ def _make_tf_module(
         return state.apply_fn({"params": encoder_params}, x)
 
     tf_Module = tf.Module()
-    input_spec = tf.TensorSpec(shape=[1, seq_len, feat_dim], dtype=tf.float32, name="features")
+    input_spec = tf.TensorSpec(
+        shape=[1, seq_len, feat_dim], dtype=tf.float32, name="features"
+    )
 
-    tf_fn_no_xla = jax2tf.convert(_forward_jax, with_gradient=False, enable_xla=False)
-    tf_Module.f = tf.function(tf_fn_no_xla, autograph=False, input_signature=[input_spec])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        tf_fn_no_xla = jax2tf.convert(
+            _forward_jax, with_gradient=False, enable_xla=False
+        )
+    tf_Module.f = tf.function(
+        tf_fn_no_xla, autograph=False, input_signature=[input_spec]
+    )
     return tf_Module, input_spec
 
 
@@ -50,6 +73,7 @@ def export_to_tflite(
     myconfig: Any,
     output_tflite_path: str,
     quantize_int8: bool = False,
+    seq_len: Optional[int] = None,
 ) -> dict[str, Any]:
     """Export a trained Flax speaker encoder to TFLite (`.tflite`).
 
@@ -58,6 +82,7 @@ def export_to_tflite(
         myconfig: `ExperimentConfig` or legacy `Munch` config.
         output_tflite_path: Destination `.tflite` file path.
         quantize_int8: Whether to apply post-training dynamic range quantization.
+        seq_len: Optional sequence length override for exported input signature.
 
     Returns:
         Dictionary with `tflite_path`, `size_bytes`, `size_kb`, and `quantize_int8`.
@@ -69,7 +94,7 @@ def export_to_tflite(
     if parent:
         os.makedirs(parent, exist_ok=True)
 
-    seq_len = int(getattr(myconfig.model, "seq_len", 100))
+    resolved_seq_len = _resolve_export_seq_len(myconfig, seq_len=seq_len)
     feat_dim = neural_net._get_feature_dim(myconfig)
 
     encoder_params = {
@@ -80,12 +105,19 @@ def export_to_tflite(
         return state.apply_fn({"params": encoder_params}, x)
 
     input_spec = tf.TensorSpec(
-        shape=[1, seq_len, feat_dim], dtype=tf.float32, name="features"
+        shape=[1, resolved_seq_len, feat_dim],
+        dtype=tf.float32,
+        name="features",
     )
 
     try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            converted_fn = jax2tf.convert(
+                _forward_jax, with_gradient=False, enable_xla=False
+            )
         tf_fn = tf.function(
-            jax2tf.convert(_forward_jax, with_gradient=False, enable_xla=False),
+            converted_fn,
             autograph=False,
             input_signature=[input_spec],
         )
@@ -101,8 +133,13 @@ def export_to_tflite(
     except Exception:
         # Fallback for models using XLA-specific primitives (e.g. associative_scan):
         # Enable XLA ops with SELECT_TF_OPS
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            converted_fn = jax2tf.convert(
+                _forward_jax, with_gradient=False, enable_xla=True
+            )
         tf_fn = tf.function(
-            jax2tf.convert(_forward_jax, with_gradient=False, enable_xla=True),
+            converted_fn,
             autograph=False,
             input_signature=[input_spec],
         )
@@ -133,14 +170,15 @@ def export_to_saved_model(
     state: train_state.TrainState,
     myconfig: Any,
     saved_model_dir: str,
+    seq_len: Optional[int] = None,
 ) -> str:
     """Export a trained Flax speaker encoder to a TensorFlow `SavedModel` directory."""
     import tensorflow as tf
 
     os.makedirs(saved_model_dir, exist_ok=True)
-    seq_len = int(getattr(myconfig.model, "seq_len", 100))
+    resolved_seq_len = _resolve_export_seq_len(myconfig, seq_len=seq_len)
     feat_dim = neural_net._get_feature_dim(myconfig)
-    tf_mod, input_spec = _make_tf_module(state, seq_len, feat_dim)
+    tf_mod, input_spec = _make_tf_module(state, resolved_seq_len, feat_dim)
     tf.saved_model.save(
         tf_mod,
         saved_model_dir,

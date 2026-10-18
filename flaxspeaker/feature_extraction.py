@@ -611,6 +611,7 @@ def _sample_speakers_domain_balanced(
     n_spk: int,
     rng: Optional[np.random.Generator] = None,
     within_domain_prob: float = 0.75,
+    domain_temp_alpha: float = 0.35,
 ) -> list[str]:
     """Samples `n_spk` speakers with domain-balanced stratified + cross-domain mixing."""
     if len(eligible_spks) < n_spk:
@@ -625,7 +626,8 @@ def _sample_speakers_domain_balanced(
 
     domains = sorted(domain_groups.keys())
     raw_weights = np.array(
-        [len(domain_groups[d]) ** 0.35 for d in domains], dtype=np.float64
+        [len(domain_groups[d]) ** domain_temp_alpha for d in domains],
+        dtype=np.float64,
     )
     dom_probs = raw_weights / np.sum(raw_weights)
     u_draw = float(rng.random()) if rng is not None else random.random()
@@ -673,9 +675,11 @@ def get_batched_nm_input(
     cache: Optional[FeatureCache] = None,
     rng: Optional[np.random.Generator] = None,
     min_seq_len: Optional[int] = None,
-    variable_length: bool = False,
+    variable_length: bool = True,
     waveform_aug_config: Optional[Any] = None,
     return_mask: bool = False,
+    within_domain_prob: float = 0.75,
+    domain_temp_alpha: float = 0.35,
 ) -> Any:
     """Builds an N x M speaker-utterance batch for GE2E, Extended-Set Softmax, PFAS, and Dr-Vectors.
 
@@ -691,7 +695,11 @@ def get_batched_nm_input(
         [spk for spk, utts in spk_to_utts.items() if len(utts) >= 2]
     )
     selected_spks = _sample_speakers_domain_balanced(
-        eligible_spks, n_spk=n_spk, rng=rng
+        eligible_spks,
+        n_spk=n_spk,
+        rng=rng,
+        within_domain_prob=within_domain_prob,
+        domain_temp_alpha=domain_temp_alpha,
     )
 
     features_list = []
@@ -752,9 +760,10 @@ def get_batched_classification_input(
     cache: Optional[FeatureCache] = None,
     rng: Optional[np.random.Generator] = None,
     min_seq_len: Optional[int] = None,
-    variable_length: bool = False,
+    variable_length: bool = True,
     waveform_aug_config: Optional[Any] = None,
     return_mask: bool = False,
+    domain_temp_alpha: float = 0.35,
 ) -> Any:
     """Builds a classification batch (features, global_speaker_ids[, mask]) for ArcFace/CosFace/SphereFace/Softmax."""
     active_cache = cache if cache is not None else feature_cache
@@ -762,7 +771,8 @@ def get_batched_classification_input(
     domain_groups = _group_speakers_by_domain(all_spks)
     domains = sorted(domain_groups.keys())
     raw_weights = np.array(
-        [len(domain_groups[d]) ** 0.35 for d in domains], dtype=np.float64
+        [len(domain_groups[d]) ** domain_temp_alpha for d in domains],
+        dtype=np.float64,
     )
     dom_probs = raw_weights / np.sum(raw_weights)
 

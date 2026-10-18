@@ -7,6 +7,7 @@ import time
 from typing import Any, Optional
 
 import gradio as gr  # pytype: disable=import-error
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -15,6 +16,7 @@ REPO_ROOT = os.path.dirname(THIS_DIR)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from flaxspeaker import evaluation  # noqa: E402
 from flaxspeaker import hf_compat  # noqa: E402
 
 
@@ -58,6 +60,7 @@ def build_diagnostic_plot(
     score: float,
     model_name: str,
 ) -> Any:
+    plt.close("all")
     fig, axes = plt.subplots(1, 3, figsize=(13.5, 3.6), dpi=130)
     fig.patch.set_facecolor("#FFFFFF")
 
@@ -125,9 +128,23 @@ def verify_pair(
     model = get_model(model_name)
     enroll_feats = model.frontend.extract_from_file(enroll_audio)
     test_feats = model.frontend.extract_from_file(test_audio)
-    enroll_emb = model.extract_embedding(enroll_audio)
-    test_emb = model.extract_embedding(test_audio)
-    score = model.verify(enroll_audio, test_audio)
+    enroll_emb = np.asarray(
+        evaluation.run_inference(
+            jnp.asarray(enroll_feats, dtype=jnp.float32),
+            model.state,
+            model.exp_config,
+        ),
+        dtype=np.float32,
+    )
+    test_emb = np.asarray(
+        evaluation.run_inference(
+            jnp.asarray(test_feats, dtype=jnp.float32),
+            model.state,
+            model.exp_config,
+        ),
+        dtype=np.float32,
+    )
+    score = model.score_embeddings(enroll_emb, test_emb)
     elapsed_ms = (time.time() - t0) * 1000.0
 
     is_same = score >= threshold

@@ -47,6 +47,8 @@ setuptools.setup(
     ],
     extras_require={
         "export": ["tensorflow", "ai-edge-litert"],
+        "demo": ["gradio"],
+        "dev": ["pytest", "pytest-cov", "flake8", "pytype", "pdoc"],
     },
     entry_points={
         "console_scripts": [

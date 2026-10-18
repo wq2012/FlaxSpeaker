@@ -38,6 +38,7 @@ Repository = "https://github.com/wq2012/FlaxSpeaker"
 
 [project.optional-dependencies]
 export = ["tensorflow", "ai-edge-litert"]
+demo = ["gradio"]
 dev = ["pytest", "pytest-cov", "flake8", "pytype", "pdoc"]
 
 [project.scripts]

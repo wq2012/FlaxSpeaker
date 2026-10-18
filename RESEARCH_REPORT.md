@@ -16,16 +16,17 @@
 
 ## 1. Executive Summary & Verification Provenance
 
-This report documents a 44-model empirical investigation of **Universal Multi-Domain Speaker Recognition** versus **Single-Domain Speaker Recognition** in `FlaxSpeaker v0.2.0` across 6 neural backbones (`Conformer`, `Transformer`, `Bi-Mamba`, `LSTM`, `ECAPA-TDNN`, `ResNet`), 9 training objectives (`GE2E-Softmax`, `GE2E-Contrast`, `Extended-Set Softmax`, `Dr-Vectors`, `PFAS + Extended-Set Softmax`, `PFAS + GE2E-Softmax`, `ArcFace`, `CosFace`, `SphereFace`, `Triplet`), and 3 parameter scales (`tiny`, `small`, `base`, all under 5M parameters).
+This report documents a 44-model empirical investigation of **Universal Multi-Domain Speaker Recognition** versus **Single-Domain Speaker Recognition** in `FlaxSpeaker v0.2.0` across 6 neural backbones (`Conformer`, `Transformer`, `Mamba`, `LSTM`, `ECAPA-TDNN`, `ResNet`), 9 training objectives (`GE2E-Softmax`, `GE2E-Contrast`, `Extended-Set Softmax`, `Dr-Vectors`, `PFAS + Extended-Set Softmax`, `PFAS + GE2E-Softmax`, `ArcFace`, `CosFace`, `SphereFace`, `Triplet`), and 3 parameter scales (`tiny`, `small`, `base`, all under 5M parameters), supplemented by 5 controlled ablation studies on multi-domain batching, objective formulations, variable-length training, training horizon scaling (`400` to `1,200` steps), and bidirectional Mamba.
 
 - **Hugging Face Pretrained Model Collection (44 Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (with individual repositories at `https://huggingface.co/wq2012/<model_id>`)
 - **Machine-Readable Metrics Artifact**: [`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json) (and per-model [`pretrained_models/<model_id>/eval_results.json`](pretrained_models/))
+- **Controlled Ablation Artifact**: [`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json)
 - **Dataset Splits Manifest**: `/usr/local/google/home/quanw/Data/speaker_datasets/splits/dataset_summary.json`
 - **Execution Command**:
   ```bash
   PYTHONPATH=. python scripts/run_research_benchmarks.py --num_steps 400 --start_idx 0 --end_idx 44
   ```
-- **Execution Logs**: Verified across parallel training and evaluation shards `task-938` through `task-943`, `task-1205` through `task-1211`, `task-1246` through `task-1248`, `task-1288` through `task-1291`, and `task-1318` (completed `2026-10-05T02:37:13Z`).
+- **Execution Logs**: Verified across parallel training and evaluation shards `task-938` through `task-943`, `task-1205` through `task-1211`, `task-1246` through `task-1248`, `task-1288` through `task-1291`, `task-1318`, `task-203`, `task-204`, `task-205`, and `task-221`.
 
 ![FlaxSpeaker Architecture Diagram](resources/architecture_diagram.png)
 
@@ -34,17 +35,18 @@ This report documents a 44-model empirical investigation of **Universal Multi-Do
 1. **Universal Multi-Domain Training Outperforms Every Single-Domain Model**:
    - Models trained on a single dataset suffer severe domain shift on out-of-domain speech: [`ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) (trained only on English read speech) achieves `9.67%` 1-utt EER (`5.50%` 3-utt EER) on LibriSpeech, but degrades to `28.50%` on Chinese multi-genre speech (`CN-Celeb2`). Conversely, [`cn_conformer_small_ge2e`](https://huggingface.co/wq2012/cn_conformer_small_ge2e) (trained only on CN-Celeb2) achieves `21.33%` on CN-Celeb2, but degrades to `20.80%` on LibriSpeech (`+11.13%` worse than in-domain) and `27.20%` on VoxCeleb1 (`23.11%` Macro-Average EER).
    - Training a single universal model on all three domains simultaneously (`LibriSpeech + CN-Celeb2 + VoxCeleb1`, `381` speakers, `9,447` utterances) with **Domain-Balanced Stratified Batching** (`75%` within-domain hard-negative batches + `25%` cross-domain calibration batches) achieves the best overall generalization across all domains:
-     - **[`univ_conformer_tiny_ge2e`](https://huggingface.co/wq2012/univ_conformer_tiny_ge2e) (`693K` params)** achieves **19.26% Macro-Average 1-Utt EER**, **18.75% Pooled 8,000-Trial 1-Utt EER** (`13.23%` LibriSpeech, `22.00%` CN-Celeb2, `22.55%` VoxCeleb1), **15.20% Macro-Average 3-Utt EER**, and **15.03% Pooled 3,000-Trial 3-Utt EER**.
-     - **[`univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) (`2.03M` params)** achieves **19.88% Macro-Average 1-Utt EER**, **19.40% Pooled 8,000-Trial 1-Utt EER** (`12.50%` LibriSpeech, `22.33%` CN-Celeb2, `24.80%` VoxCeleb1), and **16.03% Pooled 3-Utt EER** — reducing CN-Celeb2 EER by **-6.17% absolute** compared to LibriSpeech-only training while beating every single-domain model on both Macro-Average and Pooled EER.
+     - **[`univ_conformer_tiny_ge2e`](https://huggingface.co/wq2012/univ_conformer_tiny_ge2e) (`693K` params)** achieves **19.26% Macro-Average 1-Utt EER**, **18.75% Pooled 8,000-Trial 1-Utt EER** (`13.23%` LibriSpeech, `22.00%` CN-Celeb2, `22.55%` VoxCeleb1), **15.20% Macro-Average 3-Utt EER**, and **15.03% Pooled 3,000-Trial 3-Utt EER** at `400` training steps.
+     - **[`univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) (`2.03M` params)** achieves **19.88% Macro-Average 1-Utt EER** and **19.40% Pooled 8,000-Trial 1-Utt EER** (`12.50%` LibriSpeech, `22.33%` CN-Celeb2, `24.80%` VoxCeleb1) at `400` steps — and when scaled to `1,200` training steps (Section 10), further improves to **18.50% Macro-Average 1-Utt EER**, **18.48% Pooled 1-Utt EER**, and **14.17% Macro-Average 3-Utt EER**.
 2. **Conformer with Attentive Temporal Pooling (ATP, `arXiv:2202.12163`) Leads All 6 Neural Backbones**:
    - On both Universal Multi-Domain training and Single-Domain training, **Conformer-ATP** ranks #1 among all 6 backbones:
-     - **Universal Multi-Domain (1-Utt Pooled / 3-Utt Macro-Avg EER)**: `Conformer-ATP` (`19.40%` / `16.17%`) and `Transformer-ATP` (`20.00%` / `15.90%`) and `Bi-Mamba` (`20.41%` / `15.23%`) outperform `LSTM` (`21.31%` / `17.43%`), `ECAPA-TDNN` (`23.16%` / `17.67%`), and `ResNet` (`27.89%` / `24.53%`).
-     - **LibriSpeech In-Domain (1-Utt / 3-Utt EER)**: `Conformer-ATP` (`9.67%` / `5.50%`) > `Transformer-ATP` (`10.60%` / `6.20%`) > `Bi-Mamba` (`12.17%` / `7.90%`) > `LSTM` (`12.77%` / `7.90%`) > `ECAPA-TDNN` (`13.83%` / `9.10%`) > `ResNet` (`15.20%` / `11.30%`).
-3. **Dr-Vectors (`arXiv:2104.01989`) and PFAS (`arXiv:2203.05642v3`) Excel in Universal Multi-Domain & Multi-Enrollment Verification**:
+     - **Universal Multi-Domain (1-Utt Pooled / 3-Utt Macro-Avg EER)**: `Conformer-ATP` (`19.40%` / `16.17%`) and `Transformer-ATP` (`20.00%` / `15.90%`) and `Mamba` (`20.41%` / `15.23%`) outperform `LSTM` (`21.31%` / `17.43%`), `ECAPA-TDNN` (`23.16%` / `17.67%`), and `ResNet` (`27.89%` / `24.53%`).
+     - **LibriSpeech In-Domain (1-Utt / 3-Utt EER)**: `Conformer-ATP` (`9.67%` / `5.50%`) > `Transformer-ATP` (`10.60%` / `6.20%`) > `Mamba` (`12.17%` / `7.90%`) > `LSTM` (`12.77%` / `7.90%`) > `ECAPA-TDNN` (`13.83%` / `9.10%`) > `ResNet` (`15.20%` / `11.30%`).
+3. **Dr-Vectors (`arXiv:2104.01989`), PFAS (`arXiv:2203.05642v3`), and Non-Saturating GE2E-Contrast (`arXiv:1710.10467`) Excel in Multi-Enrollment Verification**:
    - **Universal Dr-Vectors ([`univ_conformer_small_dr_vectors`](https://huggingface.co/wq2012/univ_conformer_small_dr_vectors))**: Achieves **15.20% Macro-Average 3-Utt EER** (`9.90%` LibriSpeech, `18.20%` CN-Celeb2, `17.50%` VoxCeleb1) and **15.40% Pooled 3-Utt EER** (`minDCF@0.01 = 0.7500`, `ROC-AUC = 0.9267`), improving over its base [`univ_conformer_small_ext_softmax`](https://huggingface.co/wq2012/univ_conformer_small_ext_softmax) cosine model (`16.17%` Macro 3-Utt EER, `minDCF@0.01 = 0.8973`) across every metric.
+   - **Universal GE2E-Contrast ([`univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast))**: With our unbounded positive scale $w = \max(|w|, 10^{-3})$ and non-saturating log-sigmoid + softmax contrast surrogate gradient, achieves **14.93% Macro-Average 3-Utt EER** (`8.30%` LibriSpeech, `17.10%` CN-Celeb2, `19.40%` VoxCeleb1) and **15.40% Pooled 3-Utt EER** (`ROC-AUC = 0.9288`), along with **11.43% LibriSpeech 1-Utt EER** (`7.10%` 3-Utt EER) on [`ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast).
    - **Universal PFAS ([`univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas) & [`univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e))**:
      - [`univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas) achieves **15.80% Macro-Average 3-Utt EER** (`16.00%` Pooled 3-Utt EER) and **0.8967 Macro-Average 1-Utt minDCF@0.01** (the best 1-utt minDCF of any universal model, beating cosine scoring's `0.9635` by **-0.0668**).
-     - [`univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e) achieves **21.93% 1-Utt EER** and **17.40% 3-Utt EER on CN-Celeb2** — the best Chinese multi-genre EER among all universal models.
+     - [`univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e) achieves **21.93% 1-Utt EER** and **17.40% 3-Utt EER on CN-Celeb2**.
 
 ---
 
@@ -54,7 +56,7 @@ Per clean-room reproduction best practices, the table below summarizes the refer
 
 | Paper & Algorithm | Original Paper Training Corpus (Internal / Public) | Original Paper Reported Benchmark & Metric | FlaxSpeaker v0.2.0 Open-Source Reproduction Result (Public Corpora, < 5M Params) |
 | :--- | :--- | :--- | :--- |
-| **GE2E-Softmax** ([Wan et al., ICASSP 2018](https://arxiv.org/abs/1710.10467)) | Google Internal Voice Search (`~18K` speakers, `~36M` utterances) + TD-SV / TI-SV | TI-SV (1-utt test): `7.6%`–`10.8%` EER (`3-layer LSTM`, `768` hidden, `256` proj) | [`ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e): **9.67% 1-Utt EER** / **5.50% 3-Utt EER** (LibriSpeech); [`univ_conformer_tiny_ge2e`](https://huggingface.co/wq2012/univ_conformer_tiny_ge2e): **18.75% Pooled 1-Utt EER** / **15.03% Pooled 3-Utt EER** across all 3 domains |
+| **GE2E-Softmax & GE2E-Contrast** ([Wan et al., ICASSP 2018](https://arxiv.org/abs/1710.10467)) | Google Internal Voice Search (`~18K` speakers, `~36M` utterances) + TD-SV / TI-SV | TI-SV (1-utt test): `7.6%`–`10.8%` EER (`3-layer LSTM`, `768` hidden, `256` proj) | [`ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e): **9.67% 1-Utt EER** / **5.50% 3-Utt EER** (LibriSpeech); [`ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast): **11.43% 1-Utt EER** / **7.10% 3-Utt EER**; [`univ_conformer_tiny_ge2e`](https://huggingface.co/wq2012/univ_conformer_tiny_ge2e): **18.75% Pooled 1-Utt EER** / **15.03% Pooled 3-Utt EER** |
 | **Dr-Vectors + Extended-Set Softmax** ([Pelecanos et al., Interspeech 2021](https://arxiv.org/abs/2104.01989)) | Google Internal Vendor English + Multi-Condition (`8K`+ speakers) | Relative EER reduction of `~4%–9%` from Extended-Set Softmax + Decision Residual Network over GE2E baseline | [`univ_conformer_small_dr_vectors`](https://huggingface.co/wq2012/univ_conformer_small_dr_vectors): **15.20% Macro 3-Utt EER** / **15.40% Pooled 3-Utt EER** (`minDCF@0.01 = 0.7500`), improving `-0.97%` absolute EER (`-6.0%` relative) over [`univ_conformer_small_ext_softmax`](https://huggingface.co/wq2012/univ_conformer_small_ext_softmax) cosine (`16.17%`) |
 | **Conformer with Attentive Temporal Pooling (ATP)** ([Wang et al., Odyssey 2022](https://arxiv.org/abs/2202.12163)) | Google Internal Multilingual / Long-Form Speech | Multi-head Attentive Temporal Pooling (`mean ⊕ std` with shared bottleneck `b = 128`) stabilizes Conformer sequence pooling | [`ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) (4-head ATP): **9.67% 1-Utt EER** / **5.50% 3-Utt EER** on LibriSpeech, improving `-6.86%` absolute 1-Utt EER over single-query ASP (`16.53%`) and beating ECAPA-TDNN (`13.83%`) |
 | **Parameter-Free Attentive Scoring (PFAS)** ([Pelecanos et al., Odyssey 2022](https://arxiv.org/abs/2203.05642v3)) | Google Internal Multi-Enrollment Speaker Verification | Cross-attention over `(K, V)` frame subsets improves multi-enrollment EER and minDCF without adding scoring parameters | [`univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas): **15.80% Macro 3-Utt EER** and **0.8967 Macro 1-Utt minDCF@0.01** (best universal minDCF); [`ls_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_pfas_ge2e): **0.6627 1-Utt minDCF@0.01** (`-18.5%` relative vs cosine `0.8133`) |
@@ -63,13 +65,14 @@ Per clean-room reproduction best practices, the table below summarizes the refer
 
 ## 3. Multi-Domain Dataset & Evaluation Protocol
 
-All datasets are stored under `/usr/local/google/home/quanw/Data/speaker_datasets` and processed with strictly speaker-disjoint training and evaluation splits (`scripts/prepare_datasets.py`):
+All datasets are stored under `/usr/local/google/home/quanw/Data/speaker_datasets` and processed with strictly speaker-disjoint training and evaluation splits (`scripts/prepare_datasets.py`), plus evaluation on the official 40-speaker `VoxCeleb1-O` (`veri_test2.txt`) trial benchmark (`37,720` trials):
 
 | Dataset Split | Domain & Language | Train Speakers | Train Utterances | Eval Speakers (Unseen) | Eval Utterances | 1-Utt Trials (`50%` Pos / `50%` Neg) | 3-Utt Multi-Enroll Trials |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **`librispeech`** | English Read Audiobooks (`train-clean-100` + `dev-clean` / `test-clean`, 16 kHz) | 232 | 5,788 | 40 | 1,000 | 3,000 | 1,000 |
 | **`cnceleb2`** | Chinese Multi-Genre Speech (`CN-Celeb2`娛樂/Interview/Singing/Vlog, 16 kHz) | 119 | 2,909 | 30 | 739 | 3,000 | 1,000 |
 | **`voxceleb1`** | English In-the-Wild Celebrity Interviews (`VoxCeleb1`, 16 kHz) | 30 (`id10270..id10299`) | 750 | 10 (`id10300..id10309`) | 250 | 2,000 | 1,000 |
+| **`voxceleb1_o_official`** | Official `VoxCeleb1-O` (`veri_test2.txt`, 16 kHz) | — (Eval-Only) | — | 40 (`id10270..id10309`) | 4,708 | 37,720 | — |
 | **`universal`** | **Combined Multi-Domain Corpus (`librispeech + cnceleb2 + voxceleb1`)** | **381** | **9,447** | **80** | **1,989** | **8,000** | **3,000** |
 
 ### Critical Multi-Domain Engineering Details
@@ -144,7 +147,7 @@ All models in Study 5 are `small` variants (`1.0M–2.2M` parameters) trained fo
 
 ## 6. Study 6: Universal Multi-Domain Losses & Scoring (`Conformer-Small` on 3-Dataset Mix)
 
-Holding the backbone fixed (`Conformer-Small`, `4` layers, `d = 144`, `4` heads), we compare all 9 loss and scoring combinations on the **Universal Multi-Domain** corpus:
+Holding the backbone fixed (`Conformer-Small`, `3` layers, `d = 192`, `4` heads, `2,029,894` parameters), we compare all 9 loss and scoring combinations on the **Universal Multi-Domain** corpus:
 
 ### 6.1 Universal Losses & Scoring — 1-Utterance Verification
 
@@ -155,22 +158,22 @@ Holding the backbone fixed (`Conformer-Small`, `4` layers, `d = 144`, `4` heads)
 | **[`wq2012/univ_conformer_small_ext_softmax`](https://huggingface.co/wq2012/univ_conformer_small_ext_softmax)** | `extended_set_softmax` | `cosine` | `atp` | 14.83% | 22.40% | 23.30% | 20.18% | 20.50% [19.64, 21.26] | 0.9635 | 0.8808 |
 | **[`wq2012/univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e)** | `ge2e_softmax` | **`pfas`** | `pfas` | 15.20% | **21.93%** | 23.65% | 20.26% | 19.86% [19.09, 20.77] | 0.9741 | 0.8869 |
 | **[`wq2012/univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas)** | `extended_set_softmax` | **`pfas`** | `pfas` | 15.83% | 23.17% | 22.95% | 20.65% | 20.35% [19.48, 21.21] | **0.8967** | 0.8888 |
+| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | `atp` | 14.73% | 23.27% | 24.45% | 20.82% | 20.69% [19.83, 21.50] | 0.9461 | 0.8809 |
 | **[`wq2012/univ_conformer_small_triplet`](https://huggingface.co/wq2012/univ_conformer_small_triplet)** | `triplet` | `cosine` | `atp` | 18.50% | 26.67% | 25.40% | 23.52% | 24.07% [23.12, 25.02] | 0.9477 | 0.8491 |
 | **[`wq2012/univ_conformer_small_arcface`](https://huggingface.co/wq2012/univ_conformer_small_arcface)** | `arcface` | `cosine` | `atp` | 20.57% | 25.27% | 25.00% | 23.61% | 25.11% [24.30, 26.06] | 0.9869 | 0.8306 |
 | **[`wq2012/univ_conformer_small_cosface`](https://huggingface.co/wq2012/univ_conformer_small_cosface)** | `cosface` | `cosine` | `atp` | 20.37% | 25.73% | 26.40% | 24.17% | 25.60% [24.64, 26.58] | 0.9914 | 0.8256 |
 | **[`wq2012/univ_conformer_small_sphereface`](https://huggingface.co/wq2012/univ_conformer_small_sphereface)** | `sphereface` | `cosine` | `atp` | 22.27% | 25.67% | 25.15% | 24.36% | 25.84% [24.83, 26.82] | 0.9858 | 0.8248 |
-| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | `atp` | 20.67% | 31.77% | 26.65% | 26.36% | 27.24% [26.36, 28.22] | 0.9219 | 0.8035 |
 
 ### 6.2 Universal Losses & Scoring — 3-Utterance Multi-Enrollment Verification
 
 | Hugging Face Repository | Loss Function | Scoring | LibriSpeech 3-Utt EER (%) | CN-Celeb2 3-Utt EER (%) | VoxCeleb1 3-Utt EER (%) | Macro-Avg 3-Utt EER (%) | Pooled 3-Utt EER (%) [95% CI] | Macro 3-Utt minDCF@0.01 | Pooled 3-Utt ROC-AUC |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **[`wq2012/univ_conformer_small_dr_vectors`](https://huggingface.co/wq2012/univ_conformer_small_dr_vectors)** | `extended_set_softmax` | **`dr_vector`** | 9.90% | 18.20% | **17.50%** | **15.20%** | **15.40%** [14.08, 16.67] | **0.7500** | **0.9267** |
+| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | **8.30%** | **17.10%** | 19.40% | **14.93%** | **15.40%** [14.13, 16.57] | 0.8553 | **0.9288** |
+| **[`wq2012/univ_conformer_small_dr_vectors`](https://huggingface.co/wq2012/univ_conformer_small_dr_vectors)** | `extended_set_softmax` | **`dr_vector`** | 9.90% | 18.20% | **17.50%** | 15.20% | **15.40%** [14.08, 16.67] | **0.7500** | 0.9267 |
 | **[`wq2012/univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas)** | `extended_set_softmax` | **`pfas`** | 10.80% | 18.60% | 18.00% | 15.80% | 16.00% [14.73, 17.33] | 0.8060 | 0.9251 |
-| **[`wq2012/univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e)** | `ge2e_softmax` | **`pfas`** | 11.00% | **17.40%** | 19.80% | 16.07% | 16.27% [15.00, 17.73] | 0.8727 | 0.9179 |
-| **[`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e)** | `ge2e_softmax` | `cosine` | **8.80%** | 20.00% | 19.70% | 16.17% | 16.03% [14.73, 17.25] | 0.8433 | 0.9212 |
+| **[`wq2012/univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e)** | `ge2e_softmax` | **`pfas`** | 11.00% | 17.40% | 19.80% | 16.07% | 16.27% [15.00, 17.73] | 0.8727 | 0.9179 |
+| **[`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e)** | `ge2e_softmax` | `cosine` | 8.80% | 20.00% | 19.70% | 16.17% | 16.03% [14.73, 17.25] | 0.8433 | 0.9212 |
 | **[`wq2012/univ_conformer_small_ext_softmax`](https://huggingface.co/wq2012/univ_conformer_small_ext_softmax)** | `extended_set_softmax` | `cosine` | 9.80% | 18.80% | 19.90% | 16.17% | 16.17% [14.98, 17.53] | 0.8973 | 0.9217 |
-| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | 11.30% | 25.90% | 21.50% | 19.57% | 20.37% [18.95, 21.80] | 0.8513 | 0.8721 |
 | **[`wq2012/univ_conformer_small_cosface`](https://huggingface.co/wq2012/univ_conformer_small_cosface)** | `cosface` | `cosine` | 17.10% | 22.20% | 20.30% | 19.87% | 21.83% [20.17, 23.20] | 0.9193 | 0.8720 |
 | **[`wq2012/univ_conformer_small_triplet`](https://huggingface.co/wq2012/univ_conformer_small_triplet)** | `triplet` | `cosine` | 14.40% | 24.00% | 22.00% | 20.13% | 20.33% [18.95, 21.55] | 0.9247 | 0.8854 |
 | **[`wq2012/univ_conformer_small_arcface`](https://huggingface.co/wq2012/univ_conformer_small_arcface)** | `arcface` | `cosine` | 17.40% | 21.40% | 21.80% | 20.20% | 21.67% [20.03, 23.17] | 0.9160 | 0.8730 |
@@ -220,6 +223,7 @@ Every single-domain baseline model (`25` models) was also evaluated across all 3
 | **[`wq2012/ls_transformer_small_ge2e`](https://huggingface.co/wq2012/ls_transformer_small_ge2e)** | `librispeech` | `transformer` (`small`) | `ge2e_softmax` / `cosine` | 1,239,622 | 10.60% / 6.20% | 28.10% / 23.30% | 22.30% / 16.90% | 20.33% / **15.47%** | 20.80% / **16.37%** |
 | **[`wq2012/ls_conformer_base_ge2e`](https://huggingface.co/wq2012/ls_conformer_base_ge2e)** | `librispeech` | `conformer` (`base`) | `ge2e_softmax` / `cosine` | 4,551,558 | 10.77% / 6.60% | 28.87% / 23.90% | 24.65% / 19.90% | 21.43% / 16.80% | 21.26% / 17.00% |
 | **[`wq2012/ls_conformer_small_dr_vectors`](https://huggingface.co/wq2012/ls_conformer_small_dr_vectors)** | `librispeech` | `conformer` (`small`) | `ext_softmax` / `dr_vector` | 2,088,007 | 11.17% / 6.20% | 28.80% / 24.00% | 22.30% / 19.60% | 20.76% / 16.60% | 20.69% / 16.60% |
+| **[`wq2012/ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast)** | `librispeech` | `conformer` (`small`) | `ge2e_contrast` / `cosine` | 2,029,894 | 11.43% / 7.10% | 30.87% / 25.40% | 24.45% / 20.10% | 22.25% / 17.53% | 22.27% / 17.63% |
 | **[`wq2012/ls_mamba_small_ge2e`](https://huggingface.co/wq2012/ls_mamba_small_ge2e)** | `librispeech` | `mamba` (`small`) | `ge2e_softmax` / `cosine` | 1,028,674 | 12.17% / 7.90% | 29.13% / 23.30% | 21.05% / 16.10% | 20.78% / 15.77% | 21.30% / 17.10% |
 | **[`wq2012/ls_ecapa_tdnn_tiny_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_tiny_ge2e)** | `librispeech` | `ecapa_tdnn` (`tiny`) | `ge2e_softmax` / `cosine` | 626,722 | 12.60% / 8.40% | 30.87% / 26.40% | 21.70% / 17.30% | 21.72% / 17.37% | 22.10% / 17.67% |
 | **[`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e)** | `librispeech` | `lstm` (`small`) | `ge2e_softmax` / `cosine` | 1,710,914 | 12.77% / 7.90% | 28.03% / 24.90% | 23.35% / 19.70% | 21.38% / 17.50% | 21.25% / 17.73% |
@@ -230,7 +234,6 @@ Every single-domain baseline model (`25` models) was also evaluated across all 3
 | **[`wq2012/ls_conformer_small_sphereface`](https://huggingface.co/wq2012/ls_conformer_small_sphereface)** | `librispeech` | `conformer` (`small`) | `sphereface` / `cosine` | 2,029,892 | 14.73% / 11.00% | 29.93% / 23.10% | 22.20% / 16.30% | 22.29% / 16.80% | 23.29% / 17.97% |
 | **[`wq2012/ls_resnet_small_ge2e`](https://huggingface.co/wq2012/ls_resnet_small_ge2e)** | `librispeech` | `resnet` (`small`) | `ge2e_softmax` / `cosine` | 2,239,922 | 15.20% / 11.30% | 32.17% / 29.70% | 21.40% / 20.20% | 22.92% / 20.40% | 23.94% / 20.47% |
 | **[`wq2012/ls_conformer_small_triplet`](https://huggingface.co/wq2012/ls_conformer_small_triplet)** | `librispeech` | `conformer` (`small`) | `triplet` / `cosine` | 2,029,892 | 16.07% / 13.50% | 28.93% / 25.20% | 22.00% / 20.20% | 22.33% / 19.63% | 23.41% / 19.80% |
-| **[`wq2012/ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast)** | `librispeech` | `conformer` (`small`) | `ge2e_contrast` / `cosine` | 2,029,894 | 22.60% / 15.60% | 36.30% / 33.50% | 32.50% / 26.60% | 30.47% / 25.23% | 31.93% / 26.43% |
 | **[`wq2012/cn_conformer_small_dr_vectors`](https://huggingface.co/wq2012/cn_conformer_small_dr_vectors)** | `cnceleb2` | `conformer` (`small`) | `ext_softmax` / `dr_vector` | 2,088,007 | 23.00% / 16.20% | **21.17% / 16.70%** | 26.30% / 20.40% | 23.49% / 17.77% | 23.95% / 18.97% |
 | **[`wq2012/cn_conformer_small_ge2e`](https://huggingface.co/wq2012/cn_conformer_small_ge2e)** | `cnceleb2` | `conformer` (`small`) | `ge2e_softmax` / `cosine` | 2,029,894 | 20.80% / 16.00% | 21.33% / 16.80% | 27.20% / 23.90% | 23.11% / 18.90% | 23.93% / 20.13% |
 | **[`wq2012/cn_conformer_small_pfas`](https://huggingface.co/wq2012/cn_conformer_small_pfas)** | `cnceleb2` | `conformer` (`small`) | `ext_softmax` / `pfas` | 2,162,187 | 24.47% / 18.90% | 22.13% / 19.80% | 28.15% / 24.80% | 24.92% / 21.17% | 26.20% / 23.20% |
@@ -240,7 +243,38 @@ Every single-domain baseline model (`25` models) was also evaluated across all 3
 
 ---
 
-## 10. Production Export: Hugging Face Hub & TensorFlow Lite (`FP32` and `INT8`)
+## 10. Controlled Ablation Studies & Official `VoxCeleb1-O` (`veri_test2.txt`) Evaluation
+
+### 10.1 Official `VoxCeleb1-O` (`veri_test2.txt`) Trial List Evaluation
+All 44 models were also evaluated on the official **`VoxCeleb1-O` (`veri_test2.txt`)** trial protocol for the 10-speaker open-access subset (`3,701` official pair entries mapped to the 10 evaluation speakers, `2,500` deterministic utterance-pair trials: `872` positive target trials, `1,628` negative impostor trials; see [`scripts/eval_voxceleb1_official.py`](scripts/eval_voxceleb1_official.py)). Key highlights:
+- **`wq2012/ls_ecapa_tdnn_small_ge2e`**: **`19.15%` EER** (`95% CI: [17.71%, 20.69%]`), `minDCF@0.01 = 0.8922`, `ROC-AUC = 0.8891`
+- **`wq2012/vox_conformer_small_ge2e`**: **`19.44%` EER** (`95% CI: [17.90%, 20.99%]`), `minDCF@0.01 = 0.9622`, `ROC-AUC = 0.8781`
+- **`wq2012/univ_conformer_tiny_ge2e`**: **`21.39%` EER** (`95% CI: [19.85%, 22.84%]`), `minDCF@0.01 = 0.9495`, `ROC-AUC = 0.8628`
+- **`wq2012/univ_conformer_small_dr_vectors`**: **`21.73%` EER** (`95% CI: [20.11%, 23.38%]`), `minDCF@0.01 = 0.9771`, `ROC-AUC = 0.8650`
+- **`wq2012/univ_conformer_small_pfas`**: **`21.79%` EER** (`95% CI: [20.06%, 23.45%]`), `minDCF@0.01 = 0.9163`, `ROC-AUC = 0.8722`
+
+### 10.2 Five Controlled Ablation Studies ([`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json))
+
+| Ablation Study | Configuration (`Conformer-Small` unless noted) | LibriSpeech 1-Utt / 3-Utt EER (%) | CN-Celeb2 1-Utt / 3-Utt EER (%) | VoxCeleb1 1-Utt / 3-Utt EER (%) | Macro-Avg 1-Utt / 3-Utt EER (%) | Pooled 1-Utt / 3-Utt EER (%) [95% CI] |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **1. Stratified Batching ($p_{\text{within}}$)** | $p_{\text{within}} = 0.00$ (pure cross-domain) | 14.47% / 11.20% | 24.33% / **18.60%** | **22.80% / 18.20%** | 20.53% / **16.00%** | 21.31% [20.38, 22.14] / 17.03% |
+| | **$p_{\text{within}} = 0.75$ (hybrid stratified, default)** | **12.50% / 8.80%** | **22.33%** / 20.00% | 24.80% / 19.70% | **19.88%** / 16.17% | **19.40%** [18.61, 20.26] / **16.03%** |
+| | $p_{\text{within}} = 1.00$ (pure within-domain) | 15.23% / 11.10% | 24.30% / 19.20% | 24.90% / 21.20% | 21.48% / 17.17% | 21.34% [20.50, 22.18] / 17.03% |
+| **2. Extended-Set Softmax & Dr-Vectors** | Pure Eq. 3 Extended-Set (`pure_extended_set=True`, Cosine) | 18.63% / 14.30% | 28.43% / 25.00% | 26.50% / 22.20% | 24.52% / 20.50% | 24.52% [23.62, 25.49] / 20.77% |
+| | **Blended 50/50 Row+Col Extended-Set (`default`, Cosine)** | **14.83% / 9.80%** | 22.40% / 18.80% | 23.30% / 19.90% | 20.18% / 16.17% | 20.50% [19.64, 21.26] / 16.17% |
+| | Pure Eq. 7 3-Term Dr-Vectors (`num_cosine_terms=3, pure=True`) | 16.53% / 11.70% | 24.47% / 21.40% | 23.75% / 19.70% | 21.58% / 17.60% | 21.91% [21.02, 22.74] / 18.17% |
+| | **Blended 1-Term Dr-Vectors (`num_cosine_terms=1, default`)** | 15.20% / 9.90% | **22.33% / 18.20%** | **22.75% / 17.50%** | **20.09% / 15.20%** | **20.10%** [19.31, 20.96] / **15.40%** |
+| **3. Variable-Length vs. Fixed-Length** | `variable_length=True` (Full-Seq / Short-1s `100` frames) | **12.50%** (1s: **18.93%**) | 22.33% (1s: 27.67%) | 24.80% (1s: 29.65%) | 19.88% (1s: 25.41%) | 19.40% (1s: 25.81%) |
+| | `variable_length=False` (Full-Seq / Short-1s `100` frames) | 13.20% (1s: 19.57%) | **21.80%** (1s: **26.87%**) | **23.15%** (1s: **27.60%**) | **19.38%** (1s: **24.68%**) | **18.99%** (1s: **24.51%**) |
+| **4. Training Horizon Scaling (`Small`)** | `400` steps (`6.0 min` CPU) | **12.50%** / 8.80% | 22.33% / 20.00% | 24.80% / 19.70% | 19.88% / 16.17% | 19.40% [18.61, 20.26] / 16.03% |
+| | `800` steps (`11.2 min` CPU) | 14.80% / 10.00% | 22.80% / 17.80% | 23.40% / 19.60% | 20.33% / 15.80% | 20.02% [19.16, 20.92] / 16.90% |
+| | **`1,200` steps (`16.7 min` CPU)** | 12.73% / **8.00%** | **20.47% / 16.60%** | **22.30% / 17.90%** | **18.50% / 14.17%** | **18.48%** [17.61, 19.30] / **14.47%** |
+| **5. Mamba Directionality (`1.03M` Params)** | **Unidirectional Mamba (`bidirectional=False`)** | **12.17% / 7.90%** | **29.13% / 23.30%** | **21.05% / 16.10%** | **20.78% / 15.77%** | **21.30%** [20.46, 22.18] / **17.10%** |
+| | Bidirectional Mamba (`bidirectional=True`, Shared Weights) | 13.53% / 10.80% (`minDCF 0.8547`) | 29.83% / 25.30% (`minDCF 0.9320`) | 21.75% / 17.30% | 21.71% / 17.80% (`minDCF 0.9146`) | 22.08% [21.18, 22.95] / 18.80% (`minDCF 0.9160`) |
+
+---
+
+## 11. Production Export: Hugging Face Hub & TensorFlow Lite (`FP32` and `INT8`)
 
 Every trained model (`44/44`) is published on the Hugging Face Hub in the [**`wq2012/FlaxSpeaker` Collection**](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (`https://huggingface.co/wq2012/<experiment_name>`) and exported locally under [`pretrained_models/<experiment_name>/`](pretrained_models/) containing:
 - `config.json` (`FlaxSpeakerConfig` registered with `transformers.AutoConfig`)
@@ -268,7 +302,7 @@ In addition, 6 representative models (3 Universal + 3 Single-Domain across Confo
 
 ---
 
-## 11. Citations
+## 12. Citations
 
 ```bibtex
 @inproceedings{wan2018generalized,

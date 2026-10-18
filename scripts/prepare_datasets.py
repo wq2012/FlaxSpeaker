@@ -25,18 +25,16 @@ from flaxspeaker import dataset  # noqa: E402
 from flaxspeaker import feature_extraction  # noqa: E402
 
 
-DEFAULT_DATA_ROOT = "/usr/local/google/home/quanw/Data/speaker_datasets"
+DEFAULT_DATA_ROOT = os.environ.get(
+    "FLAXSPEAKER_DATA_ROOT", os.path.expanduser("~/Data/speaker_datasets")
+)
 
 
 def _is_valid_audio(path: str) -> bool:
     try:
-        data, _ = sf.read(path, dtype="float32")
-        return data.size >= 1600
+        info = sf.info(path)
+        return int(info.frames) >= 1600
     except Exception:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
         return False
 
 

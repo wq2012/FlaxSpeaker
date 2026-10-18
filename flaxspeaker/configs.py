@@ -245,6 +245,7 @@ class MambaConfig:
     expand_factor: int = 2
     dt_rank: int = 16
     dropout_rate: float = 0.1
+    bidirectional: bool = False
 
 
 @dataclasses.dataclass
@@ -324,6 +325,8 @@ class PfasConfig:
     apply_l2_norm_to_values: bool = False
     apply_global_l2_norm_to_concat_form: bool = True
     apply_softmax_per_test_key: bool = False
+    use_global_anchor: bool = True
+    local_value_scale: float = 0.25
 
     @property
     def representation_dim(self) -> int:
@@ -343,7 +346,8 @@ class DrVectorConfig:
     residual_weight: float = 0.25
     add_cosine_to_network_output: bool = True
     append_cosine_as_feature_to_network_input: bool = True
-    num_cosine_terms: int = 128
+    num_cosine_terms: int = 1
+    symmetric_input: bool = False
     layer_type: str = "relu"
     num_cells: tuple[int, ...] = (128, 64)
 
@@ -365,6 +369,9 @@ class LossConfig:
     ge2e_vary_enroll_utts: bool = False
     ge2e_mask_dup_spk: bool = False
     multi_row_window: int = 0
+    pure_extended_set: bool = False
+    ext_softmax_normalize_by_num_speakers: bool = True
+    ext_softmax_row_softmax_weight: float = 0.5
     scale: float = 30.0
     margin: float = 0.2
     margin_scale: float = 30.0
@@ -530,6 +537,8 @@ class DataConfig:
     trials_file: str = ""
     audio_format: str = ".flac"
     speaker_label_index: int = -2
+    within_domain_prob: float = 0.75
+    domain_temp_alpha: float = 0.35
 
 
 @dataclasses.dataclass
@@ -554,6 +563,7 @@ class TrainConfig:
     num_steps: int = 500
     num_processes: int = 4
     seed: int = 42
+    saved_model_dir: str = ""
     specaug: SpecAugConfig = dataclasses.field(default_factory=SpecAugConfig)
     waveform_aug: WaveformAugConfig = dataclasses.field(
         default_factory=WaveformAugConfig
@@ -603,7 +613,15 @@ class ExperimentConfig:
     eval: EvalConfig = dataclasses.field(default_factory=EvalConfig)
     export: ExportConfig = dataclasses.field(default_factory=ExportConfig)
 
+    def __post_init__(self) -> None:
+        default_loss = LossConfig()
+        if self.loss != default_loss and self.train.loss == default_loss:
+            self.train.loss = self.loss
+        else:
+            self.loss = self.train.loss
+
     def to_dict(self) -> dict[str, Any]:
+        self.loss = self.train.loss
         return dataclasses.asdict(self)
 
     def to_munch(self) -> munch.Munch:
@@ -668,6 +686,8 @@ class ExperimentConfig:
                     _update_dataclass(
                         getattr(cfg.model, sub_name), model_d.pop(sub_name)
                     )
+            if cfg.model.dr_vector.num_cosine_terms == 128:
+                cfg.model.dr_vector.num_cosine_terms = 1
             _update_dataclass(cfg.model, model_d)
 
             if "backbone" not in d["model"]:
@@ -679,6 +699,7 @@ class ExperimentConfig:
                 cfg.frontend.n_mfcc = cfg.model.n_mfcc
                 cfg.frontend.n_mels = cfg.model.n_mfcc
 
+        cfg.loss = cfg.train.loss
         return cfg
 
     @classmethod

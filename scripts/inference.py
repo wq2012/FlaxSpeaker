@@ -26,7 +26,6 @@ import sys
 import time
 from typing import Any
 
-import jax.numpy as jnp
 import numpy as np
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -35,7 +34,6 @@ if REPO_ROOT not in sys.path:
 
 from flaxspeaker import export  # noqa: E402
 from flaxspeaker import hf_compat  # noqa: E402
-from flaxspeaker import scoring  # noqa: E402
 
 
 def main() -> None:
@@ -89,7 +87,7 @@ def main() -> None:
     def _extract_one(audio_path: str) -> np.ndarray:
         if tfl_runner is not None:
             feats = model.frontend.extract_from_file(audio_path)
-            return tfl_runner(feats[: model.exp_config.model.seq_len])
+            return tfl_runner(feats)
         return model.extract_embedding(audio_path)
 
     short_id = os.path.basename(os.path.normpath(args.model_dir))
@@ -120,18 +118,15 @@ def main() -> None:
     if args.enroll_audio and args.test_audio:
         t0 = time.time()
         enroll_paths = [p.strip() for p in args.enroll_audio.split(",") if p.strip()]
-        if len(enroll_paths) == 1 and tfl_runner is None:
-            score = model.verify(enroll_paths[0], args.test_audio)
+        if tfl_runner is None:
+            score = model.verify(
+                enroll_paths[0] if len(enroll_paths) == 1 else enroll_paths,
+                args.test_audio,
+            )
         else:
             e_embs = [_extract_one(p) for p in enroll_paths]
             t_emb = _extract_one(args.test_audio)
-            e_centroid = np.mean(np.stack(e_embs, axis=0), axis=0)
-            e_centroid = e_centroid / (np.linalg.norm(e_centroid) + 1e-6)
-            score = float(
-                scoring.cosine_similarity(
-                    jnp.asarray(e_centroid), jnp.asarray(t_emb)
-                )
-            )
+            score = model.score_embeddings(e_embs, t_emb)
         elapsed_ms = (time.time() - t0) * 1000.0
         output["enroll_audio"] = enroll_paths
         output["test_audio"] = args.test_audio

@@ -224,6 +224,7 @@ def build_modern_encoder_from_config(
             "d_conv": m_cfg.mamba.d_conv,
             "expand_factor": m_cfg.mamba.expand_factor,
             "dt_rank": m_cfg.mamba.dt_rank,
+            "bidirectional": bool(getattr(m_cfg.mamba, "bidirectional", False)),
         }
     elif b_type == "ecapa_tdnn":
         b_kwargs = {
@@ -251,7 +252,7 @@ def build_modern_encoder_from_config(
             "value_dim": m_cfg.pfas.value_dim,
             "attention_dim": m_cfg.pfas.attention_dim,
             "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
-            "atp_num_heads": getattr(m_cfg.pooling, "num_heads", 1),
+            "atp_num_heads": getattr(m_cfg.pooling, "num_heads", 4),
             "attention_type": m_cfg.pfas.attention_type,
             "apply_l2_norm_to_keys": getattr(
                 m_cfg.pfas, "apply_l2_norm_to_keys", True
@@ -259,18 +260,39 @@ def build_modern_encoder_from_config(
             "apply_l2_norm_to_values": getattr(
                 m_cfg.pfas, "apply_l2_norm_to_values", False
             ),
+            "apply_global_l2_norm_to_concat_form": getattr(
+                m_cfg.pfas, "apply_global_l2_norm_to_concat_form", True
+            ),
+            "use_global_anchor": getattr(
+                m_cfg.pfas, "use_global_anchor", True
+            ),
+            "local_value_scale": float(
+                getattr(m_cfg.pfas, "local_value_scale", 0.25)
+            ),
             "normalize_keys_and_values": m_cfg.pfas.normalize_keys_and_values,
             "normalize_overall_output": m_cfg.pfas.normalize_overall_output,
         }
     else:
+        stats_str = str(
+            getattr(
+                m_cfg.pooling,
+                "pooling_stats",
+                getattr(m_cfg.pooling, "stats_type", "MEAN_STD"),
+            )
+        ).lower()
+        eps_val = float(
+            getattr(
+                m_cfg.pooling,
+                "eps",
+                getattr(m_cfg.pooling, "epsilon", 1e-4),
+            )
+        )
         p_kwargs = {
             "attention_dim": m_cfg.pooling.attention_dim,
             "num_heads": getattr(m_cfg.pooling, "num_heads", 4),
             "subspace_heads": getattr(m_cfg.pooling, "subspace_heads", True),
-            "pooling_stats": getattr(
-                m_cfg.pooling, "pooling_stats", "mean_std"
-            ),
-            "eps": getattr(m_cfg.pooling, "eps", 1e-4),
+            "pooling_stats": stats_str,
+            "eps": eps_val,
             "use_global_context": m_cfg.pooling.use_global_context,
             "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
             "use_nonlinear_bottleneck": getattr(
@@ -307,6 +329,8 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
     """Create Optax optimizer with optional warmup cosine schedule and grad clip."""
     train_cfg = getattr(myconfig, "train", myconfig)
     lr = float(getattr(train_cfg, "learning_rate", 1e-3))
+    min_lr = float(getattr(train_cfg, "min_learning_rate", lr * 0.05))
+    end_lr = min(lr, max(min_lr, lr * 0.01))
     opt_name = str(getattr(train_cfg, "optimizer", "adam")).lower()
     weight_decay = float(getattr(train_cfg, "weight_decay", 0.0))
     grad_clip = float(getattr(train_cfg, "grad_clip_norm", 0.0))
@@ -323,13 +347,13 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
                 peak_value=lr,
                 warmup_steps=warmup_steps,
                 decay_steps=num_steps,
-                end_value=lr * 0.05,
+                end_value=end_lr,
             )
         else:
             schedule = optax.cosine_decay_schedule(
                 init_value=lr,
                 decay_steps=num_steps,
-                alpha=0.05,
+                alpha=end_lr / max(lr, 1e-12),
             )
     else:
         schedule = lr
@@ -339,8 +363,16 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
         transforms.append(optax.clip_by_global_norm(grad_clip))
 
     if opt_name == "adamw" and _is_modern_config(myconfig):
+        # Exclude 0D/1D parameters (_aux_w, _aux_b, biases, LayerNorm/GroupNorm scales)
+        # from L2 weight decay.
         transforms.append(
-            optax.adamw(learning_rate=schedule, weight_decay=weight_decay)
+            optax.adamw(
+                learning_rate=schedule,
+                weight_decay=weight_decay,
+                mask=lambda params: jax.tree_util.tree_map(
+                    lambda p: getattr(p, "ndim", 0) >= 2, params
+                ),
+            )
         )
     else:
         transforms.append(optax.adam(learning_rate=schedule))
@@ -378,12 +410,12 @@ def create_train_state(
             "extended_set_softmax",
             "pairwise",
         ):
-            params["_aux_w"] = jnp.array(
-                float(loss_cfg.ge2e_init_w), dtype=jnp.float32
-            )
-            params["_aux_b"] = jnp.array(
-                float(loss_cfg.ge2e_init_b), dtype=jnp.float32
-            )
+            init_w = float(loss_cfg.ge2e_init_w)
+            init_b = float(loss_cfg.ge2e_init_b)
+            if loss_type == "ge2e_contrast" and init_b == -5.0:
+                init_b = -1.0
+            params["_aux_w"] = jnp.array(init_w, dtype=jnp.float32)
+            params["_aux_b"] = jnp.array(init_b, dtype=jnp.float32)
 
         # Initialize trainable log scale factor for PFAS if enabled
         if scoring_type == "pfas" and getattr(
@@ -402,6 +434,14 @@ def create_train_state(
                 activation=dr_cfg.activation,
                 use_layer_norm=dr_cfg.use_layer_norm,
                 include_cosine_in_input=dr_cfg.include_cosine_in_input,
+                append_cosine_as_feature_to_network_input=getattr(
+                    dr_cfg, "append_cosine_as_feature_to_network_input", True
+                ),
+                add_cosine_to_network_output=getattr(
+                    dr_cfg, "add_cosine_to_network_output", True
+                ),
+                num_cosine_terms=int(getattr(dr_cfg, "num_cosine_terms", 1)),
+                symmetric_input=bool(getattr(dr_cfg, "symmetric_input", False)),
                 residual_weight=dr_cfg.residual_weight,
             )
             emb_dim = exp_cfg.model.output_embedding_dim
@@ -502,10 +542,24 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     n_spk = int(loss_cfg.num_speakers_per_batch)
     n_utt = int(loss_cfg.num_utts_per_speaker)
     split_batch = bool(loss_cfg.ge2e_split_batch)
+    exact_loo = bool(getattr(loss_cfg, "ge2e_exact_leave_one_out", True))
+    learn_wb = bool(getattr(loss_cfg, "ge2e_learn_wb", True))
+    wb_grad_scale = float(getattr(exp_cfg.train, "ge2e_grad_scale", 0.01))
     multi_row_window = int(loss_cfg.multi_row_window)
+    pure_ext = bool(getattr(loss_cfg, "pure_extended_set", False))
+    ext_norm_spks = bool(
+        getattr(loss_cfg, "ext_softmax_normalize_by_num_speakers", True)
+    )
+    ext_row_w = float(
+        getattr(loss_cfg, "ext_softmax_row_softmax_weight", 0.5)
+    )
     scale = float(loss_cfg.scale)
     margin = float(loss_cfg.margin)
     sphere_m = float(loss_cfg.sphereface_m)
+    sf_l_min = float(getattr(loss_cfg, "sphereface_lambda_min", 5.0))
+    sf_l_base = float(getattr(loss_cfg, "sphereface_lambda_base", 1000.0))
+    sf_l_gamma = float(getattr(loss_cfg, "sphereface_lambda_gamma", 0.12))
+    sf_l_power = float(getattr(loss_cfg, "sphereface_lambda_power", 1.0))
     triplet_alpha = float(exp_cfg.train.triplet_alpha)
     batch_size = int(exp_cfg.train.batch_size)
 
@@ -518,6 +572,14 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
             activation=dr_cfg.activation,
             use_layer_norm=dr_cfg.use_layer_norm,
             include_cosine_in_input=dr_cfg.include_cosine_in_input,
+            append_cosine_as_feature_to_network_input=getattr(
+                dr_cfg, "append_cosine_as_feature_to_network_input", True
+            ),
+            add_cosine_to_network_output=getattr(
+                dr_cfg, "add_cosine_to_network_output", True
+            ),
+            num_cosine_terms=int(getattr(dr_cfg, "num_cosine_terms", 1)),
+            symmetric_input=bool(getattr(dr_cfg, "symmetric_input", False)),
             residual_weight=dr_cfg.residual_weight,
         )
         if scoring_type == "dr_vector"
@@ -531,6 +593,12 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
         batch_labels: Optional[jax.Array] = None,
         batch_mask: Optional[jax.Array] = None,
     ) -> tuple[train_state.TrainState, jax.Array]:
+        step_f = state.step.astype(jnp.float32)
+        sf_lambda = jnp.maximum(
+            sf_l_min,
+            sf_l_base * jnp.power(1.0 + sf_l_gamma * step_f, -sf_l_power),
+        )
+
         def loss_fn(params: dict[str, Any]) -> jax.Array:
             embeddings = state.apply_fn(
                 {"params": params}, batch_input, mask=batch_mask
@@ -557,6 +625,9 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     value_dim=pfas_cfg.value_dim,
                     scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=bool(
+                        getattr(pfas_cfg, "apply_softmax_per_test_key", False)
+                    ),
                     apply_l2_norm_to_keys=getattr(
                         pfas_cfg, "apply_l2_norm_to_keys", True
                     ),
@@ -583,6 +654,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     w=params["_aux_w"],
                     b=params["_aux_b"],
                     split_batch=split_batch,
+                    exact_leave_one_out=exact_loo,
                     score_matrix_fn=score_fn,
                     is_pfas=is_pfas,
                     pfas_num_keys=pfas_cfg.num_keys,
@@ -597,6 +669,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     w=params["_aux_w"],
                     b=params["_aux_b"],
                     split_batch=split_batch,
+                    exact_leave_one_out=exact_loo,
                     score_matrix_fn=score_fn,
                 )
             elif loss_type == "extended_set_softmax":
@@ -612,6 +685,9 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     pfas_num_keys=pfas_cfg.num_keys,
                     pfas_key_dim=pfas_cfg.key_dim,
                     pfas_value_dim=pfas_cfg.value_dim,
+                    pure_extended_set=pure_ext,
+                    normalize_by_num_speakers=ext_norm_spks,
+                    row_softmax_weight=ext_row_w,
                 )
             elif loss_type == "pairwise":
                 return losses.pairwise_loss(
@@ -649,6 +725,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     labels=batch_labels,
                     scale=scale,
                     margin=sphere_m,
+                    anneal_lambda=sf_lambda,
                 )
             elif loss_type == "softmax":
                 return losses.softmax_loss(
@@ -661,6 +738,19 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 raise ValueError(f"Unsupported loss_type: {loss_type}")
 
         loss_val, grads = jax.value_and_grad(loss_fn)(state.params)
+        if "_aux_w" in grads and "_aux_b" in grads:
+            grads = dict(grads)
+            if not learn_wb:
+                grads["_aux_w"] = jnp.zeros_like(grads["_aux_w"])
+                grads["_aux_b"] = jnp.zeros_like(grads["_aux_b"])
+            else:
+                grads["_aux_w"] = grads["_aux_w"] * wb_grad_scale
+                b_scale = (
+                    max(wb_grad_scale, 0.5)
+                    if loss_type == "ge2e_contrast"
+                    else wb_grad_scale
+                )
+                grads["_aux_b"] = grads["_aux_b"] * b_scale
         new_state = state.apply_gradients(grads=grads)
         return new_state, loss_val
 
@@ -805,6 +895,12 @@ def train_network(
                     min_seq_len=min_seq_len,
                     variable_length=var_len,
                     return_mask=True,
+                    within_domain_prob=float(
+                        getattr(exp_cfg.data, "within_domain_prob", 0.75)
+                    ),
+                    domain_temp_alpha=float(
+                        getattr(exp_cfg.data, "domain_temp_alpha", 0.35)
+                    ),
                 )
             )
 
@@ -854,7 +950,7 @@ def run_training(myconfig: Any) -> None:
     """Entry point to load dataset and run training from config."""
     spk_to_utts = dataset.load_dataset_from_config(myconfig, split="train")
     print(f"Loaded {len(spk_to_utts)} speakers for training.")
-    with multiprocessing.Pool(myconfig.train.num_processes) as pool:
+    with multiprocessing.pool.ThreadPool(myconfig.train.num_processes) as pool:
         losses_list = train_network(spk_to_utts, myconfig, pool)
     if not _is_modern_config(myconfig):
         visualize_losses(losses_list)

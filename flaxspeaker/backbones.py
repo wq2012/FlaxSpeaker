@@ -430,6 +430,21 @@ def _selective_ssm_scan(
     return y
 
 
+def _reverse_valid_frames(
+    arr: jax.Array, mask: Optional[jax.Array] = None
+) -> jax.Array:
+    """Reverses only the valid prefix frames `[0 .. L_b - 1]` along `axis=1`."""
+    if mask is None:
+        return jnp.flip(arr, axis=1)
+    seq_len = arr.shape[1]
+    valid_len = jnp.maximum(
+        jnp.sum((mask > 0).astype(jnp.int32), axis=1, keepdims=True), 1
+    )
+    t_idx = jnp.arange(seq_len, dtype=jnp.int32)[None, :]
+    rev_idx = jnp.where(t_idx < valid_len, valid_len - 1 - t_idx, t_idx)
+    return jnp.take_along_axis(arr, rev_idx[:, :, None], axis=1)
+
+
 class MambaBlock(nn.Module):
     """Selective State Space Model (Mamba) block (Gu & Dao, 2023)."""
 
@@ -438,6 +453,7 @@ class MambaBlock(nn.Module):
     d_conv: int = 4
     expand_factor: int = 2
     dt_rank: int = 16
+    bidirectional: bool = False
 
     @nn.compact
     def __call__(
@@ -487,6 +503,13 @@ class MambaBlock(nn.Module):
         D = self.param("D", nn.initializers.ones, (d_inner,))
 
         y = _selective_ssm_scan(u_act, delta, A, B_mat, C_mat, D)
+        if self.bidirectional:
+            u_rev = _reverse_valid_frames(u_act, mask)
+            d_rev = _reverse_valid_frames(delta, mask)
+            b_rev = _reverse_valid_frames(B_mat, mask)
+            c_rev = _reverse_valid_frames(C_mat, mask)
+            y_rev = _selective_ssm_scan(u_rev, d_rev, A, b_rev, c_rev, D)
+            y = 0.5 * (y + _reverse_valid_frames(y_rev, mask))
         y = y * nn.silu(z)
         out = nn.Dense(self.dim, use_bias=False, name="out_proj")(y)
         res = x + out
@@ -504,6 +527,7 @@ class MambaBackbone(nn.Module):
     d_conv: int = 4
     expand_factor: int = 2
     dt_rank: int = 16
+    bidirectional: bool = False
 
     @nn.compact
     def __call__(
@@ -527,6 +551,7 @@ class MambaBackbone(nn.Module):
                 d_conv=self.d_conv,
                 expand_factor=self.expand_factor,
                 dt_rank=self.dt_rank,
+                bidirectional=self.bidirectional,
                 name=f"mamba_{i}",
             )(h, mask=mask)
         out = nn.LayerNorm(name="final_ln")(h)

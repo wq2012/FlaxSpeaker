@@ -50,6 +50,12 @@ def run_inference(
     myconfig: Any,
 ) -> Optional[jax.Array]:
     """Get the embedding of an utterance using the encoder."""
+    is_modern = neural_net._is_modern_config(myconfig)
+    seq_len = int(getattr(getattr(myconfig, "model", None), "seq_len", 160))
+    if is_modern and features.shape[0] < min(32, seq_len):
+        min_len = min(32, seq_len)
+        reps = (min_len // max(1, int(features.shape[0]))) + 1
+        features = jnp.tile(features, (reps, 1))[:min_len]
     if _get_full_seq_flag(myconfig):
         batch_input = jnp.expand_dims(features, axis=0)
         batch_output = state.apply_fn({"params": state.params}, batch_input)
@@ -59,6 +65,13 @@ def run_inference(
             features, myconfig
         )
         if not sliding_windows:
+            if is_modern and features.shape[0] > 0:
+                reps = (seq_len // max(1, int(features.shape[0]))) + 1
+                padded = jnp.tile(features, (reps, 1))[:seq_len]
+                batch_output = state.apply_fn(
+                    {"params": state.params}, jnp.expand_dims(padded, axis=0)
+                )
+                return batch_output[0, :]
             return None
         batch_input = jnp.stack(sliding_windows)
         batch_output = state.apply_fn({"params": state.params}, batch_input)
@@ -230,6 +243,13 @@ def compute_bootstrap_eer_ci(
     return low, high
 
 
+@functools.partial(jax.jit, static_argnums=(0,))
+def _jit_encode_eval_batch(
+    apply_fn: Any, params: Any, x_batch: jax.Array, m_batch: jax.Array
+) -> jax.Array:
+    return apply_fn({"params": params}, x_batch, mask=m_batch)
+
+
 def _extract_eval_embeddings(
     unique_utts: Sequence[str],
     state: train_state.TrainState,
@@ -254,10 +274,6 @@ def _extract_eval_embeddings(
     full_seq = bool(getattr(exp_cfg.eval, "full_sequence_inference", True))
     target_pad_len = max_eval_len if full_seq else seq_len
     min_valid_len = min(32, target_pad_len)
-
-    @jax.jit
-    def _jit_encode(params: Any, x_batch: jax.Array, m_batch: jax.Array) -> jax.Array:
-        return state.apply_fn({"params": params}, x_batch, mask=m_batch)
 
     infer_start = time.time()
     for start in range(0, len(missing_utts), batch_size):
@@ -302,7 +318,11 @@ def _extract_eval_embeddings(
 
         batch_arr = jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32)
         mask_arr = jnp.asarray(np.stack(masks, axis=0), dtype=jnp.float32)
-        embs = np.asarray(_jit_encode(state.params, batch_arr, mask_arr))
+        embs = np.asarray(
+            _jit_encode_eval_batch(
+                state.apply_fn, state.params, batch_arr, mask_arr
+            )
+        )
         for u, e in zip(batch_utts, embs):
             utt_to_emb[u] = e
 
@@ -378,6 +398,9 @@ def evaluate_verification_trials(
                     scoring.pfas_score_pair,
                     scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=getattr(
+                        pfas_cfg, "apply_softmax_per_test_key", False
+                    ),
                     apply_l2_norm_to_keys=getattr(
                         pfas_cfg, "apply_l2_norm_to_keys", True
                     ),
@@ -401,6 +424,14 @@ def evaluate_verification_trials(
             activation=dr_cfg.activation,
             use_layer_norm=dr_cfg.use_layer_norm,
             include_cosine_in_input=dr_cfg.include_cosine_in_input,
+            num_cosine_terms=getattr(dr_cfg, "num_cosine_terms", 1),
+            append_cosine_as_feature_to_network_input=getattr(
+                dr_cfg, "append_cosine_as_feature_to_network_input", True
+            ),
+            add_cosine_to_network_output=getattr(
+                dr_cfg, "add_cosine_to_network_output", True
+            ),
+            symmetric_input=getattr(dr_cfg, "symmetric_input", False),
             residual_weight=dr_cfg.residual_weight,
         )
         scores_arr = np.asarray(
@@ -421,22 +452,41 @@ def evaluate_verification_trials(
         )
         scores_arr = np.asarray(jnp.sum(e_norm * t_norm, axis=-1))
 
-    if exp_cfg.eval.use_as_norm and len(utt_to_emb) >= 10:
+    use_as_norm = bool(
+        getattr(exp_cfg.eval, "use_as_norm", False)
+        or getattr(exp_cfg.eval, "apply_as_norm", False)
+    )
+    if use_as_norm and len(utt_to_emb) >= 10:
         cohort = np.stack(list(utt_to_emb.values()), axis=0)
+        top_k = int(
+            getattr(
+                exp_cfg.eval,
+                "as_norm_top_k",
+                getattr(exp_cfg.eval, "as_norm_cohort_size", 100),
+            )
+        )
         scores_arr = scoring.apply_as_norm(
             scores_arr,
             np.asarray(enroll_arr),
             np.asarray(test_arr),
             cohort,
-            top_k=exp_cfg.eval.as_norm_top_k,
+            top_k=top_k,
         )
 
+    c_miss = float(getattr(exp_cfg.eval, "dcf_c_miss", 1.0))
+    c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
     scores_list = [float(s) for s in scores_arr]
     eer, eer_thresh = compute_eer_exact(labels, scores_list)
     ci_low, ci_high = compute_bootstrap_eer_ci(labels, scores_list)
-    min_dcf_001 = compute_min_dcf(labels, scores_list, p_target=0.01)
-    min_dcf_005 = compute_min_dcf(labels, scores_list, p_target=0.05)
-    min_dcf_01 = compute_min_dcf(labels, scores_list, p_target=0.10)
+    min_dcf_001 = compute_min_dcf(
+        labels, scores_list, p_target=0.01, c_miss=c_miss, c_fa=c_fa
+    )
+    min_dcf_005 = compute_min_dcf(
+        labels, scores_list, p_target=0.05, c_miss=c_miss, c_fa=c_fa
+    )
+    min_dcf_01 = compute_min_dcf(
+        labels, scores_list, p_target=0.10, c_miss=c_miss, c_fa=c_fa
+    )
     roc_auc = compute_roc_auc(labels, scores_list)
     total_time = time.time() - t0
 
@@ -528,6 +578,9 @@ def evaluate_multi_enroll_trials(
                     scoring.pfas_score_pair,
                     scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=getattr(
+                        pfas_cfg, "apply_softmax_per_test_key", False
+                    ),
                     apply_l2_norm_to_keys=getattr(
                         pfas_cfg, "apply_l2_norm_to_keys", True
                     ),
@@ -552,6 +605,14 @@ def evaluate_multi_enroll_trials(
             activation=dr_cfg.activation,
             use_layer_norm=dr_cfg.use_layer_norm,
             include_cosine_in_input=dr_cfg.include_cosine_in_input,
+            num_cosine_terms=getattr(dr_cfg, "num_cosine_terms", 1),
+            append_cosine_as_feature_to_network_input=getattr(
+                dr_cfg, "append_cosine_as_feature_to_network_input", True
+            ),
+            add_cosine_to_network_output=getattr(
+                dr_cfg, "add_cosine_to_network_output", True
+            ),
+            symmetric_input=getattr(dr_cfg, "symmetric_input", False),
             residual_weight=dr_cfg.residual_weight,
         )
         centroids = []
@@ -573,20 +634,61 @@ def evaluate_multi_enroll_trials(
         )
         scores_list = [float(s) for s in scores_arr]
     else:
+        centroids = []
+        tests = []
         for _, e_utts, t_utt in trials:
             centroid = np.mean([utt_to_emb[u] for u in e_utts], axis=0)
+            centroid = centroid / (np.linalg.norm(centroid) + 1e-6)
             t_emb = utt_to_emb[t_utt]
             sim = float(
                 np.dot(centroid, t_emb)
                 / (np.linalg.norm(centroid) * np.linalg.norm(t_emb) + 1e-6)
             )
             scores_list.append(sim)
+            centroids.append(centroid)
+            tests.append(t_emb)
+        e_arr = jnp.asarray(np.stack(centroids, axis=0))
+        t_arr = jnp.asarray(np.stack(tests, axis=0))
 
+    use_as_norm = bool(
+        getattr(exp_cfg.eval, "use_as_norm", False)
+        or getattr(exp_cfg.eval, "apply_as_norm", False)
+    )
+    if (
+        use_as_norm
+        and scoring_type != "pfas"
+        and len(utt_to_emb) >= 10
+    ):
+        cohort = np.stack(list(utt_to_emb.values()), axis=0)
+        top_k = int(
+            getattr(
+                exp_cfg.eval,
+                "as_norm_top_k",
+                getattr(exp_cfg.eval, "as_norm_cohort_size", 100),
+            )
+        )
+        norm_scores = scoring.apply_as_norm(
+            np.asarray(scores_list, dtype=np.float64),
+            np.asarray(e_arr),
+            np.asarray(t_arr),
+            cohort,
+            top_k=top_k,
+        )
+        scores_list = [float(s) for s in norm_scores]
+
+    c_miss = float(getattr(exp_cfg.eval, "dcf_c_miss", 1.0))
+    c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
     eer, eer_thresh = compute_eer_exact(labels, scores_list)
     ci_low, ci_high = compute_bootstrap_eer_ci(labels, scores_list)
-    min_dcf_001 = compute_min_dcf(labels, scores_list, p_target=0.01)
-    min_dcf_005 = compute_min_dcf(labels, scores_list, p_target=0.05)
-    min_dcf_01 = compute_min_dcf(labels, scores_list, p_target=0.10)
+    min_dcf_001 = compute_min_dcf(
+        labels, scores_list, p_target=0.01, c_miss=c_miss, c_fa=c_fa
+    )
+    min_dcf_005 = compute_min_dcf(
+        labels, scores_list, p_target=0.05, c_miss=c_miss, c_fa=c_fa
+    )
+    min_dcf_01 = compute_min_dcf(
+        labels, scores_list, p_target=0.10, c_miss=c_miss, c_fa=c_fa
+    )
     roc_auc = compute_roc_auc(labels, scores_list)
     return {
         "eer": eer,

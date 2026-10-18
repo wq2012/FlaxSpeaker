@@ -1,0 +1,2177 @@
+{
+  "domain_mixing_ablation": {
+    "p_within_0.75": {
+      "within_domain_prob": 0.75,
+      "train_time_sec": 798.45,
+      "initial_loss": 1.918,
+      "final_loss": 0.7821,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.12499999999999997,
+            "eer_percent": 12.5,
+            "eer_ci95_low_percent": 11.165,
+            "eer_ci95_high_percent": 13.635,
+            "eer_threshold": 0.6428280472755432,
+            "min_dcf_001": 0.8793,
+            "min_dcf_005": 0.792,
+            "min_dcf_01": 0.636,
+            "roc_auc": 0.9441,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 52.205,
+            "eval_time_sec": 53.984,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.22333333333333336,
+            "eer_percent": 22.3333,
+            "eer_ci95_low_percent": 20.7333,
+            "eer_ci95_high_percent": 23.7842,
+            "eer_threshold": 0.7099820971488953,
+            "min_dcf_001": 0.9673,
+            "min_dcf_005": 0.9673,
+            "min_dcf_01": 0.9453,
+            "roc_auc": 0.8543,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 46.5,
+            "eval_time_sec": 35.977,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.248,
+            "eer_percent": 24.8,
+            "eer_ci95_low_percent": 22.55,
+            "eer_ci95_high_percent": 26.6,
+            "eer_threshold": 0.6420422792434692,
+            "min_dcf_001": 0.961,
+            "min_dcf_005": 0.945,
+            "min_dcf_01": 0.91,
+            "roc_auc": 0.8599,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 57.579,
+            "eval_time_sec": 16.405,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.19399999999999998,
+            "eer_percent": 19.4,
+            "eer_ci95_low_percent": 18.6119,
+            "eer_ci95_high_percent": 20.2566,
+            "eer_threshold": 0.6711732745170593,
+            "min_dcf_001": 0.9752,
+            "min_dcf_005": 0.973,
+            "min_dcf_01": 0.8675,
+            "roc_auc": 0.8906,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 3.88,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 19.88,
+          "min_dcf_001": 0.9359,
+          "min_dcf_01": 0.8304,
+          "roc_auc": 0.8861
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.08799999999999998,
+            "eer_percent": 8.8,
+            "eer_ci95_low_percent": 7.0,
+            "eer_ci95_high_percent": 10.9525,
+            "eer_threshold": 0.7043434977531433,
+            "min_dcf_001": 0.566,
+            "min_dcf_005": 0.542,
+            "min_dcf_01": 0.438,
+            "roc_auc": 0.9743,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.19999999999999998,
+            "eer_percent": 20.0,
+            "eer_ci95_low_percent": 17.6,
+            "eer_ci95_high_percent": 22.1525,
+            "eer_threshold": 0.7836883664131165,
+            "min_dcf_001": 0.974,
+            "min_dcf_005": 0.974,
+            "min_dcf_01": 0.832,
+            "roc_auc": 0.8912,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.19699999999999998,
+            "eer_percent": 19.7,
+            "eer_ci95_low_percent": 17.3475,
+            "eer_ci95_high_percent": 22.2,
+            "eer_threshold": 0.7314720749855042,
+            "min_dcf_001": 0.99,
+            "min_dcf_005": 0.98,
+            "min_dcf_01": 0.892,
+            "roc_auc": 0.8938,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.16033333333333333,
+            "eer_percent": 16.0333,
+            "eer_ci95_low_percent": 14.7333,
+            "eer_ci95_high_percent": 17.2508,
+            "eer_threshold": 0.7414884567260742,
+            "min_dcf_001": 0.986,
+            "min_dcf_005": 0.912,
+            "min_dcf_01": 0.7853,
+            "roc_auc": 0.9212,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 16.17,
+          "min_dcf_001": 0.8433,
+          "min_dcf_01": 0.7207,
+          "roc_auc": 0.9198
+        }
+      }
+    },
+    "p_within_0.0": {
+      "train_time_sec": 299.33,
+      "initial_loss": 2.0525,
+      "final_loss": 0.8257,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.1446666666666667,
+            "eer_percent": 14.4667,
+            "eer_ci95_low_percent": 13.3333,
+            "eer_ci95_high_percent": 15.8508,
+            "eer_threshold": 0.7558523416519165,
+            "min_dcf_001": 0.988,
+            "min_dcf_005": 0.8553,
+            "min_dcf_01": 0.7473,
+            "roc_auc": 0.9251,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 15.021,
+            "eval_time_sec": 16.123,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.24333333333333332,
+            "eer_percent": 24.3333,
+            "eer_ci95_low_percent": 22.8,
+            "eer_ci95_high_percent": 26.0,
+            "eer_threshold": 0.7786945104598999,
+            "min_dcf_001": 0.9727,
+            "min_dcf_005": 0.972,
+            "min_dcf_01": 0.9653,
+            "roc_auc": 0.8378,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 13.372,
+            "eval_time_sec": 10.693,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.22799999999999998,
+            "eer_percent": 22.8,
+            "eer_ci95_low_percent": 21.2,
+            "eer_ci95_high_percent": 24.85,
+            "eer_threshold": 0.6642621755599976,
+            "min_dcf_001": 0.959,
+            "min_dcf_005": 0.953,
+            "min_dcf_01": 0.921,
+            "roc_auc": 0.8589,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 15.992,
+            "eval_time_sec": 4.856,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.213125,
+            "eer_percent": 21.3125,
+            "eer_ci95_low_percent": 20.4934,
+            "eer_ci95_high_percent": 22.2572,
+            "eer_threshold": 0.7426905632019043,
+            "min_dcf_001": 0.9947,
+            "min_dcf_005": 0.971,
+            "min_dcf_01": 0.9087,
+            "roc_auc": 0.8729,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 2.299,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 20.53,
+          "min_dcf_001": 0.9732,
+          "min_dcf_01": 0.8779,
+          "roc_auc": 0.8739
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.11199999999999999,
+            "eer_percent": 11.2,
+            "eer_ci95_low_percent": 9.2,
+            "eer_ci95_high_percent": 13.4525,
+            "eer_threshold": 0.8051261901855469,
+            "min_dcf_001": 0.616,
+            "min_dcf_005": 0.562,
+            "min_dcf_01": 0.524,
+            "roc_auc": 0.962,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.18600000000000003,
+            "eer_percent": 18.6,
+            "eer_ci95_low_percent": 16.5475,
+            "eer_ci95_high_percent": 21.4,
+            "eer_threshold": 0.8348304033279419,
+            "min_dcf_001": 0.968,
+            "min_dcf_005": 0.93,
+            "min_dcf_01": 0.896,
+            "roc_auc": 0.88,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.18200000000000002,
+            "eer_percent": 18.2,
+            "eer_ci95_low_percent": 15.8,
+            "eer_ci95_high_percent": 20.2,
+            "eer_threshold": 0.7388639450073242,
+            "min_dcf_001": 0.966,
+            "min_dcf_005": 0.966,
+            "min_dcf_01": 0.954,
+            "roc_auc": 0.8996,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.17033333333333334,
+            "eer_percent": 17.0333,
+            "eer_ci95_low_percent": 15.6825,
+            "eer_ci95_high_percent": 18.4,
+            "eer_threshold": 0.7898104786872864,
+            "min_dcf_001": 0.9713,
+            "min_dcf_005": 0.9233,
+            "min_dcf_01": 0.844,
+            "roc_auc": 0.9107,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 16.0,
+          "min_dcf_001": 0.85,
+          "min_dcf_01": 0.7913,
+          "roc_auc": 0.9139
+        }
+      },
+      "within_domain_prob": 0.0
+    },
+    "p_within_1.0": {
+      "train_time_sec": 298.29,
+      "initial_loss": 1.9731,
+      "final_loss": 0.9101,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.15233333333333332,
+            "eer_percent": 15.2333,
+            "eer_ci95_low_percent": 13.9333,
+            "eer_ci95_high_percent": 16.3842,
+            "eer_threshold": 0.7645259499549866,
+            "min_dcf_001": 0.9467,
+            "min_dcf_005": 0.8907,
+            "min_dcf_01": 0.796,
+            "roc_auc": 0.9218,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 14.417,
+            "eval_time_sec": 15.21,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.24300000000000002,
+            "eer_percent": 24.3,
+            "eer_ci95_low_percent": 22.7333,
+            "eer_ci95_high_percent": 25.7683,
+            "eer_threshold": 0.7234325408935547,
+            "min_dcf_001": 0.998,
+            "min_dcf_005": 0.9853,
+            "min_dcf_01": 0.93,
+            "roc_auc": 0.8482,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 13.698,
+            "eval_time_sec": 10.929,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.249,
+            "eer_percent": 24.9,
+            "eer_ci95_low_percent": 22.8,
+            "eer_ci95_high_percent": 26.7263,
+            "eer_threshold": 0.7094770669937134,
+            "min_dcf_001": 0.924,
+            "min_dcf_005": 0.924,
+            "min_dcf_01": 0.913,
+            "roc_auc": 0.8479,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 16.226,
+            "eval_time_sec": 4.621,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.21337500000000004,
+            "eer_percent": 21.3375,
+            "eer_ci95_low_percent": 20.525,
+            "eer_ci95_high_percent": 22.2441,
+            "eer_threshold": 0.730677604675293,
+            "min_dcf_001": 0.99,
+            "min_dcf_005": 0.941,
+            "min_dcf_01": 0.8845,
+            "roc_auc": 0.8782,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 1.781,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 21.48,
+          "min_dcf_001": 0.9562,
+          "min_dcf_01": 0.8797,
+          "roc_auc": 0.8726
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.11099999999999999,
+            "eer_percent": 11.1,
+            "eer_ci95_low_percent": 9.1475,
+            "eer_ci95_high_percent": 13.6,
+            "eer_threshold": 0.8223760724067688,
+            "min_dcf_001": 0.866,
+            "min_dcf_005": 0.766,
+            "min_dcf_01": 0.578,
+            "roc_auc": 0.9587,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.19199999999999998,
+            "eer_percent": 19.2,
+            "eer_ci95_low_percent": 16.7,
+            "eer_ci95_high_percent": 21.5,
+            "eer_threshold": 0.8087218999862671,
+            "min_dcf_001": 0.962,
+            "min_dcf_005": 0.962,
+            "min_dcf_01": 0.896,
+            "roc_auc": 0.8898,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.21199999999999997,
+            "eer_percent": 21.2,
+            "eer_ci95_low_percent": 18.0475,
+            "eer_ci95_high_percent": 23.4525,
+            "eer_threshold": 0.7821919918060303,
+            "min_dcf_001": 0.97,
+            "min_dcf_005": 0.97,
+            "min_dcf_01": 0.934,
+            "roc_auc": 0.8846,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.17033333333333334,
+            "eer_percent": 17.0333,
+            "eer_ci95_low_percent": 15.6,
+            "eer_ci95_high_percent": 18.335,
+            "eer_threshold": 0.7994320392608643,
+            "min_dcf_001": 0.9507,
+            "min_dcf_005": 0.9507,
+            "min_dcf_01": 0.8373,
+            "roc_auc": 0.9145,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 17.17,
+          "min_dcf_001": 0.9327,
+          "min_dcf_01": 0.8027,
+          "roc_auc": 0.911
+        }
+      },
+      "within_domain_prob": 1.0
+    }
+  },
+  "extended_set_and_dr_ablation": {
+    "ext_softmax_blended": {
+      "pure_extended_set": false,
+      "train_time_sec": 1304.33,
+      "initial_loss": 2.0379,
+      "final_loss": 0.9381,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.14833333333333334,
+            "eer_percent": 14.8333,
+            "eer_ci95_low_percent": 13.6,
+            "eer_ci95_high_percent": 16.1508,
+            "eer_threshold": 0.7770651578903198,
+            "min_dcf_001": 0.9447,
+            "min_dcf_005": 0.924,
+            "min_dcf_01": 0.784,
+            "roc_auc": 0.9244,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 69.157,
+            "eval_time_sec": 72.181,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.22399999999999998,
+            "eer_percent": 22.4,
+            "eer_ci95_low_percent": 21.0317,
+            "eer_ci95_high_percent": 23.9683,
+            "eer_threshold": 0.7711703181266785,
+            "min_dcf_001": 0.9967,
+            "min_dcf_005": 0.96,
+            "min_dcf_01": 0.9007,
+            "roc_auc": 0.8495,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 71.608,
+            "eval_time_sec": 56.379,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.23299999999999998,
+            "eer_percent": 23.3,
+            "eer_ci95_low_percent": 21.3,
+            "eer_ci95_high_percent": 25.55,
+            "eer_threshold": 0.7267096042633057,
+            "min_dcf_001": 0.949,
+            "min_dcf_005": 0.941,
+            "min_dcf_01": 0.904,
+            "roc_auc": 0.8557,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 99.052,
+            "eval_time_sec": 26.909,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.20500000000000002,
+            "eer_percent": 20.5,
+            "eer_ci95_low_percent": 19.6369,
+            "eer_ci95_high_percent": 21.2631,
+            "eer_threshold": 0.762961745262146,
+            "min_dcf_001": 0.9912,
+            "min_dcf_005": 0.954,
+            "min_dcf_01": 0.8795,
+            "roc_auc": 0.8808,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 5.459,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 20.18,
+          "min_dcf_001": 0.9635,
+          "min_dcf_01": 0.8629,
+          "roc_auc": 0.8765
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.09799999999999999,
+            "eer_percent": 9.8,
+            "eer_ci95_low_percent": 8.0,
+            "eer_ci95_high_percent": 11.8,
+            "eer_threshold": 0.8174309134483337,
+            "min_dcf_001": 0.772,
+            "min_dcf_005": 0.586,
+            "min_dcf_01": 0.52,
+            "roc_auc": 0.9667,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.18799999999999997,
+            "eer_percent": 18.8,
+            "eer_ci95_low_percent": 16.7,
+            "eer_ci95_high_percent": 21.4,
+            "eer_threshold": 0.8247429728507996,
+            "min_dcf_001": 0.966,
+            "min_dcf_005": 0.874,
+            "min_dcf_01": 0.834,
+            "roc_auc": 0.8952,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.19899999999999998,
+            "eer_percent": 19.9,
+            "eer_ci95_low_percent": 17.4,
+            "eer_ci95_high_percent": 22.3525,
+            "eer_threshold": 0.7962898015975952,
+            "min_dcf_001": 0.954,
+            "min_dcf_005": 0.954,
+            "min_dcf_01": 0.916,
+            "roc_auc": 0.8949,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.16166666666666668,
+            "eer_percent": 16.1667,
+            "eer_ci95_low_percent": 14.9825,
+            "eer_ci95_high_percent": 17.5333,
+            "eer_threshold": 0.8152380585670471,
+            "min_dcf_001": 0.9593,
+            "min_dcf_005": 0.8827,
+            "min_dcf_01": 0.7713,
+            "roc_auc": 0.9217,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 16.17,
+          "min_dcf_001": 0.8973,
+          "min_dcf_01": 0.7567,
+          "roc_auc": 0.9189
+        }
+      }
+    },
+    "ext_softmax_pure_eq3": {
+      "train_time_sec": 236.21,
+      "initial_loss": 4.1548,
+      "final_loss": 2.9827,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.22199999999999998,
+            "eer_percent": 22.2,
+            "eer_ci95_low_percent": 20.6492,
+            "eer_ci95_high_percent": 23.9333,
+            "eer_threshold": 0.9183285236358643,
+            "min_dcf_001": 0.994,
+            "min_dcf_005": 0.986,
+            "min_dcf_01": 0.9393,
+            "roc_auc": 0.8627,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 11.757,
+            "eval_time_sec": 12.637,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.25,
+            "eer_percent": 25.0,
+            "eer_ci95_low_percent": 23.7158,
+            "eer_ci95_high_percent": 26.8017,
+            "eer_threshold": 0.8774417042732239,
+            "min_dcf_001": 0.9893,
+            "min_dcf_005": 0.986,
+            "min_dcf_01": 0.95,
+            "roc_auc": 0.8324,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 10.62,
+            "eval_time_sec": 8.473,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.2635,
+            "eer_percent": 26.35,
+            "eer_ci95_low_percent": 24.2737,
+            "eer_ci95_high_percent": 28.1262,
+            "eer_threshold": 0.8549811840057373,
+            "min_dcf_001": 0.997,
+            "min_dcf_005": 0.997,
+            "min_dcf_01": 0.997,
+            "roc_auc": 0.8238,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 9.732,
+            "eval_time_sec": 2.838,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.24524999999999997,
+            "eer_percent": 24.525,
+            "eer_ci95_low_percent": 23.6684,
+            "eer_ci95_high_percent": 25.55,
+            "eer_threshold": 0.8871951103210449,
+            "min_dcf_001": 0.996,
+            "min_dcf_005": 0.9948,
+            "min_dcf_01": 0.9735,
+            "roc_auc": 0.8391,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 1.557,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 24.52,
+          "min_dcf_001": 0.9934,
+          "min_dcf_01": 0.9621,
+          "roc_auc": 0.8396
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.17800000000000002,
+            "eer_percent": 17.8,
+            "eer_ci95_low_percent": 15.3,
+            "eer_ci95_high_percent": 20.0,
+            "eer_threshold": 0.938027024269104,
+            "min_dcf_001": 0.94,
+            "min_dcf_005": 0.882,
+            "min_dcf_01": 0.808,
+            "roc_auc": 0.9122,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.20499999999999996,
+            "eer_percent": 20.5,
+            "eer_ci95_low_percent": 18.1475,
+            "eer_ci95_high_percent": 23.1,
+            "eer_threshold": 0.9117464423179626,
+            "min_dcf_001": 0.952,
+            "min_dcf_005": 0.952,
+            "min_dcf_01": 0.952,
+            "roc_auc": 0.8713,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.23199999999999998,
+            "eer_percent": 23.2,
+            "eer_ci95_low_percent": 20.6,
+            "eer_ci95_high_percent": 25.905,
+            "eer_threshold": 0.9007571339607239,
+            "min_dcf_001": 0.992,
+            "min_dcf_005": 0.992,
+            "min_dcf_01": 0.982,
+            "roc_auc": 0.8477,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.20766666666666667,
+            "eer_percent": 20.7667,
+            "eer_ci95_low_percent": 19.2667,
+            "eer_ci95_high_percent": 22.2667,
+            "eer_threshold": 0.9138635396957397,
+            "min_dcf_001": 0.9747,
+            "min_dcf_005": 0.9747,
+            "min_dcf_01": 0.938,
+            "roc_auc": 0.876,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 20.5,
+          "min_dcf_001": 0.9613,
+          "min_dcf_01": 0.914,
+          "roc_auc": 0.8771
+        }
+      },
+      "pure_extended_set": true
+    },
+    "dr_vectors_1term_blended": {
+      "num_cosine_terms": 1,
+      "pure_extended_set": false,
+      "train_time_sec": 1490.24,
+      "initial_loss": 2.042,
+      "final_loss": 0.9361,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.15200000000000002,
+            "eer_percent": 15.2,
+            "eer_ci95_low_percent": 13.7333,
+            "eer_ci95_high_percent": 16.2175,
+            "eer_threshold": 0.7592222690582275,
+            "min_dcf_001": 0.9233,
+            "min_dcf_005": 0.7827,
+            "min_dcf_01": 0.7353,
+            "roc_auc": 0.9298,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 49.648,
+            "eval_time_sec": 54.575,
+            "scoring_type": "dr_vector"
+          },
+          "cnceleb2": {
+            "eer": 0.22333333333333336,
+            "eer_percent": 22.3333,
+            "eer_ci95_low_percent": 20.9333,
+            "eer_ci95_high_percent": 23.8,
+            "eer_threshold": 0.7381142973899841,
+            "min_dcf_001": 0.936,
+            "min_dcf_005": 0.8933,
+            "min_dcf_01": 0.8547,
+            "roc_auc": 0.8558,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 52.878,
+            "eval_time_sec": 41.556,
+            "scoring_type": "dr_vector"
+          },
+          "voxceleb1": {
+            "eer": 0.22749999999999998,
+            "eer_percent": 22.75,
+            "eer_ci95_low_percent": 20.55,
+            "eer_ci95_high_percent": 24.5762,
+            "eer_threshold": 0.6822207570075989,
+            "min_dcf_001": 0.945,
+            "min_dcf_005": 0.912,
+            "min_dcf_01": 0.882,
+            "roc_auc": 0.8624,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 64.923,
+            "eval_time_sec": 19.619,
+            "scoring_type": "dr_vector"
+          },
+          "universal_pooled": {
+            "eer": 0.20099999999999998,
+            "eer_percent": 20.1,
+            "eer_ci95_low_percent": 19.3059,
+            "eer_ci95_high_percent": 20.9566,
+            "eer_threshold": 0.7302335500717163,
+            "min_dcf_001": 0.9477,
+            "min_dcf_005": 0.8805,
+            "min_dcf_01": 0.8183,
+            "roc_auc": 0.8866,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 5.577,
+            "scoring_type": "dr_vector"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 20.09,
+          "min_dcf_001": 0.9348,
+          "min_dcf_01": 0.824,
+          "roc_auc": 0.8827
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.09899999999999999,
+            "eer_percent": 9.9,
+            "eer_ci95_low_percent": 7.6,
+            "eer_ci95_high_percent": 11.4525,
+            "eer_threshold": 0.8039464950561523,
+            "min_dcf_001": 0.496,
+            "min_dcf_005": 0.496,
+            "min_dcf_01": 0.446,
+            "roc_auc": 0.9694,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.18200000000000002,
+            "eer_percent": 18.2,
+            "eer_ci95_low_percent": 15.8475,
+            "eer_ci95_high_percent": 20.4,
+            "eer_threshold": 0.7957398295402527,
+            "min_dcf_001": 0.884,
+            "min_dcf_005": 0.878,
+            "min_dcf_01": 0.852,
+            "roc_auc": 0.8992,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.17500000000000002,
+            "eer_percent": 17.5,
+            "eer_ci95_low_percent": 15.2,
+            "eer_ci95_high_percent": 20.2,
+            "eer_threshold": 0.7674767971038818,
+            "min_dcf_001": 0.87,
+            "min_dcf_005": 0.87,
+            "min_dcf_01": 0.814,
+            "roc_auc": 0.9038,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.15400000000000003,
+            "eer_percent": 15.4,
+            "eer_ci95_low_percent": 14.0825,
+            "eer_ci95_high_percent": 16.6667,
+            "eer_threshold": 0.7859886884689331,
+            "min_dcf_001": 0.836,
+            "min_dcf_005": 0.78,
+            "min_dcf_01": 0.7233,
+            "roc_auc": 0.9267,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 15.2,
+          "min_dcf_001": 0.75,
+          "min_dcf_01": 0.704,
+          "roc_auc": 0.9241
+        }
+      }
+    },
+    "dr_vectors_3term_pure_eq7": {
+      "train_time_sec": 220.44,
+      "initial_loss": 4.1572,
+      "final_loss": 2.8282,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.17033333333333334,
+            "eer_percent": 17.0333,
+            "eer_ci95_low_percent": 15.6492,
+            "eer_ci95_high_percent": 18.4,
+            "eer_threshold": 0.8802453279495239,
+            "min_dcf_001": 0.9953,
+            "min_dcf_005": 0.9947,
+            "min_dcf_01": 0.9127,
+            "roc_auc": 0.907,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 8.496,
+            "eval_time_sec": 9.857,
+            "scoring_type": "dr_vector"
+          },
+          "cnceleb2": {
+            "eer": 0.248,
+            "eer_percent": 24.8,
+            "eer_ci95_low_percent": 23.4825,
+            "eer_ci95_high_percent": 26.4667,
+            "eer_threshold": 0.8239558935165405,
+            "min_dcf_001": 0.9347,
+            "min_dcf_005": 0.906,
+            "min_dcf_01": 0.87,
+            "roc_auc": 0.8367,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 7.538,
+            "eval_time_sec": 6.197,
+            "scoring_type": "dr_vector"
+          },
+          "voxceleb1": {
+            "eer": 0.22899999999999998,
+            "eer_percent": 22.9,
+            "eer_ci95_low_percent": 21.2737,
+            "eer_ci95_high_percent": 25.005,
+            "eer_threshold": 0.7965372800827026,
+            "min_dcf_001": 0.975,
+            "min_dcf_005": 0.975,
+            "min_dcf_01": 0.938,
+            "roc_auc": 0.8552,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 13.175,
+            "eval_time_sec": 4.874,
+            "scoring_type": "dr_vector"
+          },
+          "universal_pooled": {
+            "eer": 0.21912499999999996,
+            "eer_percent": 21.9125,
+            "eer_ci95_low_percent": 20.9922,
+            "eer_ci95_high_percent": 22.825,
+            "eer_threshold": 0.8348681330680847,
+            "min_dcf_001": 0.9982,
+            "min_dcf_005": 0.9917,
+            "min_dcf_01": 0.9343,
+            "roc_auc": 0.8666,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 2.237,
+            "scoring_type": "dr_vector"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 21.58,
+          "min_dcf_001": 0.9683,
+          "min_dcf_01": 0.9069,
+          "roc_auc": 0.8663
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.122,
+            "eer_percent": 12.2,
+            "eer_ci95_low_percent": 10.6,
+            "eer_ci95_high_percent": 15.1525,
+            "eer_threshold": 0.9080986976623535,
+            "min_dcf_001": 0.834,
+            "min_dcf_005": 0.748,
+            "min_dcf_01": 0.58,
+            "roc_auc": 0.9523,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.21199999999999997,
+            "eer_percent": 21.2,
+            "eer_ci95_low_percent": 18.6475,
+            "eer_ci95_high_percent": 23.6,
+            "eer_threshold": 0.8664305210113525,
+            "min_dcf_001": 0.908,
+            "min_dcf_005": 0.9,
+            "min_dcf_01": 0.804,
+            "roc_auc": 0.878,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.19399999999999998,
+            "eer_percent": 19.4,
+            "eer_ci95_low_percent": 17.2,
+            "eer_ci95_high_percent": 22.5525,
+            "eer_threshold": 0.8529834747314453,
+            "min_dcf_001": 0.964,
+            "min_dcf_005": 0.964,
+            "min_dcf_01": 0.952,
+            "roc_auc": 0.8853,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.18166666666666667,
+            "eer_percent": 18.1667,
+            "eer_ci95_low_percent": 16.8333,
+            "eer_ci95_high_percent": 19.4667,
+            "eer_threshold": 0.8704468011856079,
+            "min_dcf_001": 0.9393,
+            "min_dcf_005": 0.89,
+            "min_dcf_01": 0.8113,
+            "roc_auc": 0.9053,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 17.6,
+          "min_dcf_001": 0.902,
+          "min_dcf_01": 0.7787,
+          "roc_auc": 0.9052
+        }
+      },
+      "num_cosine_terms": 3,
+      "pure_extended_set": true
+    }
+  },
+  "variable_length_ablation": {
+    "variable_length_true": {
+      "variable_length_training": true,
+      "full_seq_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.12499999999999997,
+            "eer_percent": 12.5,
+            "eer_ci95_low_percent": 11.165,
+            "eer_ci95_high_percent": 13.635,
+            "eer_threshold": 0.6428280472755432,
+            "min_dcf_001": 0.8793,
+            "min_dcf_005": 0.792,
+            "min_dcf_01": 0.636,
+            "roc_auc": 0.9441,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 52.205,
+            "eval_time_sec": 53.984,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.22333333333333336,
+            "eer_percent": 22.3333,
+            "eer_ci95_low_percent": 20.7333,
+            "eer_ci95_high_percent": 23.7842,
+            "eer_threshold": 0.7099820971488953,
+            "min_dcf_001": 0.9673,
+            "min_dcf_005": 0.9673,
+            "min_dcf_01": 0.9453,
+            "roc_auc": 0.8543,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 46.5,
+            "eval_time_sec": 35.977,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.248,
+            "eer_percent": 24.8,
+            "eer_ci95_low_percent": 22.55,
+            "eer_ci95_high_percent": 26.6,
+            "eer_threshold": 0.6420422792434692,
+            "min_dcf_001": 0.961,
+            "min_dcf_005": 0.945,
+            "min_dcf_01": 0.91,
+            "roc_auc": 0.8599,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 57.579,
+            "eval_time_sec": 16.405,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.19399999999999998,
+            "eer_percent": 19.4,
+            "eer_ci95_low_percent": 18.6119,
+            "eer_ci95_high_percent": 20.2566,
+            "eer_threshold": 0.6711732745170593,
+            "min_dcf_001": 0.9752,
+            "min_dcf_005": 0.973,
+            "min_dcf_01": 0.8675,
+            "roc_auc": 0.8906,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 3.88,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 19.88,
+          "min_dcf_001": 0.9359,
+          "min_dcf_01": 0.8304,
+          "roc_auc": 0.8861
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.08799999999999998,
+            "eer_percent": 8.8,
+            "eer_ci95_low_percent": 7.0,
+            "eer_ci95_high_percent": 10.9525,
+            "eer_threshold": 0.7043434977531433,
+            "min_dcf_001": 0.566,
+            "min_dcf_005": 0.542,
+            "min_dcf_01": 0.438,
+            "roc_auc": 0.9743,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.19999999999999998,
+            "eer_percent": 20.0,
+            "eer_ci95_low_percent": 17.6,
+            "eer_ci95_high_percent": 22.1525,
+            "eer_threshold": 0.7836883664131165,
+            "min_dcf_001": 0.974,
+            "min_dcf_005": 0.974,
+            "min_dcf_01": 0.832,
+            "roc_auc": 0.8912,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.19699999999999998,
+            "eer_percent": 19.7,
+            "eer_ci95_low_percent": 17.3475,
+            "eer_ci95_high_percent": 22.2,
+            "eer_threshold": 0.7314720749855042,
+            "min_dcf_001": 0.99,
+            "min_dcf_005": 0.98,
+            "min_dcf_01": 0.892,
+            "roc_auc": 0.8938,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.16033333333333333,
+            "eer_percent": 16.0333,
+            "eer_ci95_low_percent": 14.7333,
+            "eer_ci95_high_percent": 17.2508,
+            "eer_threshold": 0.7414884567260742,
+            "min_dcf_001": 0.986,
+            "min_dcf_005": 0.912,
+            "min_dcf_01": 0.7853,
+            "roc_auc": 0.9212,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 16.17,
+          "min_dcf_001": 0.8433,
+          "min_dcf_01": 0.7207,
+          "roc_auc": 0.9198
+        }
+      },
+      "short_1s_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.18933333333333335,
+            "eer_percent": 18.9333,
+            "eer_ci95_low_percent": 17.4,
+            "eer_ci95_high_percent": 20.2667,
+            "eer_threshold": 0.4749191403388977,
+            "min_dcf_001": 0.9747,
+            "min_dcf_005": 0.9607,
+            "min_dcf_01": 0.8573,
+            "roc_auc": 0.8924,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 4.396,
+            "eval_time_sec": 5.382,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.30333333333333334,
+            "eer_percent": 30.3333,
+            "eer_ci95_low_percent": 28.4825,
+            "eer_ci95_high_percent": 31.9667,
+            "eer_threshold": 0.6109248399734497,
+            "min_dcf_001": 0.998,
+            "min_dcf_005": 0.998,
+            "min_dcf_01": 0.9967,
+            "roc_auc": 0.7714,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 4.146,
+            "eval_time_sec": 3.828,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.2695,
+            "eer_percent": 26.95,
+            "eer_ci95_low_percent": 25.0,
+            "eer_ci95_high_percent": 29.0,
+            "eer_threshold": 0.47047996520996094,
+            "min_dcf_001": 0.996,
+            "min_dcf_005": 0.996,
+            "min_dcf_01": 0.996,
+            "roc_auc": 0.8076,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 6.434,
+            "eval_time_sec": 2.404,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.260375,
+            "eer_percent": 26.0375,
+            "eer_ci95_low_percent": 25.0494,
+            "eer_ci95_high_percent": 26.975,
+            "eer_threshold": 0.5323915481567383,
+            "min_dcf_001": 0.9992,
+            "min_dcf_005": 0.9992,
+            "min_dcf_01": 0.9978,
+            "roc_auc": 0.821,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 1.934,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 25.41,
+          "min_dcf_001": 0.9896,
+          "min_dcf_01": 0.95,
+          "roc_auc": 0.8238
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.127,
+            "eer_percent": 12.7,
+            "eer_ci95_low_percent": 10.6,
+            "eer_ci95_high_percent": 14.9525,
+            "eer_threshold": 0.5348626375198364,
+            "min_dcf_001": 0.944,
+            "min_dcf_005": 0.794,
+            "min_dcf_01": 0.694,
+            "roc_auc": 0.9382,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.281,
+            "eer_percent": 28.1,
+            "eer_ci95_low_percent": 25.3,
+            "eer_ci95_high_percent": 31.0,
+            "eer_threshold": 0.6845110654830933,
+            "min_dcf_001": 0.982,
+            "min_dcf_005": 0.982,
+            "min_dcf_01": 0.982,
+            "roc_auc": 0.8036,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.252,
+            "eer_percent": 25.2,
+            "eer_ci95_low_percent": 22.1475,
+            "eer_ci95_high_percent": 27.8,
+            "eer_threshold": 0.5885633826255798,
+            "min_dcf_001": 0.988,
+            "min_dcf_005": 0.988,
+            "min_dcf_01": 0.958,
+            "roc_auc": 0.8414,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.22233333333333333,
+            "eer_percent": 22.2333,
+            "eer_ci95_low_percent": 20.7667,
+            "eer_ci95_high_percent": 23.7333,
+            "eer_threshold": 0.6137098073959351,
+            "min_dcf_001": 0.9927,
+            "min_dcf_005": 0.9927,
+            "min_dcf_01": 0.9927,
+            "roc_auc": 0.858,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 22.0,
+          "min_dcf_001": 0.9713,
+          "min_dcf_01": 0.878,
+          "roc_auc": 0.8611
+        }
+      }
+    },
+    "variable_length_false": {
+      "variable_length_training": false,
+      "train_time_sec": 299.27,
+      "initial_loss": 1.918,
+      "final_loss": 0.7719,
+      "full_seq_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.132,
+            "eer_percent": 13.2,
+            "eer_ci95_low_percent": 11.9,
+            "eer_ci95_high_percent": 14.3842,
+            "eer_threshold": 0.6778428554534912,
+            "min_dcf_001": 0.9727,
+            "min_dcf_005": 0.868,
+            "min_dcf_01": 0.702,
+            "roc_auc": 0.937,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 12.196,
+            "eval_time_sec": 12.949,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.22199999999999998,
+            "eer_percent": 22.2,
+            "eer_ci95_low_percent": 20.6333,
+            "eer_ci95_high_percent": 23.9333,
+            "eer_threshold": 0.7164168357849121,
+            "min_dcf_001": 0.9873,
+            "min_dcf_005": 0.974,
+            "min_dcf_01": 0.948,
+            "roc_auc": 0.8619,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 12.819,
+            "eval_time_sec": 10.272,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.22749999999999998,
+            "eer_percent": 22.75,
+            "eer_ci95_low_percent": 20.6475,
+            "eer_ci95_high_percent": 24.2263,
+            "eer_threshold": 0.654214084148407,
+            "min_dcf_001": 0.925,
+            "min_dcf_005": 0.916,
+            "min_dcf_01": 0.876,
+            "roc_auc": 0.8687,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 17.685,
+            "eval_time_sec": 5.051,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.18987499999999996,
+            "eer_percent": 18.9875,
+            "eer_ci95_low_percent": 18.1434,
+            "eer_ci95_high_percent": 19.825,
+            "eer_threshold": 0.6867504119873047,
+            "min_dcf_001": 0.9898,
+            "min_dcf_005": 0.9675,
+            "min_dcf_01": 0.8735,
+            "roc_auc": 0.8931,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 1.932,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 19.38,
+          "min_dcf_001": 0.9617,
+          "min_dcf_01": 0.842,
+          "roc_auc": 0.8892
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.08999999999999998,
+            "eer_percent": 9.0,
+            "eer_ci95_low_percent": 7.5,
+            "eer_ci95_high_percent": 11.2,
+            "eer_threshold": 0.7347258925437927,
+            "min_dcf_001": 0.554,
+            "min_dcf_005": 0.554,
+            "min_dcf_01": 0.426,
+            "roc_auc": 0.9717,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.18999999999999997,
+            "eer_percent": 19.0,
+            "eer_ci95_low_percent": 16.8,
+            "eer_ci95_high_percent": 20.9525,
+            "eer_threshold": 0.7841834425926208,
+            "min_dcf_001": 0.952,
+            "min_dcf_005": 0.946,
+            "min_dcf_01": 0.89,
+            "roc_auc": 0.8944,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.16400000000000003,
+            "eer_percent": 16.4,
+            "eer_ci95_low_percent": 14.495,
+            "eer_ci95_high_percent": 19.4,
+            "eer_threshold": 0.7386266589164734,
+            "min_dcf_001": 0.986,
+            "min_dcf_005": 0.908,
+            "min_dcf_01": 0.834,
+            "roc_auc": 0.905,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.15500000000000003,
+            "eer_percent": 15.5,
+            "eer_ci95_low_percent": 14.2667,
+            "eer_ci95_high_percent": 16.8,
+            "eer_threshold": 0.7535426616668701,
+            "min_dcf_001": 0.992,
+            "min_dcf_005": 0.8827,
+            "min_dcf_01": 0.756,
+            "roc_auc": 0.9254,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 14.8,
+          "min_dcf_001": 0.8307,
+          "min_dcf_01": 0.7167,
+          "roc_auc": 0.9237
+        }
+      },
+      "short_1s_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.19566666666666666,
+            "eer_percent": 19.5667,
+            "eer_ci95_low_percent": 17.8825,
+            "eer_ci95_high_percent": 20.835,
+            "eer_threshold": 0.5239967107772827,
+            "min_dcf_001": 0.9727,
+            "min_dcf_005": 0.9727,
+            "min_dcf_01": 0.884,
+            "roc_auc": 0.8894,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 5.138,
+            "eval_time_sec": 5.943,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.2856666666666667,
+            "eer_percent": 28.5667,
+            "eer_ci95_low_percent": 26.9492,
+            "eer_ci95_high_percent": 30.2,
+            "eer_threshold": 0.6391569375991821,
+            "min_dcf_001": 0.9947,
+            "min_dcf_005": 0.9947,
+            "min_dcf_01": 0.9947,
+            "roc_auc": 0.7789,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 4.445,
+            "eval_time_sec": 4.083,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.259,
+            "eer_percent": 25.9,
+            "eer_ci95_low_percent": 23.7737,
+            "eer_ci95_high_percent": 27.9263,
+            "eer_threshold": 0.52787846326828,
+            "min_dcf_001": 0.99,
+            "min_dcf_005": 0.99,
+            "min_dcf_01": 0.99,
+            "roc_auc": 0.8144,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 6.77,
+            "eval_time_sec": 2.295,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.24725000000000003,
+            "eer_percent": 24.725,
+            "eer_ci95_low_percent": 23.8559,
+            "eer_ci95_high_percent": 25.7691,
+            "eer_threshold": 0.5750901699066162,
+            "min_dcf_001": 0.998,
+            "min_dcf_005": 0.998,
+            "min_dcf_01": 0.9975,
+            "roc_auc": 0.8259,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 1.81,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 24.68,
+          "min_dcf_001": 0.9858,
+          "min_dcf_01": 0.9562,
+          "roc_auc": 0.8276
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.136,
+            "eer_percent": 13.6,
+            "eer_ci95_low_percent": 11.0,
+            "eer_ci95_high_percent": 15.8,
+            "eer_threshold": 0.5858456492424011,
+            "min_dcf_001": 0.888,
+            "min_dcf_005": 0.876,
+            "min_dcf_01": 0.772,
+            "roc_auc": 0.9362,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.263,
+            "eer_percent": 26.3,
+            "eer_ci95_low_percent": 23.9,
+            "eer_ci95_high_percent": 29.2525,
+            "eer_threshold": 0.7094642519950867,
+            "min_dcf_001": 0.994,
+            "min_dcf_005": 0.994,
+            "min_dcf_01": 0.994,
+            "roc_auc": 0.8083,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.236,
+            "eer_percent": 23.6,
+            "eer_ci95_low_percent": 20.6,
+            "eer_ci95_high_percent": 26.205,
+            "eer_threshold": 0.6357586979866028,
+            "min_dcf_001": 0.962,
+            "min_dcf_005": 0.962,
+            "min_dcf_01": 0.948,
+            "roc_auc": 0.8468,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.21566666666666667,
+            "eer_percent": 21.5667,
+            "eer_ci95_low_percent": 20.2317,
+            "eer_ci95_high_percent": 23.0175,
+            "eer_threshold": 0.645759642124176,
+            "min_dcf_001": 0.998,
+            "min_dcf_005": 0.998,
+            "min_dcf_01": 0.9947,
+            "roc_auc": 0.8617,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 21.17,
+          "min_dcf_001": 0.948,
+          "min_dcf_01": 0.9047,
+          "roc_auc": 0.8638
+        }
+      }
+    }
+  },
+  "training_horizon_ablation": {
+    "steps_400": {
+      "num_steps": 400,
+      "train_time_sec": 798.45,
+      "initial_loss": 1.918,
+      "final_loss": 0.7821,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.12499999999999997,
+            "eer_percent": 12.5,
+            "eer_ci95_low_percent": 11.165,
+            "eer_ci95_high_percent": 13.635,
+            "eer_threshold": 0.6428280472755432,
+            "min_dcf_001": 0.8793,
+            "min_dcf_005": 0.792,
+            "min_dcf_01": 0.636,
+            "roc_auc": 0.9441,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 52.205,
+            "eval_time_sec": 53.984,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.22333333333333336,
+            "eer_percent": 22.3333,
+            "eer_ci95_low_percent": 20.7333,
+            "eer_ci95_high_percent": 23.7842,
+            "eer_threshold": 0.7099820971488953,
+            "min_dcf_001": 0.9673,
+            "min_dcf_005": 0.9673,
+            "min_dcf_01": 0.9453,
+            "roc_auc": 0.8543,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 46.5,
+            "eval_time_sec": 35.977,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.248,
+            "eer_percent": 24.8,
+            "eer_ci95_low_percent": 22.55,
+            "eer_ci95_high_percent": 26.6,
+            "eer_threshold": 0.6420422792434692,
+            "min_dcf_001": 0.961,
+            "min_dcf_005": 0.945,
+            "min_dcf_01": 0.91,
+            "roc_auc": 0.8599,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 57.579,
+            "eval_time_sec": 16.405,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.19399999999999998,
+            "eer_percent": 19.4,
+            "eer_ci95_low_percent": 18.6119,
+            "eer_ci95_high_percent": 20.2566,
+            "eer_threshold": 0.6711732745170593,
+            "min_dcf_001": 0.9752,
+            "min_dcf_005": 0.973,
+            "min_dcf_01": 0.8675,
+            "roc_auc": 0.8906,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 3.88,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 19.88,
+          "min_dcf_001": 0.9359,
+          "min_dcf_01": 0.8304,
+          "roc_auc": 0.8861
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.08799999999999998,
+            "eer_percent": 8.8,
+            "eer_ci95_low_percent": 7.0,
+            "eer_ci95_high_percent": 10.9525,
+            "eer_threshold": 0.7043434977531433,
+            "min_dcf_001": 0.566,
+            "min_dcf_005": 0.542,
+            "min_dcf_01": 0.438,
+            "roc_auc": 0.9743,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.19999999999999998,
+            "eer_percent": 20.0,
+            "eer_ci95_low_percent": 17.6,
+            "eer_ci95_high_percent": 22.1525,
+            "eer_threshold": 0.7836883664131165,
+            "min_dcf_001": 0.974,
+            "min_dcf_005": 0.974,
+            "min_dcf_01": 0.832,
+            "roc_auc": 0.8912,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.19699999999999998,
+            "eer_percent": 19.7,
+            "eer_ci95_low_percent": 17.3475,
+            "eer_ci95_high_percent": 22.2,
+            "eer_threshold": 0.7314720749855042,
+            "min_dcf_001": 0.99,
+            "min_dcf_005": 0.98,
+            "min_dcf_01": 0.892,
+            "roc_auc": 0.8938,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.16033333333333333,
+            "eer_percent": 16.0333,
+            "eer_ci95_low_percent": 14.7333,
+            "eer_ci95_high_percent": 17.2508,
+            "eer_threshold": 0.7414884567260742,
+            "min_dcf_001": 0.986,
+            "min_dcf_005": 0.912,
+            "min_dcf_01": 0.7853,
+            "roc_auc": 0.9212,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 16.17,
+          "min_dcf_001": 0.8433,
+          "min_dcf_01": 0.7207,
+          "roc_auc": 0.9198
+        }
+      }
+    },
+    "steps_800": {
+      "num_steps": 800,
+      "train_time_sec": 530.03,
+      "initial_loss": 2.0525,
+      "final_loss": 0.7852,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.14800000000000002,
+            "eer_percent": 14.8,
+            "eer_ci95_low_percent": 13.4983,
+            "eer_ci95_high_percent": 16.0508,
+            "eer_threshold": 0.7069302201271057,
+            "min_dcf_001": 0.786,
+            "min_dcf_005": 0.7347,
+            "min_dcf_01": 0.6567,
+            "roc_auc": 0.934,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 11.964,
+            "eval_time_sec": 12.867,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.228,
+            "eer_percent": 22.8,
+            "eer_ci95_low_percent": 21.3492,
+            "eer_ci95_high_percent": 24.2508,
+            "eer_threshold": 0.7549895644187927,
+            "min_dcf_001": 0.9567,
+            "min_dcf_005": 0.9567,
+            "min_dcf_01": 0.9193,
+            "roc_auc": 0.8556,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 10.515,
+            "eval_time_sec": 8.631,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.23399999999999999,
+            "eer_percent": 23.4,
+            "eer_ci95_low_percent": 21.6238,
+            "eer_ci95_high_percent": 25.1762,
+            "eer_threshold": 0.6416192650794983,
+            "min_dcf_001": 0.967,
+            "min_dcf_005": 0.967,
+            "min_dcf_01": 0.95,
+            "roc_auc": 0.8593,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 9.947,
+            "eval_time_sec": 3.126,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.20024999999999998,
+            "eer_percent": 20.025,
+            "eer_ci95_low_percent": 19.1928,
+            "eer_ci95_high_percent": 20.9256,
+            "eer_threshold": 0.7152935266494751,
+            "min_dcf_001": 0.966,
+            "min_dcf_005": 0.939,
+            "min_dcf_01": 0.871,
+            "roc_auc": 0.884,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 1.558,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 20.33,
+          "min_dcf_001": 0.9032,
+          "min_dcf_01": 0.842,
+          "roc_auc": 0.883
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.09999999999999999,
+            "eer_percent": 10.0,
+            "eer_ci95_low_percent": 8.0,
+            "eer_ci95_high_percent": 12.4,
+            "eer_threshold": 0.7613168358802795,
+            "min_dcf_001": 0.598,
+            "min_dcf_005": 0.598,
+            "min_dcf_01": 0.522,
+            "roc_auc": 0.9656,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.17800000000000002,
+            "eer_percent": 17.8,
+            "eer_ci95_low_percent": 15.6475,
+            "eer_ci95_high_percent": 20.3,
+            "eer_threshold": 0.8032984137535095,
+            "min_dcf_001": 0.908,
+            "min_dcf_005": 0.842,
+            "min_dcf_01": 0.784,
+            "roc_auc": 0.9007,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.19599999999999998,
+            "eer_percent": 19.6,
+            "eer_ci95_low_percent": 17.0475,
+            "eer_ci95_high_percent": 22.2,
+            "eer_threshold": 0.7303739190101624,
+            "min_dcf_001": 0.978,
+            "min_dcf_005": 0.978,
+            "min_dcf_01": 0.884,
+            "roc_auc": 0.8938,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.16899999999999998,
+            "eer_percent": 16.9,
+            "eer_ci95_low_percent": 15.4983,
+            "eer_ci95_high_percent": 18.0667,
+            "eer_threshold": 0.7658169269561768,
+            "min_dcf_001": 0.936,
+            "min_dcf_005": 0.878,
+            "min_dcf_01": 0.7967,
+            "roc_auc": 0.9193,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 15.8,
+          "min_dcf_001": 0.828,
+          "min_dcf_01": 0.73,
+          "roc_auc": 0.92
+        }
+      }
+    },
+    "steps_1200": {
+      "num_steps": 1200,
+      "train_time_sec": 762.83,
+      "initial_loss": 2.0525,
+      "final_loss": 0.6501,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.1273333333333333,
+            "eer_percent": 12.7333,
+            "eer_ci95_low_percent": 11.3492,
+            "eer_ci95_high_percent": 13.7,
+            "eer_threshold": 0.6936711668968201,
+            "min_dcf_001": 0.8407,
+            "min_dcf_005": 0.7307,
+            "min_dcf_01": 0.586,
+            "roc_auc": 0.9477,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 8.648,
+            "eval_time_sec": 9.395,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.20466666666666666,
+            "eer_percent": 20.4667,
+            "eer_ci95_low_percent": 19.0158,
+            "eer_ci95_high_percent": 22.0842,
+            "eer_threshold": 0.7213670015335083,
+            "min_dcf_001": 0.9907,
+            "min_dcf_005": 0.9633,
+            "min_dcf_01": 0.9153,
+            "roc_auc": 0.8749,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 8.543,
+            "eval_time_sec": 7.064,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.22299999999999998,
+            "eer_percent": 22.3,
+            "eer_ci95_low_percent": 20.2737,
+            "eer_ci95_high_percent": 23.9,
+            "eer_threshold": 0.6323401927947998,
+            "min_dcf_001": 0.92,
+            "min_dcf_005": 0.92,
+            "min_dcf_01": 0.91,
+            "roc_auc": 0.8692,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 8.046,
+            "eval_time_sec": 2.672,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.18474999999999997,
+            "eer_percent": 18.475,
+            "eer_ci95_low_percent": 17.6119,
+            "eer_ci95_high_percent": 19.3,
+            "eer_threshold": 0.6833351254463196,
+            "min_dcf_001": 0.994,
+            "min_dcf_005": 0.9128,
+            "min_dcf_01": 0.8395,
+            "roc_auc": 0.9012,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 2.077,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 18.5,
+          "min_dcf_001": 0.9171,
+          "min_dcf_01": 0.8038,
+          "roc_auc": 0.8973
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.07999999999999999,
+            "eer_percent": 8.0,
+            "eer_ci95_low_percent": 6.2475,
+            "eer_ci95_high_percent": 9.8,
+            "eer_threshold": 0.7451069951057434,
+            "min_dcf_001": 0.806,
+            "min_dcf_005": 0.602,
+            "min_dcf_01": 0.442,
+            "roc_auc": 0.9741,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.16600000000000004,
+            "eer_percent": 16.6,
+            "eer_ci95_low_percent": 14.2475,
+            "eer_ci95_high_percent": 18.8,
+            "eer_threshold": 0.7780675292015076,
+            "min_dcf_001": 0.936,
+            "min_dcf_005": 0.864,
+            "min_dcf_01": 0.77,
+            "roc_auc": 0.9157,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.17900000000000002,
+            "eer_percent": 17.9,
+            "eer_ci95_low_percent": 15.4,
+            "eer_ci95_high_percent": 20.0,
+            "eer_threshold": 0.7144210934638977,
+            "min_dcf_001": 0.968,
+            "min_dcf_005": 0.902,
+            "min_dcf_01": 0.862,
+            "roc_auc": 0.9037,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.14466666666666667,
+            "eer_percent": 14.4667,
+            "eer_ci95_low_percent": 12.965,
+            "eer_ci95_high_percent": 15.6,
+            "eer_threshold": 0.7448573708534241,
+            "min_dcf_001": 0.948,
+            "min_dcf_005": 0.8327,
+            "min_dcf_01": 0.7573,
+            "roc_auc": 0.9325,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 14.17,
+          "min_dcf_001": 0.9033,
+          "min_dcf_01": 0.6913,
+          "roc_auc": 0.9312
+        }
+      }
+    }
+  },
+  "mamba_directionality_ablation": {
+    "unidirectional": {
+      "bidirectional": false,
+      "num_parameters": 1028674,
+      "train_time_sec": 1296.02,
+      "initial_loss": 2.0599,
+      "final_loss": 0.4329,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.12166666666666667,
+            "eer_percent": 12.1667,
+            "eer_ci95_low_percent": 10.9158,
+            "eer_ci95_high_percent": 13.2667,
+            "eer_threshold": 0.5933759212493896,
+            "min_dcf_001": 0.908,
+            "min_dcf_005": 0.706,
+            "min_dcf_01": 0.5653,
+            "roc_auc": 0.9495,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 137.645,
+            "eval_time_sec": 139.88,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.29133333333333333,
+            "eer_percent": 29.1333,
+            "eer_ci95_low_percent": 27.3825,
+            "eer_ci95_high_percent": 30.7667,
+            "eer_threshold": 0.5431041121482849,
+            "min_dcf_001": 0.976,
+            "min_dcf_005": 0.9407,
+            "min_dcf_01": 0.8807,
+            "roc_auc": 0.7892,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 187.284,
+            "eval_time_sec": 140.146,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.21049999999999996,
+            "eer_percent": 21.05,
+            "eer_ci95_low_percent": 19.2475,
+            "eer_ci95_high_percent": 22.9,
+            "eer_threshold": 0.43665969371795654,
+            "min_dcf_001": 0.878,
+            "min_dcf_005": 0.878,
+            "min_dcf_01": 0.854,
+            "roc_auc": 0.8749,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 210.168,
+            "eval_time_sec": 54.107,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.213,
+            "eer_percent": 21.3,
+            "eer_ci95_low_percent": 20.4,
+            "eer_ci95_high_percent": 22.1,
+            "eer_threshold": 0.5344809293746948,
+            "min_dcf_001": 0.9523,
+            "min_dcf_005": 0.849,
+            "min_dcf_01": 0.7735,
+            "roc_auc": 0.8768,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 3.963,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 20.78,
+          "min_dcf_001": 0.9207,
+          "min_dcf_01": 0.7667,
+          "roc_auc": 0.8712
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.07899999999999999,
+            "eer_percent": 7.9,
+            "eer_ci95_low_percent": 6.3,
+            "eer_ci95_high_percent": 10.0,
+            "eer_threshold": 0.6526110768318176,
+            "min_dcf_001": 0.65,
+            "min_dcf_005": 0.382,
+            "min_dcf_01": 0.328,
+            "roc_auc": 0.9758,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.23299999999999998,
+            "eer_percent": 23.3,
+            "eer_ci95_low_percent": 20.8,
+            "eer_ci95_high_percent": 26.0525,
+            "eer_threshold": 0.622331440448761,
+            "min_dcf_001": 0.892,
+            "min_dcf_005": 0.874,
+            "min_dcf_01": 0.792,
+            "roc_auc": 0.8528,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.16100000000000003,
+            "eer_percent": 16.1,
+            "eer_ci95_low_percent": 13.9475,
+            "eer_ci95_high_percent": 19.0525,
+            "eer_threshold": 0.5560187697410583,
+            "min_dcf_001": 0.906,
+            "min_dcf_005": 0.886,
+            "min_dcf_01": 0.828,
+            "roc_auc": 0.9178,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.17099999999999999,
+            "eer_percent": 17.1,
+            "eer_ci95_low_percent": 15.5333,
+            "eer_ci95_high_percent": 18.3683,
+            "eer_threshold": 0.6054776906967163,
+            "min_dcf_001": 0.9047,
+            "min_dcf_005": 0.7587,
+            "min_dcf_01": 0.6693,
+            "roc_auc": 0.9215,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 15.77,
+          "min_dcf_001": 0.816,
+          "min_dcf_01": 0.6493,
+          "roc_auc": 0.9155
+        }
+      }
+    },
+    "bidirectional": {
+      "bidirectional": true,
+      "num_parameters": 1028674,
+      "train_time_sec": 827.43,
+      "initial_loss": 2.0562,
+      "final_loss": 0.6248,
+      "multi_domain_eval": {
+        "domains_1utt": {
+          "librispeech": {
+            "eer": 0.1353333333333333,
+            "eer_percent": 13.5333,
+            "eer_ci95_low_percent": 12.3158,
+            "eer_ci95_high_percent": 14.8667,
+            "eer_threshold": 0.678376317024231,
+            "min_dcf_001": 0.8547,
+            "min_dcf_005": 0.7567,
+            "min_dcf_01": 0.6207,
+            "roc_auc": 0.9401,
+            "num_trials": 3000,
+            "num_unique_utterances": 999,
+            "latency_ms_per_utterance": 62.918,
+            "eval_time_sec": 63.402,
+            "scoring_type": "cosine"
+          },
+          "cnceleb2": {
+            "eer": 0.29833333333333334,
+            "eer_percent": 29.8333,
+            "eer_ci95_low_percent": 28.0492,
+            "eer_ci95_high_percent": 31.4508,
+            "eer_threshold": 0.5431135296821594,
+            "min_dcf_001": 0.932,
+            "min_dcf_005": 0.9227,
+            "min_dcf_01": 0.8727,
+            "roc_auc": 0.7764,
+            "num_trials": 3000,
+            "num_unique_utterances": 739,
+            "latency_ms_per_utterance": 60.91,
+            "eval_time_sec": 45.548,
+            "scoring_type": "cosine"
+          },
+          "voxceleb1": {
+            "eer": 0.21749999999999997,
+            "eer_percent": 21.75,
+            "eer_ci95_low_percent": 19.7,
+            "eer_ci95_high_percent": 23.2,
+            "eer_threshold": 0.5520188808441162,
+            "min_dcf_001": 0.957,
+            "min_dcf_005": 0.957,
+            "min_dcf_01": 0.906,
+            "roc_auc": 0.877,
+            "num_trials": 2000,
+            "num_unique_utterances": 250,
+            "latency_ms_per_utterance": 62.956,
+            "eval_time_sec": 16.142,
+            "scoring_type": "cosine"
+          },
+          "universal_pooled": {
+            "eer": 0.22075,
+            "eer_percent": 22.075,
+            "eer_ci95_low_percent": 21.2,
+            "eer_ci95_high_percent": 22.9631,
+            "eer_threshold": 0.5851830244064331,
+            "min_dcf_001": 0.916,
+            "min_dcf_005": 0.8877,
+            "min_dcf_01": 0.799,
+            "roc_auc": 0.8681,
+            "num_trials": 8000,
+            "num_unique_utterances": 1988,
+            "latency_ms_per_utterance": 0.0,
+            "eval_time_sec": 1.237,
+            "scoring_type": "cosine"
+          }
+        },
+        "universal_macro_avg_1utt": {
+          "eer_percent": 21.71,
+          "min_dcf_001": 0.9146,
+          "min_dcf_01": 0.7998,
+          "roc_auc": 0.8645
+        },
+        "domains_3utt": {
+          "librispeech": {
+            "eer": 0.10799999999999998,
+            "eer_percent": 10.8,
+            "eer_ci95_low_percent": 8.6,
+            "eer_ci95_high_percent": 12.6,
+            "eer_threshold": 0.7324199080467224,
+            "min_dcf_001": 0.798,
+            "min_dcf_005": 0.498,
+            "min_dcf_01": 0.458,
+            "roc_auc": 0.9651,
+            "num_trials": 1000
+          },
+          "cnceleb2": {
+            "eer": 0.253,
+            "eer_percent": 25.3,
+            "eer_ci95_low_percent": 22.4,
+            "eer_ci95_high_percent": 27.8,
+            "eer_threshold": 0.626266598701477,
+            "min_dcf_001": 0.888,
+            "min_dcf_005": 0.844,
+            "min_dcf_01": 0.808,
+            "roc_auc": 0.825,
+            "num_trials": 1000
+          },
+          "voxceleb1": {
+            "eer": 0.17300000000000001,
+            "eer_percent": 17.3,
+            "eer_ci95_low_percent": 14.8475,
+            "eer_ci95_high_percent": 19.2,
+            "eer_threshold": 0.6429952383041382,
+            "min_dcf_001": 0.956,
+            "min_dcf_005": 0.916,
+            "min_dcf_01": 0.876,
+            "roc_auc": 0.9092,
+            "num_trials": 1000
+          },
+          "universal_pooled": {
+            "eer": 0.17733333333333334,
+            "eer_percent": 17.7333,
+            "eer_ci95_low_percent": 16.3333,
+            "eer_ci95_high_percent": 18.9667,
+            "eer_threshold": 0.6521081328392029,
+            "min_dcf_001": 0.916,
+            "min_dcf_005": 0.78,
+            "min_dcf_01": 0.7293,
+            "roc_auc": 0.9076,
+            "num_trials": 3000
+          }
+        },
+        "universal_macro_avg_3utt": {
+          "eer_percent": 17.8,
+          "min_dcf_001": 0.8807,
+          "min_dcf_01": 0.714,
+          "roc_auc": 0.8998
+        }
+      }
+    }
+  }
+}

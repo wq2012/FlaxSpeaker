@@ -14,6 +14,7 @@ Provides:
   plus one-line `.extract_embedding()` and `.verify()` methods.
 """
 
+from collections.abc import Sequence
 import json
 import os
 from typing import Any, Optional, Union
@@ -103,7 +104,7 @@ class FlaxSpeakerConfig(PretrainedConfig):
         backbone: str = "conformer",
         size_variant: str = "small",
         pooling_type: str = "asp",
-        embedding_dim: int = 192,
+        embedding_dim: Optional[int] = None,
         seq_len: int = 200,
         feature_type: str = "log_mel",
         n_mels: int = 80,
@@ -118,7 +119,13 @@ class FlaxSpeakerConfig(PretrainedConfig):
         self.backbone = backbone
         self.size_variant = size_variant
         self.pooling_type = pooling_type
-        self.embedding_dim = embedding_dim
+        default_emb_dims = {"tiny": 128, "small": 192, "base": 256}
+        self._explicit_embedding_dim = embedding_dim is not None
+        self.embedding_dim = (
+            int(embedding_dim)
+            if embedding_dim is not None
+            else default_emb_dims.get(str(size_variant).lower(), 192)
+        )
         self.seq_len = seq_len
         self.feature_type = feature_type
         self.n_mels = n_mels
@@ -153,16 +160,19 @@ class FlaxSpeakerConfig(PretrainedConfig):
             return configs.ExperimentConfig.from_dict(self.experiment_dict)
         cfg = configs.ExperimentConfig()
         cfg.model.backbone = configs.BackboneType(self.backbone)
-        cfg.model.size_variant = configs.SizeVariant(self.size_variant)
+        cfg.model.apply_size_variant(self.size_variant)
         cfg.model.pooling.pooling_type = configs.PoolingType(self.pooling_type)
-        cfg.model.embedding_dim = self.embedding_dim
+        if getattr(self, "_explicit_embedding_dim", True):
+            cfg.model.embedding_dim = self.embedding_dim
         cfg.model.seq_len = self.seq_len
+        cfg.model.scoring_type = configs.ScoringType(self.scoring_type)
         cfg.frontend.feature_type = configs.FeatureType(self.feature_type)
         cfg.frontend.n_mels = self.n_mels
         cfg.frontend.n_mfcc = self.n_mfcc
         cfg.frontend.sample_rate = self.sample_rate
         cfg.train.loss.scoring_type = configs.ScoringType(self.scoring_type)
         cfg.train.loss.loss_type = configs.LossType(self.loss_type)
+        cfg.loss = cfg.train.loss
         return cfg
 
 
@@ -188,6 +198,9 @@ class FlaxSpeakerModel:
         self.frontend = feature_extraction.AudioFrontend(
             self.exp_config.frontend, self.exp_config.vad
         )
+        self._jit_apply = jax.jit(
+            lambda p, x: self.state.apply_fn({"params": p}, x)
+        )
 
     @property
     def params(self) -> dict[str, Any]:
@@ -205,7 +218,7 @@ class FlaxSpeakerModel:
 
     def __call__(self, features: jax.Array) -> jax.Array:
         """Forward pass on batched features `(B, T, F) -> (B, D)`."""
-        return self.state.apply_fn({"params": self.state.params}, features)
+        return self._jit_apply(self.state.params, features)
 
     def extract_embedding(
         self, audio_or_path: Union[str, np.ndarray]
@@ -220,17 +233,40 @@ class FlaxSpeakerModel:
         )
         return np.asarray(emb, dtype=np.float32)
 
-    def verify(
+    def score_embeddings(
         self,
-        enroll_audio: Union[str, np.ndarray],
-        test_audio: Union[str, np.ndarray],
+        enroll_emb: Union[
+            np.ndarray, jax.Array, Sequence[Union[np.ndarray, jax.Array]]
+        ],
+        test_emb: Union[np.ndarray, jax.Array],
     ) -> float:
-        """Compute verification similarity score between enrollment and test audio."""
-        e_emb = jnp.asarray(self.extract_embedding(enroll_audio))
-        t_emb = jnp.asarray(self.extract_embedding(test_audio))
-        scoring_type = self.config.scoring_type.lower()
+        """Score single or multi-utterance enrollment embedding(s) against a test embedding.
 
-        if scoring_type == "pfas":
+        Dispatches across `pfas` (multi-enrollment key-value frame concatenation +
+        Parameter-Free Attentive Scoring), `dr_vector` (L2-normalized enrollment
+        centroid + Decision Residual Network), and `cosine` (L2-normalized centroid
+        cosine similarity).
+        """
+        t_emb = jnp.asarray(test_emb, dtype=jnp.float32)
+        if isinstance(enroll_emb, (list, tuple)):
+            enroll_list = [jnp.asarray(e, dtype=jnp.float32) for e in enroll_emb]
+        else:
+            e_arr = jnp.asarray(enroll_emb, dtype=jnp.float32)
+            if e_arr.ndim == 2:
+                enroll_list = [e_arr[i] for i in range(e_arr.shape[0])]
+            else:
+                enroll_list = [e_arr]
+
+        if not enroll_list:
+            raise ValueError("At least one enrollment embedding is required.")
+
+        scoring_type = self.config.scoring_type.lower()
+        if (
+            scoring_type == "pfas"
+            or self.config.pooling_type.lower() == "pfas"
+            or self.exp_config.model.pooling.pooling_type
+            == configs.PoolingType.PFAS
+        ):
             pfas_cfg = self.exp_config.model.pfas
             pfas_scale = (
                 float(np.exp(float(self.state.params["_aux_pfas_log_scale"])))
@@ -240,9 +276,26 @@ class FlaxSpeakerModel:
             t_k, t_v = scoring.unpack_pfas_representation(
                 t_emb, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
             )
-            e_k, e_v = scoring.unpack_pfas_representation(
-                e_emb, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
-            )
+            if len(enroll_list) == 1:
+                e_k, e_v = scoring.unpack_pfas_representation(
+                    enroll_list[0],
+                    pfas_cfg.num_keys,
+                    pfas_cfg.key_dim,
+                    pfas_cfg.value_dim,
+                )
+            else:
+                stacked_e = scoring.stack_multi_enroll_pfas(
+                    enroll_list,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                )
+                e_k, e_v = scoring.unpack_pfas_representation(
+                    stacked_e,
+                    len(enroll_list) * pfas_cfg.num_keys,
+                    pfas_cfg.key_dim,
+                    pfas_cfg.value_dim,
+                )
             return float(
                 scoring.pfas_score_pair(
                     t_k,
@@ -251,6 +304,9 @@ class FlaxSpeakerModel:
                     e_v,
                     scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=getattr(
+                        pfas_cfg, "apply_softmax_per_test_key", False
+                    ),
                     apply_l2_norm_to_keys=getattr(
                         pfas_cfg, "apply_l2_norm_to_keys", True
                     ),
@@ -265,13 +321,29 @@ class FlaxSpeakerModel:
                     ),
                 )
             )
-        elif scoring_type == "dr_vector" and "_aux_dr_net" in self.state.params:
+
+        if len(enroll_list) == 1:
+            e_emb = enroll_list[0]
+        else:
+            e_emb = scoring.compute_speaker_centroid(
+                jnp.stack(enroll_list, axis=0)
+            )
+
+        if scoring_type == "dr_vector" and "_aux_dr_net" in self.state.params:
             dr_cfg = self.exp_config.model.dr_vector
             dr_net = scoring.DecisionResidualNetwork(
                 hidden_dims=tuple(dr_cfg.hidden_dims),
                 activation=dr_cfg.activation,
                 use_layer_norm=dr_cfg.use_layer_norm,
                 include_cosine_in_input=dr_cfg.include_cosine_in_input,
+                num_cosine_terms=getattr(dr_cfg, "num_cosine_terms", 1),
+                append_cosine_as_feature_to_network_input=getattr(
+                    dr_cfg, "append_cosine_as_feature_to_network_input", True
+                ),
+                add_cosine_to_network_output=getattr(
+                    dr_cfg, "add_cosine_to_network_output", True
+                ),
+                symmetric_input=getattr(dr_cfg, "symmetric_input", False),
                 residual_weight=dr_cfg.residual_weight,
             )
             score = dr_net.apply(
@@ -281,8 +353,27 @@ class FlaxSpeakerModel:
                 method=dr_net.score_pairs,
             )
             return float(score[0])
-        else:
-            return float(scoring.cosine_similarity(e_emb, t_emb))
+
+        return float(scoring.cosine_similarity(e_emb, t_emb))
+
+    def verify(
+        self,
+        enroll_audio: Union[
+            str, np.ndarray, Sequence[Union[str, np.ndarray]]
+        ],
+        test_audio: Union[str, np.ndarray],
+    ) -> float:
+        """Compute verification similarity score between enrollment and test audio.
+
+        `enroll_audio` may be a single audio file path / 1D waveform or a sequence
+        of multiple enrollment audio file paths / waveforms.
+        """
+        t_emb = self.extract_embedding(test_audio)
+        if isinstance(enroll_audio, (list, tuple)):
+            e_embs = [self.extract_embedding(item) for item in enroll_audio]
+            return self.score_embeddings(e_embs, t_emb)
+        e_emb = self.extract_embedding(enroll_audio)
+        return self.score_embeddings(e_emb, t_emb)
 
     def save_pretrained(
         self,

@@ -1,5 +1,5 @@
 import functools
-import multiprocessing
+from multiprocessing import pool as mp_pool
 import os
 import tempfile
 import unittest
@@ -496,7 +496,7 @@ class TestNeuralNet(TestBase):
         self.config.model.use_transformer = False
         self.config.model.frame_aggregation_mean = True
         self.config.train.num_steps = 2
-        with multiprocessing.Pool(self.config.train.num_processes) as pool:
+        with mp_pool.ThreadPool(self.config.train.num_processes) as pool:
             losses_out = neural_net.train_network(
                 self.spk_to_utts, self.config, pool=pool
             )
@@ -505,7 +505,7 @@ class TestNeuralNet(TestBase):
     def test_train_transformer_network(self):
         self.config.model.use_transformer = True
         self.config.train.num_steps = 2
-        with multiprocessing.Pool(self.config.train.num_processes) as pool:
+        with mp_pool.ThreadPool(self.config.train.num_processes) as pool:
             losses_out = neural_net.train_network(
                 self.spk_to_utts, self.config, pool=pool
             )
@@ -754,6 +754,146 @@ class TestExportAndHuggingFaceCompat(TestBase):
                 with self.assertRaises(FileNotFoundError):
                     hf_compat.load_pretrained("./nonexistent_local_dir")
                 mock_dl.assert_not_called()
+
+    def test_hf_config_size_variant_and_multi_enroll_verify(self):
+        # Verify FlaxSpeakerConfig.to_experiment_config() propagates size_variant
+        for variant, expected_dim, expected_layers in (
+            ("tiny", 128, 2),
+            ("small", 192, 3),
+            ("base", 256, 4),
+        ):
+            hf_cfg = hf_compat.FlaxSpeakerConfig(
+                backbone="conformer", size_variant=variant
+            )
+            exp_cfg = hf_cfg.to_experiment_config()
+            self.assertEqual(exp_cfg.model.conformer.dim, expected_dim)
+            self.assertEqual(exp_cfg.model.conformer.num_layers, expected_layers)
+            self.assertEqual(exp_cfg.model.embedding_dim, expected_dim)
+
+        # Verify multi-utterance verify() and score_embeddings() across cosine, dr_vector, and pfas
+        sr = 16000
+        rng_np = np.random.default_rng(42)
+        wav1 = rng_np.standard_normal(sr).astype(np.float32) * 0.2
+        wav2 = rng_np.standard_normal(sr).astype(np.float32) * 0.2
+        wav_test = rng_np.standard_normal(sr).astype(np.float32) * 0.2
+
+        for scoring_mode, pool_mode in (
+            ("cosine", "atp"),
+            ("dr_vector", "atp"),
+            ("pfas", "pfas"),
+        ):
+            exp_cfg = configs.ExperimentConfig()
+            exp_cfg.model.backbone = configs.BackboneType.CONFORMER
+            exp_cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+            exp_cfg.model.pooling.pooling_type = pool_mode
+            exp_cfg.model.scoring_type = scoring_mode
+            exp_cfg.train.loss.scoring_type = scoring_mode
+            exp_cfg.train.loss.loss_type = "extended_set_softmax"
+            hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(exp_cfg)
+            model = hf_compat.FlaxSpeakerModel(config=hf_cfg)
+            s_single = model.verify(wav1, wav_test)
+            s_multi = model.verify([wav1, wav2], wav_test)
+            self.assertTrue(np.isfinite(s_single))
+            self.assertTrue(np.isfinite(s_multi))
+            self.assertNotAlmostEqual(s_single, s_multi, places=4)
+
+
+class TestAlgorithmicFidelityFixes(unittest.TestCase):
+
+    def test_pfas_maxpool_and_attention_padding_invariance(self):
+        rng = jax.random.PRNGKey(123)
+        x_short = jax.random.normal(rng, (2, 32, 64))
+        m_short = jnp.ones((2, 32), dtype=jnp.float32)
+        x_pad = jnp.pad(x_short, ((0, 0), (0, 28), (0, 0)))
+        m_pad = jnp.pad(m_short, ((0, 0), (0, 28)))
+
+        for attn_type in ("mlp", "dot", "maxpool"):
+            for use_anchor in (True, False):
+                head = pooling.PfasRepresentationHead(
+                    num_keys=4,
+                    key_dim=32,
+                    value_dim=128,
+                    attention_dim=64,
+                    attention_type=attn_type,
+                    use_global_anchor=use_anchor,
+                )
+                params = head.init(rng, x_short, mask=m_short)["params"]
+                out_short = head.apply(
+                    {"params": params}, x_short, mask=m_short
+                )
+                out_pad = head.apply({"params": params}, x_pad, mask=m_pad)
+                max_diff = float(jnp.max(jnp.abs(out_short - out_pad)))
+                self.assertLess(
+                    max_diff,
+                    1e-5,
+                    msg=f"PFAS padding invariance failed for {attn_type} (anchor={use_anchor}): {max_diff}",
+                )
+
+    def test_ge2e_contrast_non_saturating_grad_and_unclamped_w(self):
+        rng = jax.random.PRNGKey(99)
+        embs = jax.random.normal(rng, (16, 32))
+        embs = embs / (jnp.linalg.norm(embs, axis=-1, keepdims=True) + 1e-6)
+        w10 = jnp.array(10.0, dtype=jnp.float32)
+        w20 = jnp.array(20.0, dtype=jnp.float32)
+        b = jnp.array(-5.0, dtype=jnp.float32)
+
+        l10 = losses.ge2e_contrast_loss(embs, 4, 4, w=w10, b=b)
+        l20 = losses.ge2e_contrast_loss(embs, 4, 4, w=w20, b=b)
+        # Verify w > 5.0 is NOT clamped to 5.0
+        self.assertNotAlmostEqual(float(l10), float(l20), places=3)
+
+        grad_fn = jax.grad(losses.ge2e_contrast_loss, argnums=(0, 3, 4))
+        g_embs, g_w, g_b = grad_fn(embs, 4, 4, w10, b)
+        self.assertGreater(float(jnp.linalg.norm(g_embs)), 1e-2)
+        self.assertTrue(np.isfinite(float(g_w)))
+        self.assertTrue(np.isfinite(float(g_b)))
+
+    def test_extended_set_softmax_pure_vs_blended_and_dr_vector_terms(self):
+        rng = jax.random.PRNGKey(17)
+        embs = jax.random.normal(rng, (16, 32))
+        w = jnp.array(10.0, dtype=jnp.float32)
+        b = jnp.array(-5.0, dtype=jnp.float32)
+
+        l_blended = losses.extended_set_softmax_loss(
+            embs, 4, 4, w=w, b=b, pure_extended_set=False
+        )
+        l_pure = losses.extended_set_softmax_loss(
+            embs, 4, 4, w=w, b=b, pure_extended_set=True
+        )
+        self.assertGreater(float(l_blended), 0.0)
+        self.assertGreater(float(l_pure), 0.0)
+        self.assertNotAlmostEqual(float(l_blended), float(l_pure), places=3)
+
+        # Test DecisionResidualNetwork with 3 cosine terms (Pelecanos et al., 2021 Eq. 7) and symmetric input
+        dr_net = scoring.DecisionResidualNetwork(
+            hidden_dims=(32, 16),
+            num_cosine_terms=3,
+            symmetric_input=True,
+        )
+        t_v = jax.random.normal(rng, (4, 32))
+        e_v = jax.random.normal(jax.random.PRNGKey(18), (4, 32))
+        params = dr_net.init(rng, t_v, e_v)["params"]
+        s_te = dr_net.apply({"params": params}, t_v, e_v, method=dr_net.score_pairs)
+        s_et = dr_net.apply({"params": params}, e_v, t_v, method=dr_net.score_pairs)
+        self.assertTrue(np.allclose(s_te, s_et, atol=1e-5))
+
+    def test_bidirectional_mamba_padding_invariance(self):
+        rng = jax.random.PRNGKey(55)
+        x_short = jax.random.normal(rng, (2, 24, 80))
+        m_short = jnp.ones((2, 24), dtype=jnp.float32)
+        x_pad = jnp.pad(x_short, ((0, 0), (0, 16), (0, 0)))
+        m_pad = jnp.pad(m_short, ((0, 0), (0, 16)))
+
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.MAMBA
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.mamba.bidirectional = True
+        enc = neural_net.build_modern_encoder_from_config(cfg)
+        params = enc.init(rng, x_short, mask=m_short)["params"]
+        out_short = enc.apply({"params": params}, x_short, mask=m_short)
+        out_pad = enc.apply({"params": params}, x_pad, mask=m_pad)
+        cos = jnp.sum(out_short * out_pad, axis=-1)
+        self.assertTrue(np.all(np.asarray(cos) > 0.9999))
 
 
 if __name__ == "__main__":

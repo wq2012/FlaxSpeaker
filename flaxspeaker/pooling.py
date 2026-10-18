@@ -270,6 +270,9 @@ class PfasRepresentationHead(nn.Module):
     attention_type: str = "shared_nonlinear"
     apply_l2_norm_to_keys: bool = True
     apply_l2_norm_to_values: bool = False
+    apply_global_l2_norm_to_concat_form: bool = True
+    use_global_anchor: bool = True
+    local_value_scale: float = 0.25
     normalize_keys_and_values: Optional[bool] = None
     normalize_overall_output: bool = False
     eps: float = 1e-6
@@ -296,19 +299,22 @@ class PfasRepresentationHead(nn.Module):
             keys = packed[:, :key_size].reshape(bsz, self.num_keys, self.key_dim)
             vals = packed[:, key_size:].reshape(bsz, self.num_keys, self.value_dim)
         else:
-            pooled = AttentiveTemporalPooling(
-                num_heads=self.atp_num_heads,
-                attention_dim=self.attention_dim,
-                pooling_stats="mean_std",
-                name="pfas_global_atp",
-            )(x, mask=mask)
-            g = nn.LayerNorm(name="pfas_g_ln1")(pooled)
-            g = nn.relu(
-                nn.LayerNorm(name="pfas_g_ln2")(
-                    nn.Dense(self.bottleneck_dim, name="pfas_g_fc")(g)
+            if self.use_global_anchor:
+                pooled = AttentiveTemporalPooling(
+                    num_heads=self.atp_num_heads,
+                    attention_dim=self.attention_dim,
+                    pooling_stats="mean_std",
+                    name="pfas_global_atp",
+                )(x, mask=mask)
+                g = nn.LayerNorm(name="pfas_g_ln1")(pooled)
+                g = nn.relu(
+                    nn.LayerNorm(name="pfas_g_ln2")(
+                        nn.Dense(self.bottleneck_dim, name="pfas_g_fc")(g)
+                    )
                 )
-            )
-            global_val = nn.Dense(self.value_dim, name="pfas_g_val")(g)
+                global_val = nn.Dense(self.value_dim, name="pfas_g_val")(g)
+            else:
+                global_val = None
 
             frame_keys = nn.Dense(
                 self.num_keys * self.key_dim, name="pfas_key_proj"
@@ -318,29 +324,42 @@ class PfasRepresentationHead(nn.Module):
             )(x).reshape(bsz, seq_len, self.num_keys, self.value_dim)
 
             if att_mode == "maxpool":
-                pad_len = (self.num_keys - (seq_len % self.num_keys)) % self.num_keys
-                if pad_len > 0:
-                    frame_keys = jnp.pad(
-                        frame_keys, ((0, 0), (0, pad_len), (0, 0), (0, 0))
+                if mask is not None:
+                    valid_mask = mask > 0
+                    valid_len = jnp.maximum(
+                        jnp.sum(valid_mask.astype(jnp.float32), axis=1, keepdims=True),
+                        1.0,
                     )
-                    frame_values = jnp.pad(
-                        frame_values, ((0, 0), (0, pad_len), (0, 0), (0, 0))
+                else:
+                    valid_mask = jnp.ones((bsz, seq_len), dtype=jnp.bool_)
+                    valid_len = jnp.full((bsz, 1), float(seq_len), dtype=jnp.float32)
+
+                t_idx = jnp.arange(seq_len, dtype=jnp.float32)[None, :]
+                k_segs = []
+                v_segs = []
+                for idx in range(self.num_keys):
+                    seg_start = jnp.floor(idx * valid_len / float(self.num_keys))
+                    if idx == self.num_keys - 1:
+                        seg_end = valid_len
+                    else:
+                        seg_end = jnp.maximum(
+                            seg_start + 1.0,
+                            jnp.floor((idx + 1) * valid_len / float(self.num_keys)),
+                        )
+                    in_seg = (t_idx >= seg_start) & (t_idx < seg_end) & valid_mask
+                    in_seg = jnp.where(
+                        jnp.any(in_seg, axis=1, keepdims=True), in_seg, valid_mask
                     )
-                seg_len = frame_keys.shape[1] // self.num_keys
-                keys = jnp.max(
-                    frame_keys.reshape(
-                        bsz, self.num_keys, seg_len, self.num_keys, self.key_dim
-                    ),
-                    axis=2,
-                )
-                keys = jnp.diagonal(keys, axis1=1, axis2=2).transpose(0, 2, 1)
-                local_vals = jnp.max(
-                    frame_values.reshape(
-                        bsz, self.num_keys, seg_len, self.num_keys, self.value_dim
-                    ),
-                    axis=2,
-                )
-                local_vals = jnp.diagonal(local_vals, axis1=1, axis2=2).transpose(0, 2, 1)
+                    k_m = jnp.where(
+                        in_seg[:, :, None], frame_keys[:, :, idx, :], -1e9
+                    )
+                    v_m = jnp.where(
+                        in_seg[:, :, None], frame_values[:, :, idx, :], -1e9
+                    )
+                    k_segs.append(jnp.max(k_m, axis=1))
+                    v_segs.append(jnp.max(v_m, axis=1))
+                keys = jnp.stack(k_segs, axis=1)
+                local_vals = jnp.stack(v_segs, axis=1)
             elif att_mode == "unshared_nonlinear":
                 hk = jnp.tanh(nn.Dense(self.attention_dim, name="pfas_att_k_hid")(x))
                 logits_k = nn.Dense(self.num_keys, name="pfas_att_k_out")(hk)
@@ -369,7 +388,10 @@ class PfasRepresentationHead(nn.Module):
                 keys = jnp.einsum("btm,btmd->bmd", alpha, frame_keys)
                 local_vals = jnp.einsum("btm,btmd->bmd", alpha, frame_values)
 
-            vals = global_val[:, None, :] + 0.25 * local_vals
+            if global_val is not None:
+                vals = global_val[:, None, :] + self.local_value_scale * local_vals
+            else:
+                vals = local_vals
 
         norm_k = bool(self.apply_l2_norm_to_keys or self.normalize_keys_and_values)
         norm_v = bool(self.apply_l2_norm_to_values or self.normalize_keys_and_values)
@@ -380,6 +402,10 @@ class PfasRepresentationHead(nn.Module):
 
         flat_keys = keys.reshape(bsz, self.num_keys * self.key_dim)
         flat_vals = vals.reshape(bsz, self.num_keys * self.value_dim)
+        if self.apply_global_l2_norm_to_concat_form and not norm_v:
+            flat_vals = flat_vals / (
+                jnp.linalg.norm(flat_vals, axis=-1, keepdims=True) + self.eps
+            )
         packed = jnp.concatenate([flat_keys, flat_vals], axis=-1)
 
         if self.normalize_overall_output:

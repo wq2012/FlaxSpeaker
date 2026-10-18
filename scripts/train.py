@@ -121,6 +121,9 @@ def main() -> None:
 
     t0 = time.time()
     losses: list[float] = []
+    var_len = bool(getattr(exp_cfg.model, "variable_length_training", True))
+    within_prob = float(getattr(exp_cfg.data, "within_domain_prob", 0.75))
+    temp_alpha = float(getattr(exp_cfg.data, "domain_temp_alpha", 0.35))
     for step in range(exp_cfg.train.num_steps):
         if loss_type == "triplet":
             batch_list, mask_list = [], []
@@ -132,7 +135,7 @@ def main() -> None:
                         feat,
                         max_seq_len=exp_cfg.model.seq_len,
                         min_seq_len=exp_cfg.model.min_seq_len,
-                        variable_length=True,
+                        variable_length=var_len,
                         specaug_config=exp_cfg.train.specaug,
                         waveform_aug_config=exp_cfg.train.waveform_aug,
                         rng=rng,
@@ -155,7 +158,9 @@ def main() -> None:
                     cache=cache,
                     rng=rng,
                     min_seq_len=exp_cfg.model.min_seq_len,
+                    variable_length=var_len,
                     return_mask=True,
+                    domain_temp_alpha=temp_alpha,
                 )
             )
         else:
@@ -171,7 +176,10 @@ def main() -> None:
                     cache=cache,
                     rng=rng,
                     min_seq_len=exp_cfg.model.min_seq_len,
+                    variable_length=var_len,
                     return_mask=True,
+                    within_domain_prob=within_prob,
+                    domain_temp_alpha=temp_alpha,
                 )
             )
         state, loss_val = step_fn(state, batch_input, batch_labels, batch_mask)
@@ -200,7 +208,11 @@ def main() -> None:
         metrics_record["in_domain_eval"] = eval_metrics
         print("Evaluation Results:", json.dumps(eval_metrics, indent=2))
 
-    out_dir = args.output_dir or exp_cfg.train.saved_model_dir
+    out_dir = (
+        args.output_dir
+        or exp_cfg.train.saved_model_dir
+        or exp_cfg.model.saved_model_path
+    )
     if out_dir:
         hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(exp_cfg)
         hf_model = hf_compat.FlaxSpeakerModel(config=hf_cfg, params=state.params)

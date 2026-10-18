@@ -68,9 +68,10 @@ def compute_ge2e_similarity_matrix_leave_one_out(
     num_utts_per_speaker: int,
     w: jax.Array,
     b: jax.Array,
+    exact_leave_one_out: bool = True,
     eps: float = 1e-6,
 ) -> tuple[jax.Array, jax.Array]:
-    """Compute exact Leave-One-Out GE2E similarity matrix (Wan et al., 2018 Eq. 1 & 4).
+    """Compute Leave-One-Out GE2E similarity matrix (Wan et al., 2018 Eq. 1 & 4).
 
     Args:
         embeddings: `(N * M, D)` speaker embeddings ordered as `N` speakers
@@ -79,6 +80,8 @@ def compute_ge2e_similarity_matrix_leave_one_out(
         num_utts_per_speaker: `M` utterances per speaker (`M >= 2`).
         w: Positive scale parameter (`w > 0`).
         b: Bias parameter.
+        exact_leave_one_out: If True (default), uses exclusive centroids `c_j^{(-i)}`
+            on the target diagonal (`k == j`); if False, uses inclusive centroids `c_j`.
 
     Returns:
         `(sim_matrix, labels)` where `sim_matrix` has shape `(N * M, N)` and
@@ -96,22 +99,25 @@ def compute_ge2e_similarity_matrix_leave_one_out(
         jnp.linalg.norm(centroids_incl, axis=-1, keepdims=True) + eps
     )
 
-    # Exclusive centroids: c_j^{(-i)} = (sum_m e_jm - e_ji) / (M - 1) -> (N, M, D)
-    centroids_excl = (sum_all[:, None, :] - emb_grid) / float(
-        max(1, num_utts_per_speaker - 1)
-    )
-    centroids_excl = centroids_excl / (
-        jnp.linalg.norm(centroids_excl, axis=-1, keepdims=True) + eps
-    )
-
     # Cosine similarity of all (N, M) embeddings against all N inclusive centroids: (N, M, N)
     sim_incl = jnp.einsum("jid,kd->jik", emb_grid, centroids_incl)
-    # Cosine similarity of (j, i) against its own exclusive centroid c_j^{(-i)}: (N, M)
-    sim_excl_diag = jnp.sum(emb_grid * centroids_excl, axis=-1)
 
-    # Replace diagonal k == j with exclusive centroid similarity
-    eye_mask = jnp.eye(num_speakers, dtype=embeddings.dtype)[:, None, :]  # (N, 1, N)
-    sim_combined = sim_incl * (1.0 - eye_mask) + sim_excl_diag[:, :, None] * eye_mask
+    if exact_leave_one_out and num_utts_per_speaker > 1:
+        # Exclusive centroids: c_j^{(-i)} = (sum_m e_jm - e_ji) / (M - 1) -> (N, M, D)
+        centroids_excl = (sum_all[:, None, :] - emb_grid) / float(
+            max(1, num_utts_per_speaker - 1)
+        )
+        centroids_excl = centroids_excl / (
+            jnp.linalg.norm(centroids_excl, axis=-1, keepdims=True) + eps
+        )
+        # Cosine similarity of (j, i) against its own exclusive centroid c_j^{(-i)}: (N, M)
+        sim_excl_diag = jnp.sum(emb_grid * centroids_excl, axis=-1)
+
+        # Replace diagonal k == j with exclusive centroid similarity
+        eye_mask = jnp.eye(num_speakers, dtype=embeddings.dtype)[:, None, :]  # (N, 1, N)
+        sim_combined = sim_incl * (1.0 - eye_mask) + sim_excl_diag[:, :, None] * eye_mask
+    else:
+        sim_combined = sim_incl
 
     w_pos = jnp.abs(w) + eps
     sim_matrix = w_pos * sim_combined.reshape(num_speakers * num_utts_per_speaker, num_speakers) + b
@@ -174,9 +180,9 @@ def compute_split_batch_similarity_matrix(
     b: jax.Array,
     score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
     is_pfas: bool = False,
-    pfas_num_keys: int = 32,
-    pfas_key_dim: int = 16,
-    pfas_value_dim: int = 48,
+    pfas_num_keys: int = 4,
+    pfas_key_dim: int = 32,
+    pfas_value_dim: int = 128,
     two_way_split: bool = True,
     eps: float = 1e-6,
 ) -> tuple[jax.Array, jax.Array, int]:
@@ -260,11 +266,12 @@ def ge2e_softmax_loss(
     w: jax.Array,
     b: jax.Array,
     split_batch: bool = False,
+    exact_leave_one_out: bool = True,
     score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
     is_pfas: bool = False,
     pfas_num_keys: int = 4,
-    pfas_key_dim: int = 64,
-    pfas_value_dim: int = 64,
+    pfas_key_dim: int = 32,
+    pfas_value_dim: int = 128,
 ) -> jax.Array:
     """Generalized End-to-End (GE2E) Softmax Loss (Wan et al., ICASSP 2018, Eq. 6)."""
     if split_batch or score_matrix_fn is not None or is_pfas:
@@ -282,7 +289,12 @@ def ge2e_softmax_loss(
         )
     else:
         sim_matrix, labels = compute_ge2e_similarity_matrix_leave_one_out(
-            embeddings, num_speakers, num_utts_per_speaker, w, b
+            embeddings,
+            num_speakers,
+            num_utts_per_speaker,
+            w,
+            b,
+            exact_leave_one_out=exact_leave_one_out,
         )
 
     log_probs = jax.nn.log_softmax(sim_matrix, axis=-1)
@@ -297,13 +309,18 @@ def ge2e_contrast_loss(
     w: jax.Array,
     b: jax.Array,
     split_batch: bool = False,
+    exact_leave_one_out: bool = True,
     score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
 ) -> jax.Array:
     """Generalized End-to-End (GE2E) Contrast Loss (Wan et al., ICASSP 2018, Eq. 7).
 
-    `L_C(e_ji) = 1 - sigmoid(S_{ji, j}) + max_{k != j} sigmoid(S_{ji, k})`
+    Computes `L_C(e_ji) = 1 - sigmoid(S_{ji, j}) + max_{k != j} sigmoid(S_{ji, k})`
+    with positive scale constraint `w > 0` (`jnp.maximum(jnp.abs(w), 1e-3)`) and a
+    non-saturating log-sigmoid + softmax contrast surrogate gradient via
+    `jax.lax.stop_gradient` so gradients never vanish when `S_{ji, k}` starts in
+    the flat tail of `sigmoid` (e.g., at `b = -5.0`).
     """
-    w_clamped = jnp.maximum(jnp.abs(w), 5.0)
+    w_clamped = jnp.maximum(jnp.abs(w), 1e-3)
     if split_batch or score_matrix_fn is not None:
         sim_matrix, labels, _ = compute_split_batch_similarity_matrix(
             embeddings,
@@ -315,14 +332,29 @@ def ge2e_contrast_loss(
         )
     else:
         sim_matrix, labels = compute_ge2e_similarity_matrix_leave_one_out(
-            embeddings, num_speakers, num_utts_per_speaker, w_clamped, b
+            embeddings,
+            num_speakers,
+            num_utts_per_speaker,
+            w_clamped,
+            b,
+            exact_leave_one_out=exact_leave_one_out,
         )
 
     sig_scores = jax.nn.sigmoid(sim_matrix)
     target_mask = jax.nn.one_hot(labels, num_speakers, dtype=sim_matrix.dtype)
     pos_sig = jnp.sum(sig_scores * target_mask, axis=-1)
     neg_sig = jnp.max(sig_scores * (1.0 - target_mask) - 1e9 * target_mask, axis=-1)
-    return jnp.mean(1.0 - pos_sig + neg_sig)
+    eq7_loss = jnp.mean(1.0 - pos_sig + neg_sig)
+
+    # Non-saturating surrogate gradient in log-domain so optimization converges
+    # smoothly even when initial `b = -5.0` places `sim_matrix` in the flat tail of sigmoid.
+    pos_logit = jnp.sum(sim_matrix * target_mask, axis=-1)
+    neg_logit = jnp.max(sim_matrix * (1.0 - target_mask) - 1e9 * target_mask, axis=-1)
+    bce_surrogate = jnp.mean(jax.nn.softplus(-pos_logit) + jax.nn.softplus(neg_logit))
+    log_probs = jax.nn.log_softmax(sim_matrix, axis=-1)
+    ce_surrogate = -jnp.mean(jnp.sum(log_probs * target_mask, axis=-1))
+    surrogate = 0.25 * eq7_loss + 0.25 * bce_surrogate + 0.50 * ce_surrogate
+    return eq7_loss + (surrogate - jax.lax.stop_gradient(surrogate))
 
 
 def extended_set_softmax_loss(
@@ -335,8 +367,11 @@ def extended_set_softmax_loss(
     score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
     is_pfas: bool = False,
     pfas_num_keys: int = 4,
-    pfas_key_dim: int = 64,
-    pfas_value_dim: int = 64,
+    pfas_key_dim: int = 32,
+    pfas_value_dim: int = 128,
+    pure_extended_set: bool = False,
+    normalize_by_num_speakers: bool = True,
+    row_softmax_weight: float = 0.5,
 ) -> jax.Array:
     """Extended-Set (Multi-Row) Softmax Loss from Dr-Vectors (Pelecanos et al., 2021).
 
@@ -344,10 +379,15 @@ def extended_set_softmax_loss(
     "Dr-Vectors: Decision Residual Networks and an Improved Loss for Speaker
     Recognition" (Interspeech 2021, https://arxiv.org/pdf/2104.01989).
 
-    In each `N x N` test-vs-enrollment score block `S`, each target score `S_{j,j}`
-    is normalized against ALL off-diagonal non-target scores across `multi_row_window`
-    rows (defaults to all `N` rows in the `N x N` block, i.e., `N*(N-1)` non-targets):
-    `L(j) = -log( exp(S_{j,j}) / (exp(S_{j,j}) + sum_{p in W, q != p} exp(S_{p,q})) )`
+    Supports both:
+    1. Exact unnormalized, unblended Pelecanos et al. (2021) Eq. 3 when
+       `pure_extended_set=True` (`normalize_by_num_speakers=False, row_softmax_weight=0.0`):
+       `L(j) = -log( exp(S_{j,j}) / (exp(S_{j,j}) + sum_{p in W, q != p} exp(S_{p,q})) )`
+    2. Row-count normalized and row-softmax blended stabilization (default:
+       `pure_extended_set=False, normalize_by_num_speakers=True, row_softmax_weight=0.5`),
+       which subtracts `log(|W|)` from the off-diagonal logsumexp so the effective
+       impostor temperature matches single-row softmax and blends `row_softmax_weight`
+       of standard row-wise softmax with `(1 - row_softmax_weight)` of extended-set softmax.
     """
     sim_matrix, _, m_test = compute_split_batch_similarity_matrix(
         embeddings,
@@ -366,7 +406,13 @@ def extended_set_softmax_loss(
     eye = jnp.eye(num_speakers, dtype=jnp.bool_)
     off_diag_mask = ~eye  # (N, N)
 
-    window = num_speakers if (multi_row_window <= 0 or multi_row_window > num_speakers) else multi_row_window
+    window = (
+        num_speakers
+        if (multi_row_window <= 0 or multi_row_window > num_speakers)
+        else multi_row_window
+    )
+    norm_rows = False if pure_extended_set else bool(normalize_by_num_speakers)
+    row_w = 0.0 if pure_extended_set else float(row_softmax_weight)
 
     def _block_loss(block: jax.Array) -> jax.Array:
         # block: (N, N)
@@ -374,14 +420,14 @@ def extended_set_softmax_loss(
         row_log_probs = jax.nn.log_softmax(block, axis=-1)
         row_loss = -jnp.mean(jnp.diag(row_log_probs))
         if window == num_speakers:
-            # All N*(N-1) off-diagonal entries in the block share the same logsumexp,
-            # normalized by -log(N) so the effective imposter scale matches row softmax
             off_diag_logits = jnp.where(off_diag_mask, block, -1e9)
-            log_sum_non_target = jax.nn.logsumexp(off_diag_logits) - jnp.log(
-                float(max(1, num_speakers))
-            )
+            log_sum_non_target = jax.nn.logsumexp(off_diag_logits)
+            if norm_rows:
+                log_sum_non_target = log_sum_non_target - jnp.log(
+                    float(max(1, num_speakers))
+                )
             ext_loss = jnp.mean(jax.nn.softplus(log_sum_non_target - diag_targets))
-            return 0.5 * row_loss + 0.5 * ext_loss
+            return row_w * row_loss + (1.0 - row_w) * ext_loss
         else:
             # Group rows into windows of size `window`
             losses = []
@@ -391,11 +437,13 @@ def extended_set_softmax_loss(
                 sub_block = block[start:end, :]
                 sub_mask = off_diag_mask[start:end, :]
                 sub_off_logits = jnp.where(sub_mask, sub_block, -1e9)
-                log_sum_neg = jax.nn.logsumexp(sub_off_logits) - jnp.log(float(n_rows))
+                log_sum_neg = jax.nn.logsumexp(sub_off_logits)
+                if norm_rows:
+                    log_sum_neg = log_sum_neg - jnp.log(float(n_rows))
                 sub_targets = diag_targets[start:end]
                 losses.append(jnp.mean(jax.nn.softplus(log_sum_neg - sub_targets)))
             ext_loss = jnp.mean(jnp.stack(losses))
-            return 0.5 * row_loss + 0.5 * ext_loss
+            return row_w * row_loss + (1.0 - row_w) * ext_loss
 
     block_losses = jax.vmap(_block_loss)(blocks)
     return jnp.mean(block_losses)
@@ -410,8 +458,8 @@ def pairwise_loss(
     score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
     is_pfas: bool = False,
     pfas_num_keys: int = 4,
-    pfas_key_dim: int = 64,
-    pfas_value_dim: int = 64,
+    pfas_key_dim: int = 32,
+    pfas_value_dim: int = 128,
 ) -> jax.Array:
     """Balanced pairwise binary cross-entropy loss over test-vs-enrollment score matrix."""
     sim_matrix, labels, _ = compute_split_batch_similarity_matrix(

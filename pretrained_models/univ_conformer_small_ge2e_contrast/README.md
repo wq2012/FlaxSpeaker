@@ -89,21 +89,21 @@ python scripts/inference.py --model_dir wq2012/univ_conformer_small_ge2e_contras
 
 | Evaluation Split | Trials | EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **LibriSpeech (English Read)** | 3,000 | **20.67%** | [19.10, 22.13] | 0.9127 | 0.7753 | 0.8831 |
-| **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **31.77%** | [30.07, 33.45] | 0.8940 | 0.8500 | 0.7596 |
-| **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **26.65%** | [24.60, 28.40] | 0.9590 | 0.9320 | 0.8139 |
-| **Universal Pooled (All 3 Domains)** | 8,000 | **27.24%** | [26.36, 28.22] | 0.9550 | 0.8680 | 0.8035 |
-| **Universal Macro-Average (3 Domains)** | 8,000 | **26.36%** | — | 0.9219 | 0.8524 | 0.8189 |
+| **LibriSpeech (English Read)** | 3,000 | **14.73%** | [13.58, 16.12] | 0.9080 | 0.6727 | 0.9276 |
+| **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **23.27%** | [21.60, 24.67] | 0.9647 | 0.8553 | 0.8450 |
+| **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **24.45%** | [22.60, 26.35] | 0.9460 | 0.9130 | 0.8411 |
+| **Universal Pooled (All 3 Domains)** | 8,000 | **20.69%** | [19.83, 21.50] | 0.9648 | 0.8110 | 0.8758 |
+| **Universal Macro-Average (3 Domains)** | 8,000 | **20.82%** | — | 0.9396 | 0.8137 | 0.8712 |
 
 ### 3-Utterance Multi-Enrollment Verification Across Evaluation Domains
 
 | Evaluation Split | Trials | 3-Utt EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | ROC-AUC |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **LibriSpeech (3-Utt)** | 1,000 | **11.30%** | [9.10, 13.51] | 0.7960 | 0.9485 |
-| **CN-Celeb2 (3-Utt)** | 1,000 | **25.90%** | [23.60, 28.80] | 0.8380 | 0.8214 |
-| **VoxCeleb1 (3-Utt)** | 1,000 | **21.50%** | [18.50, 23.75] | 0.9200 | 0.8685 |
-| **Universal Pooled (3-Utt)** | 3,000 | **20.37%** | [18.95, 21.80] | 0.8913 | 0.8721 |
-| **Universal Macro-Average (3-Utt)** | 3,000 | **19.57%** | — | 0.8513 | 0.8795 |
+| **LibriSpeech (3-Utt)** | 1,000 | **8.30%** | [6.75, 10.35] | 0.6960 | 0.9721 |
+| **CN-Celeb2 (3-Utt)** | 1,000 | **17.10%** | [14.65, 19.80] | 0.9240 | 0.8969 |
+| **VoxCeleb1 (3-Utt)** | 1,000 | **19.40%** | [17.00, 21.95] | 0.9640 | 0.8866 |
+| **Universal Pooled (3-Utt)** | 3,000 | **15.33%** | [14.10, 16.67] | 0.9073 | 0.9232 |
+| **Universal Macro-Average (3-Utt)** | 3,000 | **14.93%** | — | 0.8613 | 0.9185 |
 
 ## Citation
 

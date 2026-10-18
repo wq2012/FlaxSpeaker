@@ -3,8 +3,8 @@
 
 data:
   # Paths of downloaded LibriSpeech datasets.
-  train_librispeech_dir: "/mnt/e/Research/Data/LibriSpeech/train-clean-100"
-  test_librispeech_dir: "/mnt/e/Research/Data/LibriSpeech/test-clean"
+  train_librispeech_dir: "testdata/LibriSpeech/train-clean-100"
+  test_librispeech_dir: "testdata/LibriSpeech/test-clean"
 
   # Paths of CSV files where the first column is speaker, and the second column
   # is utterance file.
@@ -16,7 +16,7 @@ data:
 
 model:
   # Path of save model.
-  saved_model_path: "/home/quan/Code/github/FlaxSpeaker/saved_model/flax_model.msgpack"
+  saved_model_path: "saved_model/flax_model.msgpack"
 
   # Number of MFCCs for librosa.feature.mfcc.
   n_mfcc: 128

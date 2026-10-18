@@ -10,6 +10,8 @@ data:
   trials_file: /usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/trials.tsv
   audio_format: .flac
   speaker_label_index: -2
+  within_domain_prob: 0.75
+  domain_temp_alpha: 0.35
 vad:
   enabled: true
   mode: energy
@@ -102,6 +104,7 @@ model:
     expand_factor: 2
     dt_rank: 16
     dropout_rate: 0.1
+    bidirectional: false
   ecapa_tdnn:
     channels: 256
     scale: 4
@@ -168,6 +171,8 @@ model:
     apply_l2_norm_to_values: false
     apply_global_l2_norm_to_concat_form: true
     apply_softmax_per_test_key: false
+    use_global_anchor: true
+    local_value_scale: 0.25
   dr_vector:
     hidden_dims:
     - 128
@@ -178,7 +183,8 @@ model:
     residual_weight: 0.25
     add_cosine_to_network_output: true
     append_cosine_as_feature_to_network_input: true
-    num_cosine_terms: 128
+    num_cosine_terms: 1
+    symmetric_input: false
     layer_type: relu
     num_cells:
     - 128
@@ -197,6 +203,9 @@ loss:
   ge2e_vary_enroll_utts: false
   ge2e_mask_dup_spk: false
   multi_row_window: 0
+  pure_extended_set: false
+  ext_softmax_normalize_by_num_speakers: true
+  ext_softmax_row_softmax_weight: 0.5
   scale: 30.0
   margin: 0.2
   margin_scale: 30.0
@@ -227,6 +236,7 @@ train:
   num_steps: 400
   num_processes: 4
   seed: 42
+  saved_model_dir: ''
   specaug:
     use_specaug: true
     apply_prob: 0.5
@@ -261,6 +271,9 @@ train:
     ge2e_vary_enroll_utts: false
     ge2e_mask_dup_spk: false
     multi_row_window: 0
+    pure_extended_set: false
+    ext_softmax_normalize_by_num_speakers: true
+    ext_softmax_row_softmax_weight: 0.5
     scale: 30.0
     margin: 0.2
     margin_scale: 30.0
