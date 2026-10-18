@@ -9,13 +9,13 @@
       "dataset_type": "universal",
       "domain_temp_alpha": 0.35,
       "speaker_label_index": -2,
-      "test_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/eval.csv",
+      "test_csv": "data/speaker_datasets/splits/universal/eval.csv",
       "test_dir": "",
       "test_librispeech_dir": "",
-      "train_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/train.csv",
+      "train_csv": "data/speaker_datasets/splits/universal/train.csv",
       "train_dir": "",
       "train_librispeech_dir": "",
-      "trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/trials.tsv",
+      "trials_file": "data/speaker_datasets/splits/universal/trials.tsv",
       "within_domain_prob": 0.75
     },
     "eval": {

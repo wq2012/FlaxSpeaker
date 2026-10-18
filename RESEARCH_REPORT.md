@@ -65,14 +65,14 @@ Per clean-room reproduction best practices, the table below summarizes the refer
 
 ## 3. Multi-Domain Dataset & Evaluation Protocol
 
-All datasets are stored under `/usr/local/google/home/quanw/Data/speaker_datasets` and processed with strictly speaker-disjoint training and evaluation splits (`scripts/prepare_datasets.py`), plus evaluation on the official 40-speaker `VoxCeleb1-O` (`veri_test2.txt`) trial benchmark (`37,720` trials):
+All datasets are stored under `/usr/local/google/home/quanw/Data/speaker_datasets` (or `$FLAXSPEAKER_DATA_ROOT`) and processed with strictly speaker-disjoint training and evaluation splits (`scripts/prepare_datasets.py`), plus evaluation on the official `VoxCeleb1-O` (`veri_test2.txt`) trial list strictly filtered to the 10 unseen evaluation speakers (`2,500` trials: `1,789` target, `711` impostor across `937` unique utterances):
 
-| Dataset Split | Domain & Language | Train Speakers | Train Utterances | Eval Speakers (Unseen) | Eval Utterances | 1-Utt Trials (`50%` Pos / `50%` Neg) | 3-Utt Multi-Enroll Trials |
+| Dataset Split | Domain & Language | Train Speakers | Train Utterances | Eval Speakers (Unseen) | Eval Utterances | 1-Utt Trials | 3-Utt Multi-Enroll Trials |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`librispeech`** | English Read Audiobooks (`train-clean-100` + `dev-clean` / `test-clean`, 16 kHz) | 232 | 5,788 | 40 | 1,000 | 3,000 | 1,000 |
-| **`cnceleb2`** | Chinese Multi-Genre Speech (`CN-Celeb2`娛樂/Interview/Singing/Vlog, 16 kHz) | 119 | 2,909 | 30 | 739 | 3,000 | 1,000 |
-| **`voxceleb1`** | English In-the-Wild Celebrity Interviews (`VoxCeleb1`, 16 kHz) | 30 (`id10270..id10299`) | 750 | 10 (`id10300..id10309`) | 250 | 2,000 | 1,000 |
-| **`voxceleb1_o_official`** | Official `VoxCeleb1-O` (`veri_test2.txt`, 16 kHz) | — (Eval-Only) | — | 40 (`id10270..id10309`) | 4,708 | 37,720 | — |
+| **`librispeech`** | English Read Audiobooks (`train-clean-100` + `dev-clean` / `test-clean`, 16 kHz) | 232 | 5,788 | 40 | 1,000 | 3,000 (`50%` Pos / `50%` Neg) | 1,000 |
+| **`cnceleb2`** | Chinese Multi-Genre Speech (`CN-Celeb2`娛樂/Interview/Singing/Vlog, 16 kHz) | 119 | 2,909 | 30 | 739 | 3,000 (`50%` Pos / `50%` Neg) | 1,000 |
+| **`voxceleb1`** | English In-the-Wild Celebrity Interviews (`VoxCeleb1`, 16 kHz) | 30 (`seed=42`) | 750 | 10 (`seed=42`, unseen) | 250 | 2,000 (`50%` Pos / `50%` Neg) | 1,000 |
+| **`voxceleb1_o_official`** | Official `VoxCeleb1-O` (`veri_test2.txt`, speaker-disjoint unseen 10 spk) | — (Eval-Only) | — | 10 (`id10271..id10308`) | 937 | 2,500 (`1,789` Pos / `711` Neg) | — |
 | **`universal`** | **Combined Multi-Domain Corpus (`librispeech + cnceleb2 + voxceleb1`)** | **381** | **9,447** | **80** | **1,989** | **8,000** | **3,000** |
 
 ### Critical Multi-Domain Engineering Details
@@ -158,7 +158,7 @@ Holding the backbone fixed (`Conformer-Small`, `3` layers, `d = 192`, `4` heads,
 | **[`wq2012/univ_conformer_small_ext_softmax`](https://huggingface.co/wq2012/univ_conformer_small_ext_softmax)** | `extended_set_softmax` | `cosine` | `atp` | 14.83% | 22.40% | 23.30% | 20.18% | 20.50% [19.64, 21.26] | 0.9635 | 0.8808 |
 | **[`wq2012/univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e)** | `ge2e_softmax` | **`pfas`** | `pfas` | 15.20% | **21.93%** | 23.65% | 20.26% | 19.86% [19.09, 20.77] | 0.9741 | 0.8869 |
 | **[`wq2012/univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas)** | `extended_set_softmax` | **`pfas`** | `pfas` | 15.83% | 23.17% | 22.95% | 20.65% | 20.35% [19.48, 21.21] | **0.8967** | 0.8888 |
-| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | `atp` | 14.73% | 23.27% | 24.45% | 20.82% | 20.69% [19.83, 21.50] | 0.9461 | 0.8809 |
+| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | `atp` | 14.73% | 23.27% | 24.45% | 20.82% | 20.69% [19.83, 21.50] | 0.9396 | 0.8758 |
 | **[`wq2012/univ_conformer_small_triplet`](https://huggingface.co/wq2012/univ_conformer_small_triplet)** | `triplet` | `cosine` | `atp` | 18.50% | 26.67% | 25.40% | 23.52% | 24.07% [23.12, 25.02] | 0.9477 | 0.8491 |
 | **[`wq2012/univ_conformer_small_arcface`](https://huggingface.co/wq2012/univ_conformer_small_arcface)** | `arcface` | `cosine` | `atp` | 20.57% | 25.27% | 25.00% | 23.61% | 25.11% [24.30, 26.06] | 0.9869 | 0.8306 |
 | **[`wq2012/univ_conformer_small_cosface`](https://huggingface.co/wq2012/univ_conformer_small_cosface)** | `cosface` | `cosine` | `atp` | 20.37% | 25.73% | 26.40% | 24.17% | 25.60% [24.64, 26.58] | 0.9914 | 0.8256 |
@@ -168,8 +168,8 @@ Holding the backbone fixed (`Conformer-Small`, `3` layers, `d = 192`, `4` heads,
 
 | Hugging Face Repository | Loss Function | Scoring | LibriSpeech 3-Utt EER (%) | CN-Celeb2 3-Utt EER (%) | VoxCeleb1 3-Utt EER (%) | Macro-Avg 3-Utt EER (%) | Pooled 3-Utt EER (%) [95% CI] | Macro 3-Utt minDCF@0.01 | Pooled 3-Utt ROC-AUC |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | **8.30%** | **17.10%** | 19.40% | **14.93%** | **15.40%** [14.13, 16.57] | 0.8553 | **0.9288** |
-| **[`wq2012/univ_conformer_small_dr_vectors`](https://huggingface.co/wq2012/univ_conformer_small_dr_vectors)** | `extended_set_softmax` | **`dr_vector`** | 9.90% | 18.20% | **17.50%** | 15.20% | **15.40%** [14.08, 16.67] | **0.7500** | 0.9267 |
+| **[`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast)** | `ge2e_contrast` | `cosine` | **8.30%** | **17.10%** | 19.40% | **14.93%** | **15.33%** [14.10, 16.67] | 0.8613 | 0.9232 |
+| **[`wq2012/univ_conformer_small_dr_vectors`](https://huggingface.co/wq2012/univ_conformer_small_dr_vectors)** | `extended_set_softmax` | **`dr_vector`** | 9.90% | 18.20% | **17.50%** | 15.20% | 15.40% [14.08, 16.67] | **0.7500** | **0.9267** |
 | **[`wq2012/univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas)** | `extended_set_softmax` | **`pfas`** | 10.80% | 18.60% | 18.00% | 15.80% | 16.00% [14.73, 17.33] | 0.8060 | 0.9251 |
 | **[`wq2012/univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e)** | `ge2e_softmax` | **`pfas`** | 11.00% | 17.40% | 19.80% | 16.07% | 16.27% [15.00, 17.73] | 0.8727 | 0.9179 |
 | **[`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e)** | `ge2e_softmax` | `cosine` | 8.80% | 20.00% | 19.70% | 16.17% | 16.03% [14.73, 17.25] | 0.8433 | 0.9212 |
@@ -223,7 +223,7 @@ Every single-domain baseline model (`25` models) was also evaluated across all 3
 | **[`wq2012/ls_transformer_small_ge2e`](https://huggingface.co/wq2012/ls_transformer_small_ge2e)** | `librispeech` | `transformer` (`small`) | `ge2e_softmax` / `cosine` | 1,239,622 | 10.60% / 6.20% | 28.10% / 23.30% | 22.30% / 16.90% | 20.33% / **15.47%** | 20.80% / **16.37%** |
 | **[`wq2012/ls_conformer_base_ge2e`](https://huggingface.co/wq2012/ls_conformer_base_ge2e)** | `librispeech` | `conformer` (`base`) | `ge2e_softmax` / `cosine` | 4,551,558 | 10.77% / 6.60% | 28.87% / 23.90% | 24.65% / 19.90% | 21.43% / 16.80% | 21.26% / 17.00% |
 | **[`wq2012/ls_conformer_small_dr_vectors`](https://huggingface.co/wq2012/ls_conformer_small_dr_vectors)** | `librispeech` | `conformer` (`small`) | `ext_softmax` / `dr_vector` | 2,088,007 | 11.17% / 6.20% | 28.80% / 24.00% | 22.30% / 19.60% | 20.76% / 16.60% | 20.69% / 16.60% |
-| **[`wq2012/ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast)** | `librispeech` | `conformer` (`small`) | `ge2e_contrast` / `cosine` | 2,029,894 | 11.43% / 7.10% | 30.87% / 25.40% | 24.45% / 20.10% | 22.25% / 17.53% | 22.27% / 17.63% |
+| **[`wq2012/ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast)** | `librispeech` | `conformer` (`small`) | `ge2e_contrast` / `cosine` | 2,029,894 | 11.43% / 7.10% | 29.57% / 25.10% | 25.75% / 20.40% | 22.25% / 17.53% | 22.80% / 19.07% |
 | **[`wq2012/ls_mamba_small_ge2e`](https://huggingface.co/wq2012/ls_mamba_small_ge2e)** | `librispeech` | `mamba` (`small`) | `ge2e_softmax` / `cosine` | 1,028,674 | 12.17% / 7.90% | 29.13% / 23.30% | 21.05% / 16.10% | 20.78% / 15.77% | 21.30% / 17.10% |
 | **[`wq2012/ls_ecapa_tdnn_tiny_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_tiny_ge2e)** | `librispeech` | `ecapa_tdnn` (`tiny`) | `ge2e_softmax` / `cosine` | 626,722 | 12.60% / 8.40% | 30.87% / 26.40% | 21.70% / 17.30% | 21.72% / 17.37% | 22.10% / 17.67% |
 | **[`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e)** | `librispeech` | `lstm` (`small`) | `ge2e_softmax` / `cosine` | 1,710,914 | 12.77% / 7.90% | 28.03% / 24.90% | 23.35% / 19.70% | 21.38% / 17.50% | 21.25% / 17.73% |
@@ -245,32 +245,41 @@ Every single-domain baseline model (`25` models) was also evaluated across all 3
 
 ## 10. Controlled Ablation Studies & Official `VoxCeleb1-O` (`veri_test2.txt`) Evaluation
 
-### 10.1 Official `VoxCeleb1-O` (`veri_test2.txt`) Trial List Evaluation
-All 44 models were also evaluated on the official **`VoxCeleb1-O` (`veri_test2.txt`)** trial protocol for the 10-speaker open-access subset (`3,701` official pair entries mapped to the 10 evaluation speakers, `2,500` deterministic utterance-pair trials: `872` positive target trials, `1,628` negative impostor trials; see [`scripts/eval_voxceleb1_official.py`](scripts/eval_voxceleb1_official.py)). Key highlights:
-- **`wq2012/ls_ecapa_tdnn_small_ge2e`**: **`19.15%` EER** (`95% CI: [17.71%, 20.69%]`), `minDCF@0.01 = 0.8922`, `ROC-AUC = 0.8891`
-- **`wq2012/vox_conformer_small_ge2e`**: **`19.44%` EER** (`95% CI: [17.90%, 20.99%]`), `minDCF@0.01 = 0.9622`, `ROC-AUC = 0.8781`
-- **`wq2012/univ_conformer_tiny_ge2e`**: **`21.39%` EER** (`95% CI: [19.85%, 22.84%]`), `minDCF@0.01 = 0.9495`, `ROC-AUC = 0.8628`
-- **`wq2012/univ_conformer_small_dr_vectors`**: **`21.73%` EER** (`95% CI: [20.11%, 23.38%]`), `minDCF@0.01 = 0.9771`, `ROC-AUC = 0.8650`
-- **`wq2012/univ_conformer_small_pfas`**: **`21.79%` EER** (`95% CI: [20.06%, 23.45%]`), `minDCF@0.01 = 0.9163`, `ROC-AUC = 0.8722`
+### 10.1 Official `VoxCeleb1-O` (`veri_test2.txt`) Speaker-Disjoint Trial List Evaluation
+All 44 models were also evaluated on the official **`VoxCeleb1-O` (`veri_test2.txt`)** trial protocol strictly filtered to the 10 unseen open-set evaluation speakers (`id10271..id10308`, ensuring zero overlap with the 30 `VoxCeleb1` training speakers; `2,500` deterministic utterance-pair trials across `937` unique utterances: `1,789` positive target trials, `711` negative impostor trials; see [`scripts/eval_voxceleb1_official.py`](scripts/eval_voxceleb1_official.py) and [`pretrained_models/voxceleb1_o_official_results.json`](pretrained_models/voxceleb1_o_official_results.json)). Key highlights:
+- **`wq2012/vox_ecapa_tdnn_small_ext_softmax`**: **`22.23%` EER** (`95% CI: [20.31%, 24.27%]`), `minDCF@0.01 = 0.9899`, `ROC-AUC = 0.8630`
+- **`wq2012/vox_conformer_small_ge2e`**: **`22.64%` EER** (`95% CI: [20.59%, 24.25%]`), `minDCF@0.01 = 0.9653`, `ROC-AUC = 0.8572`
+- **`wq2012/univ_conformer_tiny_ge2e`**: **`23.58%` EER** (`95% CI: [21.33%, 25.57%]`), `minDCF@0.01 = 0.9754`, `ROC-AUC = 0.8566`
+- **`wq2012/univ_conformer_small_cosface`**: **`23.92%` EER** (`95% CI: [22.38%, 25.99%]`), `minDCF@0.01 = 0.9911`, `ROC-AUC = 0.8445`
+- **`wq2012/univ_ecapa_tdnn_base_ge2e`**: **`24.07%` EER** (`95% CI: [21.90%, 26.34%]`), `minDCF@0.01 = 0.9922`, `ROC-AUC = 0.8415`
+- **`wq2012/ls_ecapa_tdnn_base_ge2e`**: **`24.07%` EER** (`95% CI: [22.21%, 26.24%]`), `minDCF@0.01 = 0.9989`, `ROC-AUC = 0.8489`
+- **`wq2012/univ_ecapa_tdnn_small_ge2e`**: **`24.76%` EER** (`95% CI: [22.90%, 26.95%]`), `minDCF@0.01 = 0.9709`, `ROC-AUC = 0.8324`
+- **`wq2012/univ_lstm_small_ge2e`**: **`24.79%` EER** (`95% CI: [22.55%, 27.13%]`), `minDCF@0.01 = 0.9575`, `ROC-AUC = 0.8461`
+- **`wq2012/univ_conformer_small_pfas_ge2e`**: **`25.11%` EER** (`95% CI: [23.08%, 27.14%]`), `minDCF@0.01 = 0.9832`, `ROC-AUC = 0.8401`
+- **`wq2012/univ_mamba_small_ge2e`**: **`25.16%` EER** (`95% CI: [23.05%, 27.00%]`), `minDCF@0.01 = 0.9877`, `ROC-AUC = 0.8425`
 
 ### 10.2 Five Controlled Ablation Studies ([`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json))
 
-| Ablation Study | Configuration (`Conformer-Small` unless noted) | LibriSpeech 1-Utt / 3-Utt EER (%) | CN-Celeb2 1-Utt / 3-Utt EER (%) | VoxCeleb1 1-Utt / 3-Utt EER (%) | Macro-Avg 1-Utt / 3-Utt EER (%) | Pooled 1-Utt / 3-Utt EER (%) [95% CI] |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **1. Stratified Batching ($p_{\text{within}}$)** | $p_{\text{within}} = 0.00$ (pure cross-domain) | 14.47% / 11.20% | 24.33% / **18.60%** | **22.80% / 18.20%** | 20.53% / **16.00%** | 21.31% [20.38, 22.14] / 17.03% |
-| | **$p_{\text{within}} = 0.75$ (hybrid stratified, default)** | **12.50% / 8.80%** | **22.33%** / 20.00% | 24.80% / 19.70% | **19.88%** / 16.17% | **19.40%** [18.61, 20.26] / **16.03%** |
-| | $p_{\text{within}} = 1.00$ (pure within-domain) | 15.23% / 11.10% | 24.30% / 19.20% | 24.90% / 21.20% | 21.48% / 17.17% | 21.34% [20.50, 22.18] / 17.03% |
-| **2. Extended-Set Softmax & Dr-Vectors** | Pure Eq. 3 Extended-Set (`pure_extended_set=True`, Cosine) | 18.63% / 14.30% | 28.43% / 25.00% | 26.50% / 22.20% | 24.52% / 20.50% | 24.52% [23.62, 25.49] / 20.77% |
-| | **Blended 50/50 Row+Col Extended-Set (`default`, Cosine)** | **14.83% / 9.80%** | 22.40% / 18.80% | 23.30% / 19.90% | 20.18% / 16.17% | 20.50% [19.64, 21.26] / 16.17% |
-| | Pure Eq. 7 3-Term Dr-Vectors (`num_cosine_terms=3, pure=True`) | 16.53% / 11.70% | 24.47% / 21.40% | 23.75% / 19.70% | 21.58% / 17.60% | 21.91% [21.02, 22.74] / 18.17% |
-| | **Blended 1-Term Dr-Vectors (`num_cosine_terms=1, default`)** | 15.20% / 9.90% | **22.33% / 18.20%** | **22.75% / 17.50%** | **20.09% / 15.20%** | **20.10%** [19.31, 20.96] / **15.40%** |
-| **3. Variable-Length vs. Fixed-Length** | `variable_length=True` (Full-Seq / Short-1s `100` frames) | **12.50%** (1s: **18.93%**) | 22.33% (1s: 27.67%) | 24.80% (1s: 29.65%) | 19.88% (1s: 25.41%) | 19.40% (1s: 25.81%) |
-| | `variable_length=False` (Full-Seq / Short-1s `100` frames) | 13.20% (1s: 19.57%) | **21.80%** (1s: **26.87%**) | **23.15%** (1s: **27.60%**) | **19.38%** (1s: **24.68%**) | **18.99%** (1s: **24.51%**) |
-| **4. Training Horizon Scaling (`Small`)** | `400` steps (`6.0 min` CPU) | **12.50%** / 8.80% | 22.33% / 20.00% | 24.80% / 19.70% | 19.88% / 16.17% | 19.40% [18.61, 20.26] / 16.03% |
-| | `800` steps (`11.2 min` CPU) | 14.80% / 10.00% | 22.80% / 17.80% | 23.40% / 19.60% | 20.33% / 15.80% | 20.02% [19.16, 20.92] / 16.90% |
-| | **`1,200` steps (`16.7 min` CPU)** | 12.73% / **8.00%** | **20.47% / 16.60%** | **22.30% / 17.90%** | **18.50% / 14.17%** | **18.48%** [17.61, 19.30] / **14.47%** |
-| **5. Mamba Directionality (`1.03M` Params)** | **Unidirectional Mamba (`bidirectional=False`)** | **12.17% / 7.90%** | **29.13% / 23.30%** | **21.05% / 16.10%** | **20.78% / 15.77%** | **21.30%** [20.46, 22.18] / **17.10%** |
-| | Bidirectional Mamba (`bidirectional=True`, Shared Weights) | 13.53% / 10.80% (`minDCF 0.8547`) | 29.83% / 25.30% (`minDCF 0.9320`) | 21.75% / 17.30% | 21.71% / 17.80% (`minDCF 0.9146`) | 22.08% [21.18, 22.95] / 18.80% (`minDCF 0.9160`) |
+All five controlled ablation studies below are reproducible via [`scripts/run_r1_ablations.py`](scripts/run_r1_ablations.py) (`B = 500` bootstrap resamples, standard round-half-to-even 2-decimal rounding):
+
+| Ablation Study | Configuration (`Conformer-Small` unless noted) | LibriSpeech 1-Utt / 3-Utt EER (%) | CN-Celeb2 1-Utt / 3-Utt EER (%) | VoxCeleb1 1-Utt / 3-Utt EER (%) | Macro-Avg 1-Utt / 3-Utt EER (%) | Pooled 1-Utt [95% CI] / 3-Utt EER (%) | Pooled 1-Utt / 3-Utt ROC-AUC |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1. Stratified Batching ($p_{\text{within}}$)** | $p_{\text{within}} = 0.00$ (pure cross-domain) | 14.47% / 11.20% | 24.33% / **18.60%** | **22.80% / 18.20%** | 20.53% / **16.00%** | 21.31% [20.49, 22.26] / 17.03% | 0.8729 / 0.9107 |
+| | **$p_{\text{within}} = 0.75$ (hybrid stratified, default)** | **12.50% / 8.80%** | **22.33%** / 20.00% | 24.80% / 19.70% | **19.88%** / 16.17% | **19.40%** [18.61, 20.26] / **16.03%** | **0.8906 / 0.9212** |
+| | $p_{\text{within}} = 1.00$ (pure within-domain) | 15.23% / 11.10% | 24.30% / 19.20% | 24.90% / 21.20% | 21.48% / 17.17% | 21.34% [20.53, 22.24] / 17.03% | 0.8782 / 0.9145 |
+| **2. Extended-Set Softmax & Dr-Vectors** | Pure Eq. 3 Extended-Set (`pure_extended_set=True`, Cosine) | 22.20% / 17.80% | 25.00% / 20.50% | 26.35% / 23.20% | 24.52% / 20.50% | 24.52% [23.67, 25.55] / 20.77% | 0.8391 / 0.8760 |
+| | **Blended 50/50 Row+Col Extended-Set (`default`, Cosine)** | **14.83% / 9.80%** | 22.40% / 18.80% | 23.30% / 19.90% | 20.18% / 16.17% | 20.50% [19.64, 21.26] / 16.17% | 0.8808 / 0.9217 |
+| | Pure Eq. 7 3-Term Dr-Vectors (`num_cosine_terms=3, pure=True`) | 17.03% / 12.20% | 24.80% / 21.20% | 22.90% / 19.40% | 21.58% / 17.60% | 21.91% [20.99, 22.82] / 18.17% | 0.8666 / 0.9053 |
+| | **Blended 1-Term Dr-Vectors (`num_cosine_terms=1, default`)** | 15.20% / 9.90% | **22.33% / 18.20%** | **22.75% / 17.50%** | **20.09% / 15.20%** | **20.10%** [19.31, 20.96] / **15.40%** | **0.8866 / 0.9267** |
+| **3. Variable-Length vs. Fixed-Length** | `variable_length=True` (Full-Sequence Eval) | **12.50% / 8.80%** | 22.33% / 20.00% | 24.80% / 19.70% | 19.88% / 16.17% | 19.40% [18.61, 20.26] / 16.03% | 0.8906 / 0.9212 |
+| | `variable_length=False` (Full-Sequence Eval) | 13.20% / 9.00% | **22.20% / 19.00%** | **22.75% / 16.40%** | **19.38% / 14.80%** | **18.99%** [18.14, 19.82] / **15.50%** | **0.8931 / 0.9254** |
+| | `variable_length=True` (Short 1.0s / `100`-Frame Eval) | **18.93% / 12.70%** | 30.33% / 28.10% | 26.95% / 25.20% | 25.41% / 22.00% | 26.04% [25.05, 26.98] / 22.23% | 0.8210 / 0.8580 |
+| | `variable_length=False` (Short 1.0s / `100`-Frame Eval) | 19.57% / 13.60% | **28.57% / 26.30%** | **25.90% / 23.60%** | **24.68% / 21.17%** | **24.73%** [23.86, 25.77] / **21.57%** | **0.8259 / 0.8617** |
+| **4. Training Horizon Scaling (`Small`)** | `400` steps (`6.0 min` CPU) | **12.50%** / 8.80% | 22.33% / 20.00% | 24.80% / 19.70% | 19.88% / 16.17% | 19.40% [18.61, 20.26] / 16.03% | 0.8906 / 0.9212 |
+| | `800` steps (`11.2 min` CPU) | 14.80% / 10.00% | 22.80% / 17.80% | 23.40% / 19.60% | 20.33% / 15.80% | 20.02% [19.19, 20.93] / 16.90% | 0.8840 / 0.9193 |
+| | **`1,200` steps (`16.7 min` CPU)** | 12.73% / **8.00%** | **20.47% / 16.60%** | **22.30% / 17.90%** | **18.50% / 14.17%** | **18.48%** [17.61, 19.30] / **14.47%** | **0.9012 / 0.9325** |
+| **5. Mamba Directionality (`1.03M` Params)** | **Unidirectional Mamba (`bidirectional=False`)** | **12.17% / 7.90%** | **29.13% / 23.30%** | **21.05% / 16.10%** | **20.78% / 15.77%** | **21.30%** [20.40, 22.10] / **17.10%** | **0.8768 / 0.9215** |
+| | Bidirectional Mamba (`bidirectional=True`, Shared Weights) | 13.53% / 10.80% (`minDCF 0.8547`) | 29.83% / 25.30% (`minDCF 0.9947`) | 21.75% / 17.30% (`minDCF 0.9950`) | 21.71% / 17.80% (`minDCF 0.9481`) | 22.08% [21.20, 22.96] / 17.73% (`minDCF 0.9760`) | 0.8681 / 0.9076 |
 
 ---
 

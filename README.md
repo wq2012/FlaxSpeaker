@@ -182,11 +182,13 @@ python hf_space/app.py
 
 ## 44-Model Benchmark Summary & Pretrained Model Zoo
 
-We trained and evaluated **44 models** (`19` Universal Multi-Domain models trained jointly on `LibriSpeech + CN-Celeb2 + VoxCeleb1` = `381` speakers / `9,447` utterances, plus `25` Single-Domain baseline models) across **all three speaker-disjoint evaluation domains** (`8,000` 1-utterance trials + `3,000` 3-utterance trials per model = `484,000` total trial evaluations).
+We trained and evaluated **44 models** (`19` Universal Multi-Domain models trained jointly on `LibriSpeech + CN-Celeb2 + VoxCeleb1` = `381` speakers / `9,447` utterances, plus `25` Single-Domain baseline models) across **all three speaker-disjoint evaluation domains** (`8,000` 1-utterance trials + `3,000` 3-utterance trials + `2,500` speaker-disjoint official `VoxCeleb1-O` `veri_test2.txt` trials per model = `594,000` total trial evaluations).
 
 - **Hugging Face Collection (44 Pretrained Models)**: **[`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595)**
 - Full technical report, ablations & mathematical analysis: **[RESEARCH_REPORT.md](RESEARCH_REPORT.md)**
 - Complete verified evaluation metrics JSON (`44` models + `12` TFLite exports): **[`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json)**
+- Controlled ablation study metrics JSON (`5` studies): **[`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json)**
+- Official speaker-disjoint `VoxCeleb1-O` (`veri_test2.txt`) evaluation JSON (`44` models): **[`pretrained_models/voxceleb1_o_official_results.json`](pretrained_models/voxceleb1_o_official_results.json)**
 - Local Pretrained HuggingFace + SafeTensors + TFLite checkpoints: **[`pretrained_models/`](pretrained_models/)**
 
 ### 1. Original Published Paper Reference Results (Internal Proprietary Datasets)
@@ -213,7 +215,7 @@ All 19 `univ_*` models below are trained simultaneously on **LibriSpeech (`232` 
 | [`wq2012/univ_mamba_small_ge2e`](https://huggingface.co/wq2012/univ_mamba_small_ge2e) | `mamba` (`small`) | `asp` / `ge2e_softmax` / `cosine` | `1,028,674` | 14.20% / 9.50% | 23.20% / 18.50% | 23.75% / 17.70% | 20.38% / 15.23% | 20.41% / 16.07% | `0.9571` / `0.7920` |
 | [`wq2012/univ_transformer_small_ge2e`](https://huggingface.co/wq2012/univ_transformer_small_ge2e) | `transformer` (`small`) | `atp` / `ge2e_softmax` / `cosine` | `1,239,622` | 15.17% / 10.70% | 22.67% / 19.00% | 23.95% / 18.00% | 20.59% / 15.90% | 20.00% / 16.33% | `0.9694` / `0.8427` |
 | [`wq2012/univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas) | `conformer` (`small`) | `pfas` / `extended_set_softmax` / `pfas` | `2,162,187` | 15.83% / 10.80% | 23.17% / 18.60% | 22.95% / 18.00% | 20.65% / 15.80% | 20.35% / 16.00% | **`0.8967`** / `0.8060` |
-| [`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast) | `conformer` (`small`) | `atp` / `ge2e_contrast` / `cosine` | `2,029,894` | 14.73% / **8.30%** | 23.27% / **17.10%** | 24.45% / 19.40% | 20.82% / **14.93%** | 20.69% / 15.40% | `0.9461` / `0.8553` |
+| [`wq2012/univ_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast) | `conformer` (`small`) | `atp` / `ge2e_contrast` / `cosine` | `2,029,894` | 14.73% / **8.30%** | 23.27% / **17.10%** | 24.45% / 19.40% | 20.82% / **14.93%** | 20.69% / 15.33% | `0.9396` / `0.8613` |
 | [`wq2012/univ_lstm_small_ge2e`](https://huggingface.co/wq2012/univ_lstm_small_ge2e) | `lstm` (`small`) | `asp` / `ge2e_softmax` / `cosine` | `1,710,914` | 14.97% / 11.20% | 25.53% / 21.60% | 22.50% / 19.50% | 21.00% / 17.43% | 21.31% / 18.00% | `0.9620` / `0.9173` |
 | [`wq2012/univ_ecapa_tdnn_base_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_base_ge2e) | `ecapa_tdnn` (`base`) | `asp` / `ge2e_softmax` / `cosine` | `3,190,626` | 18.63% / 12.20% | 25.97% / 21.20% | **22.20%** / 17.30% | 22.27% / 16.90% | 22.81% / 18.20% | `0.9760` / `0.9340` |
 | [`wq2012/univ_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e) | `ecapa_tdnn` (`small`) | `asp` / `ge2e_softmax` / `cosine` | `1,684,418` | 19.00% / 11.80% | 25.13% / 22.40% | 23.30% / 18.80% | 22.48% / 17.67% | 23.16% / 18.00% | `0.9889` / `0.9120` |
@@ -246,7 +248,7 @@ All 19 `univ_*` models below are trained simultaneously on **LibriSpeech (`232` 
 | [`wq2012/ls_transformer_small_ge2e`](https://huggingface.co/wq2012/ls_transformer_small_ge2e) | `librispeech` | `transformer` (`small`) | `atp` / `ge2e_softmax` / `cosine` | `1,239,622` | 10.60% / 6.20% | 28.10% / 23.30% | 22.30% / 16.90% | 20.33% / **15.47%** | 20.80% / **16.37%** |
 | [`wq2012/ls_conformer_base_ge2e`](https://huggingface.co/wq2012/ls_conformer_base_ge2e) | `librispeech` | `conformer` (`base`) | `atp` / `ge2e_softmax` / `cosine` | `4,551,558` | 10.77% / 6.60% | 28.87% / 23.90% | 24.65% / 19.90% | 21.43% / 16.80% | 21.26% / 17.00% |
 | [`wq2012/ls_conformer_small_dr_vectors`](https://huggingface.co/wq2012/ls_conformer_small_dr_vectors) | `librispeech` | `conformer` (`small`) | `atp` / `extended_set_softmax` / `dr_vector` | `2,088,007` | 11.17% / 6.20% | 28.80% / 24.00% | 22.30% / 19.60% | 20.76% / 16.60% | 20.69% / 16.60% |
-| [`wq2012/ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast) | `librispeech` | `conformer` (`small`) | `atp` / `ge2e_contrast` / `cosine` | `2,029,894` | 11.43% / 7.10% | 30.87% / 25.40% | 24.45% / 20.10% | 22.25% / 17.53% | 22.27% / 17.63% |
+| [`wq2012/ls_conformer_small_ge2e_contrast`](https://huggingface.co/wq2012/ls_conformer_small_ge2e_contrast) | `librispeech` | `conformer` (`small`) | `atp` / `ge2e_contrast` / `cosine` | `2,029,894` | 11.43% / 7.10% | 29.57% / 25.10% | 25.75% / 20.40% | 22.25% / 17.53% | 22.80% / 19.07% |
 | [`wq2012/ls_mamba_small_ge2e`](https://huggingface.co/wq2012/ls_mamba_small_ge2e) | `librispeech` | `mamba` (`small`) | `asp` / `ge2e_softmax` / `cosine` | `1,028,674` | 12.17% / 7.90% | 29.13% / 23.30% | 21.05% / 16.10% | 20.78% / 15.77% | 21.30% / 17.10% |
 | [`wq2012/ls_ecapa_tdnn_tiny_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_tiny_ge2e) | `librispeech` | `ecapa_tdnn` (`tiny`) | `asp` / `ge2e_softmax` / `cosine` | `626,722` | 12.60% / 8.40% | 30.87% / 26.40% | 21.70% / 17.30% | 21.72% / 17.37% | 22.10% / 17.67% |
 | [`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e) | `librispeech` | `lstm` (`small`) | `asp` / `ge2e_softmax` / `cosine` | `1,710,914` | 12.77% / 7.90% | 28.03% / 24.90% | 23.35% / 19.70% | 21.38% / 17.50% | 21.25% / 17.73% |
@@ -268,7 +270,7 @@ All 19 `univ_*` models below are trained simultaneously on **LibriSpeech (`232` 
 
 ## Testing, Linting & Documentation
 
-Run the unit test suite (`42` tests covering all backbones, exact padding mask invariance including `PFAS` `maxpool`, losses including non-saturating `ge2e_contrast` and pure/blended `extended_set_softmax`, pooling heads including `ATP` and `PFAS`, VAD + AGC, mutually exclusive `SpecAugment`/`MTR`, `Dr-Vectors` 1-term and 3-term scoring, dataset loaders, HF compatibility & Hub resolution, TFLite export, and legacy config compatibility):
+Run the unit test suite (`47` tests covering all backbones, exact padding mask invariance including `PFAS` `maxpool`, losses including Wan et al. Eq. 7 and non-saturating `ge2e_contrast` as well as pure/blended `extended_set_softmax`, pooling heads including all 5 `ATP` `pooling_stats` modes and `PFAS`, VAD + AGC, mutually exclusive `SpecAugment`/`MTR`, `Dr-Vectors` 1-term, 3-term, and `append_cosine_to_final_hidden` scoring, paper config presets, portable dataset path resolution, HF compatibility & Hub resolution, TFLite export, and legacy config compatibility):
 
 ```bash
 pytest -v tests.py

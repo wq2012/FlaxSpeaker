@@ -44,6 +44,13 @@ def _get_full_seq_flag(myconfig: Any) -> bool:
     return True
 
 
+@functools.partial(jax.jit, static_argnums=(0,))
+def _jit_apply_unmasked(
+    apply_fn: Any, params: Any, batch_input: jax.Array
+) -> jax.Array:
+    return apply_fn({"params": params}, batch_input)
+
+
 def run_inference(
     features: jax.Array,
     state: train_state.TrainState,
@@ -69,7 +76,9 @@ def run_inference(
                 offset = (int(features.shape[0]) - max_eval_len) // 2
                 features = features[offset:offset + max_eval_len]
         batch_input = jnp.expand_dims(features, axis=0)
-        batch_output = state.apply_fn({"params": state.params}, batch_input)
+        batch_output = _jit_apply_unmasked(
+            state.apply_fn, state.params, batch_input
+        )
         return batch_output[0, :]
     else:
         sliding_windows = feature_extraction.extract_sliding_windows(
@@ -79,13 +88,17 @@ def run_inference(
             if is_modern and features.shape[0] > 0:
                 reps = (seq_len // max(1, int(features.shape[0]))) + 1
                 padded = jnp.tile(features, (reps, 1))[:seq_len]
-                batch_output = state.apply_fn(
-                    {"params": state.params}, jnp.expand_dims(padded, axis=0)
+                batch_output = _jit_apply_unmasked(
+                    state.apply_fn,
+                    state.params,
+                    jnp.expand_dims(padded, axis=0),
                 )
                 return batch_output[0, :]
             return None
         batch_input = jnp.stack(sliding_windows)
-        batch_output = state.apply_fn({"params": state.params}, batch_input)
+        batch_output = _jit_apply_unmasked(
+            state.apply_fn, state.params, batch_input
+        )
         aggregated_output = jnp.mean(batch_output, axis=0, keepdims=False)
         return aggregated_output
 
@@ -439,6 +452,9 @@ def evaluate_verification_trials(
             append_cosine_as_feature_to_network_input=getattr(
                 dr_cfg, "append_cosine_as_feature_to_network_input", True
             ),
+            append_cosine_to_final_hidden=bool(
+                getattr(dr_cfg, "append_cosine_to_final_hidden", False)
+            ),
             add_cosine_to_network_output=getattr(
                 dr_cfg, "add_cosine_to_network_output", True
             ),
@@ -467,7 +483,7 @@ def evaluate_verification_trials(
         getattr(exp_cfg.eval, "use_as_norm", False)
         or getattr(exp_cfg.eval, "apply_as_norm", False)
     )
-    if use_as_norm and len(utt_to_emb) >= 10:
+    if use_as_norm and scoring_type == "cosine" and len(utt_to_emb) >= 10:
         cohort = np.stack(list(utt_to_emb.values()), axis=0)
         top_k = int(
             getattr(
@@ -620,6 +636,9 @@ def evaluate_multi_enroll_trials(
             append_cosine_as_feature_to_network_input=getattr(
                 dr_cfg, "append_cosine_as_feature_to_network_input", True
             ),
+            append_cosine_to_final_hidden=bool(
+                getattr(dr_cfg, "append_cosine_to_final_hidden", False)
+            ),
             add_cosine_to_network_output=getattr(
                 dr_cfg, "add_cosine_to_network_output", True
             ),
@@ -667,7 +686,7 @@ def evaluate_multi_enroll_trials(
     )
     if (
         use_as_norm
-        and scoring_type != "pfas"
+        and scoring_type == "cosine"
         and len(utt_to_emb) >= 10
     ):
         cohort = np.stack(list(utt_to_emb.values()), axis=0)

@@ -52,6 +52,7 @@ DEFAULT_CONFIGS_DIR = os.path.join(REPO_ROOT, "configs")
 
 
 def load_multi_enroll_trials(path: str) -> list[dataset.MultiEnrollTrial]:
+    path = dataset.resolve_data_path(path)
     trials: list[dataset.MultiEnrollTrial] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -59,8 +60,8 @@ def load_multi_enroll_trials(path: str) -> list[dataset.MultiEnrollTrial]:
             if len(parts) != 3:
                 continue
             lbl = int(parts[0])
-            e_list = [x for x in parts[1].split(",") if x]
-            t_u = parts[2]
+            e_list = [dataset.resolve_data_path(x) for x in parts[1].split(",") if x]
+            t_u = dataset.resolve_data_path(parts[2])
             trials.append((lbl, e_list, t_u))
     return trials
 

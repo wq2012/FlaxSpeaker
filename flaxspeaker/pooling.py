@@ -186,22 +186,27 @@ class AttentiveTemporalPooling(nn.Module):
             second_moment = jnp.sum(w_heads * jnp.square(x_heads), axis=1)
             var = jnp.maximum(second_moment - jnp.square(mean), self.eps)
             std = jnp.sqrt(var)
-            mean_flat = mean.reshape(bsz, feat_dim)
-            if self.pooling_stats.lower() == "mean":
-                return mean_flat
-            std_flat = std.reshape(bsz, feat_dim)
-            return jnp.concatenate([mean_flat, std_flat], axis=-1)
+            out_dim = feat_dim
+        else:
+            # Weighted mean and second moment per head across full D: (B, H, D)
+            mean = jnp.einsum("bth,btd->bhd", norm_weights, x)
+            second_moment = jnp.einsum("bth,btd->bhd", norm_weights, jnp.square(x))
+            var = jnp.maximum(second_moment - jnp.square(mean), self.eps)
+            std = jnp.sqrt(var)
+            out_dim = n_heads * feat_dim
 
-        # Weighted mean and second moment per head across full D: (B, H, D)
-        mean = jnp.einsum("bth,btd->bhd", norm_weights, x)
-        second_moment = jnp.einsum("bth,btd->bhd", norm_weights, jnp.square(x))
-        var = jnp.maximum(second_moment - jnp.square(mean), self.eps)
-        std = jnp.sqrt(var)
-
-        mean_flat = mean.reshape(bsz, n_heads * feat_dim)
-        if self.pooling_stats.lower() == "mean":
+        mean_flat = mean.reshape(bsz, out_dim)
+        var_flat = var.reshape(bsz, out_dim)
+        std_flat = std.reshape(bsz, out_dim)
+        stype = self.pooling_stats.lower()
+        if stype == "mean":
             return mean_flat
-        std_flat = std.reshape(bsz, n_heads * feat_dim)
+        if stype == "std":
+            return std_flat
+        if stype == "var":
+            return var_flat
+        if stype == "mean_var":
+            return jnp.concatenate([mean_flat, var_flat], axis=-1)
         return jnp.concatenate([mean_flat, std_flat], axis=-1)
 
 

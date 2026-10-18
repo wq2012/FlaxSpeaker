@@ -30,16 +30,20 @@ def resolve_data_path(path: str) -> str:
     expanded = os.path.expanduser(path)
     if os.path.exists(expanded):
         return expanded
-    prefix = "data/speaker_datasets"
     norm = path.replace("\\", "/")
+    rel: Optional[str] = None
+    prefix = "data/speaker_datasets"
     if norm == prefix or norm.startswith(prefix + "/"):
         rel = norm[len(prefix):].lstrip("/")
-        data_root = os.environ.get(
-            "FLAXSPEAKER_DATA_ROOT",
-            os.path.expanduser("~/Data/speaker_datasets"),
-        )
+    elif "/speaker_datasets/" in norm:
+        rel = norm.split("/speaker_datasets/", 1)[1].lstrip("/")
+    elif norm.endswith("/speaker_datasets"):
+        rel = ""
+    if rel is not None:
+        env_root = os.environ.get("FLAXSPEAKER_DATA_ROOT")
+        data_root = env_root or os.path.expanduser("~/Data/speaker_datasets")
         candidate = os.path.join(data_root, rel) if rel else data_root
-        if os.path.exists(candidate):
+        if os.path.exists(candidate) or env_root is not None:
             return candidate
     return path
 
@@ -143,9 +147,10 @@ def get_csv_spk_to_utts(csv_file: str) -> SpkToUtts:
             if len(row) != 2:
                 continue
             spk = row[0].strip()
-            utt = row[1].strip()
-            if not spk or not utt or (spk == "speaker_id" and utt == "audio_path"):
+            utt_raw = row[1].strip()
+            if not spk or not utt_raw or (spk == "speaker_id" and utt_raw == "audio_path"):
                 continue
+            utt = resolve_data_path(utt_raw)
             if spk not in spk_to_utts:
                 spk_to_utts[spk] = [utt]
             else:
@@ -309,8 +314,15 @@ def load_voxceleb_veri_test(
     wav_root: str,
     max_trials: Optional[int] = None,
     seed: int = 42,
+    allowed_speakers: Optional[set[str]] = None,
 ) -> list[TrialPair]:
-    """Load official VoxCeleb1 verification trials (`veri_test.txt` / `veri_test2.txt`)."""
+    """Load official VoxCeleb1 verification trials (`veri_test.txt` / `veri_test2.txt`).
+
+    If `allowed_speakers` is provided, only retains trials where both the
+    enrollment and test speakers are in `allowed_speakers` (enforcing strict
+    open-set speaker-disjointness when a subset of `veri_test2.txt` speakers
+    was used for training).
+    """
     veri_test_path = resolve_data_path(veri_test_path)
     wav_root = resolve_data_path(wav_root)
     # Resolve wav_root if nested under wav/
@@ -320,6 +332,12 @@ def load_voxceleb_veri_test(
             wav_root = candidate
             break
 
+    normalized_allowed: Optional[set[str]] = None
+    if allowed_speakers is not None:
+        normalized_allowed = {
+            s.split("_")[-1] if "_" in s else s for s in allowed_speakers
+        }
+
     trials: list[TrialPair] = []
     with open(veri_test_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -327,6 +345,12 @@ def load_voxceleb_veri_test(
             if len(parts) != 3:
                 continue
             label = int(parts[0])
+            s1 = parts[1].split("/")[0]
+            s2 = parts[2].split("/")[0]
+            if normalized_allowed is not None and (
+                s1 not in normalized_allowed or s2 not in normalized_allowed
+            ):
+                continue
             u1 = os.path.join(wav_root, parts[1])
             u2 = os.path.join(wav_root, parts[2])
             if os.path.exists(u1) and os.path.exists(u2):
@@ -336,11 +360,11 @@ def load_voxceleb_veri_test(
         rng = random.Random(seed)
         pos_trials = [t for t in trials if t[0] == 1]
         neg_trials = [t for t in trials if t[0] == 0]
-        n_pos = max_trials // 2
-        n_neg = max_trials - n_pos
-        trials = rng.sample(pos_trials, min(n_pos, len(pos_trials))) + rng.sample(
-            neg_trials, min(n_neg, len(neg_trials))
-        )
+        n_neg = min(max_trials // 2, len(neg_trials))
+        n_pos = min(max_trials - n_neg, len(pos_trials))
+        if n_pos + n_neg < max_trials and len(neg_trials) > n_neg:
+            n_neg = min(max_trials - n_pos, len(neg_trials))
+        trials = rng.sample(pos_trials, n_pos) + rng.sample(neg_trials, n_neg)
         rng.shuffle(trials)
     return trials
 
@@ -367,7 +391,9 @@ def load_trials_file(trials_path: str) -> list[TrialPair]:
             parts = line.split("\t") if "\t" in line else line.split()
             if len(parts) != 3:
                 continue
-            trials.append((int(parts[0]), parts[1], parts[2]))
+            trials.append(
+                (int(parts[0]), resolve_data_path(parts[1]), resolve_data_path(parts[2]))
+            )
     return trials
 
 

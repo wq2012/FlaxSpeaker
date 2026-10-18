@@ -347,6 +347,7 @@ class DrVectorConfig:
     residual_weight: float = 0.25
     add_cosine_to_network_output: bool = True
     append_cosine_as_feature_to_network_input: bool = True
+    append_cosine_to_final_hidden: bool = False
     num_cosine_terms: int = 1
     symmetric_input: bool = False
     layer_type: str = "relu"
@@ -762,12 +763,15 @@ def icassp2018_ge2e_config(
     cfg.model.apply_size_variant(size)
     cfg.train.loss.loss_type = LossType.GE2E_SOFTMAX.value
     cfg.train.loss.scoring_type = ScoringType.COSINE.value
+    cfg.train.loss.ge2e_exact_leave_one_out = True
+    cfg.loss = cfg.train.loss
     return cfg
 
 
 def interspeech2021_dr_vectors_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
     backbone: str = BackboneType.CONFORMER.value,
+    pure_paper_mode: bool = True,
 ) -> ExperimentConfig:
     """Preset for Dr-Vectors & Extended-Set Softmax (Pelecanos et al., Interspeech 2021, arXiv:2104.01989)."""
     cfg = ExperimentConfig()
@@ -779,13 +783,20 @@ def interspeech2021_dr_vectors_config(
     )
     cfg.model.scoring_type = ScoringType.DR_VECTOR.value
     cfg.model.apply_size_variant(size)
+    if pure_paper_mode:
+        cfg.model.dr_vector.num_cosine_terms = 3
+        cfg.model.dr_vector.append_cosine_to_final_hidden = True
+        cfg.train.loss.pure_extended_set = True
+        cfg.train.loss.ext_softmax_row_softmax_weight = 0.0
     cfg.train.loss.loss_type = LossType.EXTENDED_SET_SOFTMAX.value
     cfg.train.loss.scoring_type = ScoringType.DR_VECTOR.value
+    cfg.loss = cfg.train.loss
     return cfg
 
 
 def odyssey2022_conformer_atp_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
+    pure_paper_mode: bool = True,
 ) -> ExperimentConfig:
     """Preset for Conformer + Attentive Temporal Pooling (Wang et al., Odyssey 2022, arXiv:2202.12163)."""
     cfg = ExperimentConfig()
@@ -793,14 +804,23 @@ def odyssey2022_conformer_atp_config(
     cfg.model.pooling.pooling_type = PoolingType.ATP.value
     cfg.model.scoring_type = ScoringType.COSINE.value
     cfg.model.apply_size_variant(size)
+    if pure_paper_mode:
+        cfg.model.conformer.layer_order = "conv_before_mhsa"
+        cfg.model.conformer.use_conv_stem = False
+        cfg.model.conformer.subsample_factor = 2
+        cfg.model.pooling.use_global_context = False
+        cfg.model.pooling.share_params = True
+        cfg.model.pooling.nonlinear_attention = True
     cfg.train.loss.loss_type = LossType.GE2E_SOFTMAX.value
     cfg.train.loss.scoring_type = ScoringType.COSINE.value
+    cfg.loss = cfg.train.loss
     return cfg
 
 
 def odyssey2022_pfas_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
     loss_type: str = LossType.GE2E_SOFTMAX.value,
+    pure_paper_mode: bool = True,
 ) -> ExperimentConfig:
     """Preset for Parameter-Free Attentive Scoring (Pelecanos et al., Odyssey 2022, arXiv:2203.05642v3)."""
     cfg = ExperimentConfig()
@@ -808,9 +828,15 @@ def odyssey2022_pfas_config(
     cfg.model.pooling.pooling_type = PoolingType.PFAS.value
     cfg.model.scoring_type = ScoringType.PFAS.value
     cfg.model.apply_size_variant(size)
+    if pure_paper_mode:
+        cfg.model.pfas.use_global_anchor = False
+        cfg.model.pfas.apply_l2_norm_to_keys = True
+        cfg.model.pfas.apply_l2_norm_to_values = False
+        cfg.model.pfas.apply_global_l2_norm_to_concat_form = True
     cfg.model.embedding_dim = cfg.model.pfas.representation_dim
     cfg.train.loss.loss_type = loss_type
     cfg.train.loss.scoring_type = ScoringType.PFAS.value
+    cfg.loss = cfg.train.loss
     return cfg
 
 
@@ -835,4 +861,5 @@ def universal_multi_domain_config(
         cfg.model.embedding_dim = cfg.model.pfas.representation_dim
     cfg.train.loss.loss_type = loss_type
     cfg.train.loss.scoring_type = scoring_type
+    cfg.loss = cfg.train.loss
     return cfg

@@ -299,10 +299,13 @@ class DecisionResidualNetwork(nn.Module):
     https://arxiv.org/pdf/2104.01989).
 
     Given a test embedding `e_t` and enrollment embedding `e_e`, computes:
-    `score(e_t, e_e) = cos(e_t, e_e) + w_res * MLP([e_t_norm, e_e_norm, cos^1, ..., cos^K])`
-    Supports polynomial cosine features (`num_cosine_terms = 3` for `[cos, cos^2, cos^3]`
-    as in Eq. 7 of Pelecanos et al., 2021, or `num_cosine_terms = 1` default) and
-    optional symmetric pair features (`symmetric_input = True`).
+    `score(e_t, e_e) = cos(e_t, e_e) + w_res * MLP([e_t_norm, e_e_norm, cos_feats])`
+    Supports non-linear cosine features (`num_cosine_terms = 3` for
+    `[cos, cos^2, sqrt(max(cos, 0))]` as in Eq. 7 of Pelecanos et al., 2021, or
+    `num_cosine_terms = 1` default), optional skip-concatenation of cosine features
+    to the final hidden representation (`append_cosine_to_final_hidden = True`,
+    Figure 1 of arXiv:2104.01989), and optional symmetric pair features
+    (`symmetric_input = True`).
     """
 
     hidden_dims: Sequence[int] = (128, 64)
@@ -310,6 +313,7 @@ class DecisionResidualNetwork(nn.Module):
     use_layer_norm: bool = True
     include_cosine_in_input: bool = True
     append_cosine_as_feature_to_network_input: bool = True
+    append_cosine_to_final_hidden: bool = False
     add_cosine_to_network_output: bool = True
     num_cosine_terms: int = 1
     symmetric_input: bool = False
@@ -338,25 +342,25 @@ class DecisionResidualNetwork(nn.Module):
         else:
             pair_feats = [t_norm, e_norm]
 
+        cos_feats: list[jax.Array] = []
+        n_terms = max(1, int(self.num_cosine_terms))
+        if n_terms == 1:
+            cos_feats = [cos_sim]
+        elif n_terms == 3:
+            # Pelecanos et al. (Interspeech 2021, Eq. 7): [c, c^2, sqrt(max(c, 0))]
+            cos_feats = [
+                cos_sim,
+                jnp.square(cos_sim),
+                jnp.sqrt(jnp.maximum(cos_sim, 0.0) + self.eps),
+            ]
+        else:
+            cos_feats = [jnp.power(cos_sim, p) for p in range(1, n_terms + 1)]
+
         use_cos_in_input = bool(
             self.include_cosine_in_input and self.append_cosine_as_feature_to_network_input
         )
         if use_cos_in_input:
-            n_terms = max(1, int(self.num_cosine_terms))
-            if n_terms == 1:
-                pair_feats.append(cos_sim)
-            elif n_terms == 3:
-                # Pelecanos et al. (Interspeech 2021, Eq. 7): [c, c^2, sqrt(max(c, 0))]
-                pair_feats.extend(
-                    [
-                        cos_sim,
-                        jnp.square(cos_sim),
-                        jnp.sqrt(jnp.maximum(cos_sim, 0.0) + self.eps),
-                    ]
-                )
-            else:
-                powers = [jnp.power(cos_sim, p) for p in range(1, n_terms + 1)]
-                pair_feats.extend(powers)
+            pair_feats.extend(cos_feats)
 
         h = jnp.concatenate(pair_feats, axis=-1)
 
@@ -365,6 +369,9 @@ class DecisionResidualNetwork(nn.Module):
             if self.use_layer_norm:
                 h = nn.LayerNorm(name=f"dr_ln_{idx}")(h)
             h = self._act_fn(h)
+
+        if self.append_cosine_to_final_hidden:
+            h = jnp.concatenate([h] + cos_feats, axis=-1)
 
         res = nn.Dense(
             1,

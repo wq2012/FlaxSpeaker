@@ -220,7 +220,7 @@ def prepare_all_datasets(
         eval_csv = os.path.join(vox_dir, "eval.csv")
         trials_path = os.path.join(vox_dir, "trials.tsv")
         multi_trials_path = os.path.join(vox_dir, "multi_enroll_trials.tsv")
-        official_trials_path = os.path.join(vox_dir, "vox1_o_official_4000.tsv")
+        official_trials_path = os.path.join(vox_dir, "vox1_o_official_2500.tsv")
 
         dataset.save_spk_to_utts_csv(vox_train, train_csv)
         dataset.save_spk_to_utts_csv(vox_eval, eval_csv)
@@ -239,7 +239,11 @@ def prepare_all_datasets(
         official_trials = []
         if os.path.exists(veri_txt):
             official_trials = dataset.load_voxceleb_veri_test(
-                veri_txt, vox_root, max_trials=4000, seed=seed
+                veri_txt,
+                vox_root,
+                max_trials=2500,
+                seed=seed,
+                allowed_speakers=set(vox_eval.keys()),
             )
             dataset.save_trials_file(official_trials, official_trials_path)
 

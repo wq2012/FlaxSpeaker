@@ -105,6 +105,26 @@
         "latency_ms_per_utterance": 0.0,
         "eval_time_sec": 3.88,
         "scoring_type": "cosine"
+      },
+      "voxceleb1_o_official": {
+        "eer": 0.26215998849037603,
+        "eer_percent": 26.216,
+        "eer_ci95_low_percent": 24.0065,
+        "eer_ci95_high_percent": 27.9833,
+        "eer_threshold": 0.6701704859733582,
+        "min_dcf_001": 0.9866,
+        "min_dcf_005": 0.9719,
+        "min_dcf_01": 0.9443,
+        "roc_auc": 0.8296,
+        "num_trials": 2500,
+        "num_unique_utterances": 937,
+        "latency_ms_per_utterance": 8.113,
+        "eval_time_sec": 8.058,
+        "scoring_type": "cosine",
+        "num_target_trials": 1789,
+        "num_impostor_trials": 711,
+        "num_unseen_speakers": 10,
+        "protocol": "veri_test2_speaker_disjoint_10spk_2500trials"
       }
     },
     "universal_macro_avg_1utt": {
@@ -170,10 +190,34 @@
       "roc_auc": 0.9198
     }
   },
-  "cross_dataset_eval": {},
+  "cross_dataset_eval": {
+    "voxceleb1_o_official": {
+      "eer": 0.26215998849037603,
+      "eer_percent": 26.216,
+      "eer_ci95_low_percent": 24.0065,
+      "eer_ci95_high_percent": 27.9833,
+      "eer_threshold": 0.6701704859733582,
+      "min_dcf_001": 0.9866,
+      "min_dcf_005": 0.9719,
+      "min_dcf_01": 0.9443,
+      "roc_auc": 0.8296,
+      "num_trials": 2500,
+      "num_unique_utterances": 937,
+      "latency_ms_per_utterance": 8.113,
+      "eval_time_sec": 8.058,
+      "scoring_type": "cosine",
+      "num_target_trials": 1789,
+      "num_impostor_trials": 711,
+      "num_unseen_speakers": 10,
+      "protocol": "veri_test2_speaker_disjoint_10spk_2500trials"
+    }
+  },
   "config_yaml": "configs/univ_conformer_small_ge2e.yml",
   "hf_pretrained_dir": "pretrained_models/univ_conformer_small_ge2e",
   "hf_repo_id": "wq2012/univ_conformer_small_ge2e",
   "hf_url": "https://huggingface.co/wq2012/univ_conformer_small_ge2e",
-  "hf_collection_url": "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595"
+  "hf_collection_url": "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595",
+  "voxceleb1_o_official_eer_percent": 26.216,
+  "voxceleb1_o_official_min_dcf_001": 0.9866,
+  "voxceleb1_o_official_roc_auc": 0.8296
 }

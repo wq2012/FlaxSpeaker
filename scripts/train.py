@@ -98,6 +98,13 @@ def main() -> None:
     if args.output_dir:
         exp_cfg.train.saved_model_dir = args.output_dir
 
+    if exp_cfg.data.train_csv:
+        exp_cfg.data.train_csv = dataset.resolve_data_path(exp_cfg.data.train_csv)
+    if exp_cfg.data.test_csv:
+        exp_cfg.data.test_csv = dataset.resolve_data_path(exp_cfg.data.test_csv)
+    if exp_cfg.data.trials_file:
+        exp_cfg.data.trials_file = dataset.resolve_data_path(exp_cfg.data.trials_file)
+
     if not exp_cfg.data.train_csv or not os.path.exists(exp_cfg.data.train_csv):
         raise FileNotFoundError(
             f"Training CSV not found: '{exp_cfg.data.train_csv}'. Pass --train_csv or configure data.train_csv."

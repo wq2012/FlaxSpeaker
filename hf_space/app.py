@@ -13,7 +13,7 @@ try:
 except ImportError:  # pragma: no cover
     gr = None  # type: ignore
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,10 +100,11 @@ def build_diagnostic_plot(
     model_name: str,
     num_enroll: int = 1,
     sample_rate: int = 16000,
-) -> Any:
-    plt.close("all")
-    fig, axes = plt.subplots(1, 4, figsize=(16.0, 3.6), dpi=130)
+    scoring_type: str = "cosine",
+) -> Figure:
+    fig = Figure(figsize=(16.0, 3.6), dpi=130)
     fig.patch.set_facecolor("#FFFFFF")
+    axes = fig.subplots(1, 4)
 
     t_axis = np.arange(enroll_wav.shape[0]) / float(max(1, sample_rate))
     axes[0].plot(t_axis, enroll_wav, color="#334155", lw=0.7, alpha=0.85)
@@ -155,26 +156,34 @@ def build_diagnostic_plot(
 
     dims = min(64, enroll_emb.shape[0], test_emb.shape[0])
     x = np.arange(dims)
+    is_pfas = scoring_type.lower() == "pfas" or enroll_emb.shape[0] >= 640
+    enroll_lbl = "Enroll Keys (1..64)" if is_pfas else "Enrollment Emb"
+    test_lbl = "Test Keys (1..64)" if is_pfas else "Test Emb"
     axes[3].plot(
-        x, enroll_emb[:dims], label="Enrollment Emb", color="#2563EB", lw=1.3
+        x, enroll_emb[:dims], label=enroll_lbl, color="#2563EB", lw=1.3
     )
     axes[3].plot(
         x,
         test_emb[:dims],
-        label="Test Emb",
+        label=test_lbl,
         color="#DC2626",
         lw=1.3,
         alpha=0.85,
     )
-    axes[3].set_title(
-        f"{model_name} (first {dims} dims, score={score:.4f})", fontsize=9.5
+    panel4_title = (
+        f"PFAS Key-Value Rep (first {dims}/640 dims, score={score:.4f})"
+        if is_pfas
+        else f"{model_name} (first {dims} dims, score={score:.4f})"
     )
-    axes[3].set_xlabel("Embedding Dimension")
+    axes[3].set_title(panel4_title, fontsize=9.2)
+    axes[3].set_xlabel(
+        "PFAS Key Slice (4x32 Keys + 4x128 Values)" if is_pfas else "Embedding Dimension"
+    )
     axes[3].set_ylabel("Activation")
     axes[3].legend(loc="upper right", fontsize=7.5)
     axes[3].grid(True, alpha=0.25)
 
-    plt.tight_layout()
+    fig.tight_layout()
     return fig
 
 
@@ -249,20 +258,30 @@ def verify_pair(
     )
     score = raw_score
     as_norm_applied = False
-    if use_as_norm and model.config.scoring_type != "pfas":
-        cohort = _get_example_cohort(model_name, model)
-        if cohort is not None and cohort.shape[0] >= 2:
-            e_centroid = np.mean(np.stack(enroll_embs, axis=0), axis=0)
-            e_centroid = e_centroid / (np.linalg.norm(e_centroid) + 1e-6)
-            norm_arr = scoring.apply_as_norm(
-                np.array([raw_score], dtype=np.float32),
-                e_centroid[None, :],
-                test_emb[None, :],
-                cohort,
-                top_k=min(6, cohort.shape[0]),
+    as_norm_note = "disabled"
+    scoring_type_str = str(model.config.scoring_type).lower()
+    if use_as_norm:
+        if scoring_type_str == "cosine":
+            cohort = _get_example_cohort(model_name, model)
+            if cohort is not None and cohort.shape[0] >= 2:
+                e_centroid = np.mean(np.stack(enroll_embs, axis=0), axis=0)
+                e_centroid = e_centroid / (np.linalg.norm(e_centroid) + 1e-6)
+                norm_arr = scoring.apply_as_norm(
+                    np.array([raw_score], dtype=np.float32),
+                    e_centroid[None, :],
+                    test_emb[None, :],
+                    cohort,
+                    top_k=min(6, cohort.shape[0]),
+                )
+                score = float(norm_arr[0])
+                as_norm_applied = True
+                as_norm_note = (
+                    "AS-Norm z-score applied (score is in cohort standard-deviation units)"
+                )
+        else:
+            as_norm_note = (
+                f"skipped (AS-Norm applies to cosine similarity; model uses '{scoring_type_str}')"
             )
-            score = float(norm_arr[0])
-            as_norm_applied = True
 
     elapsed_ms = (time.time() - t0) * 1000.0
 
@@ -272,6 +291,8 @@ def verify_pair(
         if is_same
         else f"DIFFERENT SPEAKER (Score = {score:.4f} < Threshold {threshold:.2f})"
     )
+    if as_norm_applied:
+        verdict += f" [AS-Norm z-score; raw cosine = {raw_score:.4f}]"
 
     display_enroll_emb = np.mean(np.stack(enroll_embs, axis=0), axis=0)
     details = {
@@ -288,6 +309,7 @@ def verify_pair(
         "vad_enabled": bool(use_vad),
         "vad_snr_margin_db": round(float(vad_snr_margin_db), 2),
         "as_norm_applied": as_norm_applied,
+        "as_norm_status": as_norm_note,
         "raw_similarity_score": round(float(raw_score), 4),
         "similarity_score": round(float(score), 4),
         "threshold": round(float(threshold), 4),
@@ -308,6 +330,7 @@ def verify_pair(
         model_name,
         num_enroll=len(enroll_embs),
         sample_rate=frontend.config.sample_rate,
+        scoring_type=scoring_type_str,
     )
     return verdict, details, fig
 

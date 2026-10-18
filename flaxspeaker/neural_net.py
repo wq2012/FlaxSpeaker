@@ -440,6 +440,9 @@ def create_train_state(
                 append_cosine_as_feature_to_network_input=getattr(
                     dr_cfg, "append_cosine_as_feature_to_network_input", True
                 ),
+                append_cosine_to_final_hidden=bool(
+                    getattr(dr_cfg, "append_cosine_to_final_hidden", False)
+                ),
                 add_cosine_to_network_output=getattr(
                     dr_cfg, "add_cosine_to_network_output", True
                 ),
@@ -577,6 +580,9 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
             include_cosine_in_input=dr_cfg.include_cosine_in_input,
             append_cosine_as_feature_to_network_input=getattr(
                 dr_cfg, "append_cosine_as_feature_to_network_input", True
+            ),
+            append_cosine_to_final_hidden=bool(
+                getattr(dr_cfg, "append_cosine_to_final_hidden", False)
             ),
             add_cosine_to_network_output=getattr(
                 dr_cfg, "add_cosine_to_network_output", True

@@ -178,7 +178,7 @@ model:
     residual_weight: 0.25
     add_cosine_to_network_output: true
     append_cosine_as_feature_to_network_input: true
-    num_cosine_terms: 128
+    num_cosine_terms: 1
     layer_type: relu
     num_cells:
     - 128

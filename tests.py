@@ -947,6 +947,112 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         self.assertTrue(details["as_norm_applied"])
         self.assertIsNotNone(fig)
 
+    def test_ge2e_contrast_loss_wan2018_eq7(self):
+        rng = jax.random.PRNGKey(303)
+        n_spk, n_utt, dim = 4, 3, 16
+        embs = jax.random.normal(rng, (n_spk * n_utt, dim))
+        embs = embs / (jnp.linalg.norm(embs, axis=-1, keepdims=True) + 1e-6)
+        w = jnp.array(8.0, dtype=jnp.float32)
+        b = jnp.array(-2.0, dtype=jnp.float32)
+
+        scaled, pos_idx = losses.compute_ge2e_similarity_matrix_leave_one_out(
+            embs, n_spk, n_utt, w=w, b=b, exact_leave_one_out=True
+        )
+        pos_logits = scaled[jnp.arange(n_spk * n_utt), pos_idx]
+        neg_mask = jax.nn.one_hot(pos_idx, n_spk) > 0.5
+        neg_logits = jnp.where(neg_mask, -1e9, scaled)
+        max_neg_logits = jnp.max(neg_logits, axis=-1)
+        expected = jnp.mean(
+            1.0 - jax.nn.sigmoid(pos_logits) + jax.nn.sigmoid(max_neg_logits)
+        )
+        actual = losses.ge2e_contrast_loss(
+            embs, n_spk, n_utt, w=w, b=b, exact_leave_one_out=True
+        )
+        self.assertAlmostEqual(float(expected), float(actual), places=5)
+
+    def test_atp_all_pooling_stats_modes_and_dr_skip_concat(self):
+        rng = jax.random.PRNGKey(404)
+        x = jax.random.normal(rng, (2, 20, 16))
+        mask = jnp.ones((2, 20), dtype=jnp.float32)
+        expected_dims = {
+            "mean": 16,
+            "std": 16,
+            "var": 16,
+            "mean_std": 32,
+            "mean_var": 32,
+        }
+        for stype, exp_d in expected_dims.items():
+            pool = pooling.AttentiveTemporalPooling(
+                attention_dim=8,
+                num_heads=4,
+                subspace_heads=True,
+                pooling_stats=stype,
+            )
+            params = pool.init(rng, x, mask=mask)["params"]
+            out = pool.apply({"params": params}, x, mask=mask)
+            self.assertEqual(out.shape, (2, exp_d))
+
+        dr_skip = scoring.DecisionResidualNetwork(
+            hidden_dims=(32, 16),
+            num_cosine_terms=3,
+            append_cosine_to_final_hidden=True,
+        )
+        t_v = jax.random.normal(rng, (3, 24))
+        e_v = jax.random.normal(jax.random.PRNGKey(405), (3, 24))
+        dr_params = dr_skip.init(rng, t_v, e_v)["params"]
+        self.assertEqual(dr_params["dr_out"]["kernel"].shape, (16 + 3, 1))
+        scores = dr_skip.apply(
+            {"params": dr_params}, t_v, e_v, method=dr_skip.score_pairs
+        )
+        self.assertEqual(scores.shape, (3,))
+        self.assertTrue(np.all(np.isfinite(np.asarray(scores))))
+
+    def test_paper_presets_and_foreign_path_resolution(self):
+        c_ge2e = configs.icassp2018_ge2e_config()
+        self.assertIs(c_ge2e.loss, c_ge2e.train.loss)
+        self.assertTrue(c_ge2e.train.loss.ge2e_exact_leave_one_out)
+
+        c_dr = configs.interspeech2021_dr_vectors_config(pure_paper_mode=True)
+        self.assertIs(c_dr.loss, c_dr.train.loss)
+        self.assertEqual(c_dr.model.dr_vector.num_cosine_terms, 3)
+        self.assertTrue(c_dr.model.dr_vector.append_cosine_to_final_hidden)
+        self.assertTrue(c_dr.train.loss.pure_extended_set)
+
+        c_atp = configs.odyssey2022_conformer_atp_config(pure_paper_mode=True)
+        self.assertIs(c_atp.loss, c_atp.train.loss)
+        self.assertEqual(c_atp.model.conformer.layer_order, "conv_before_mhsa")
+        self.assertFalse(c_atp.model.conformer.use_conv_stem)
+        self.assertEqual(c_atp.model.conformer.subsample_factor, 2)
+        self.assertFalse(c_atp.model.pooling.use_global_context)
+
+        c_pfas = configs.odyssey2022_pfas_config(pure_paper_mode=True)
+        self.assertIs(c_pfas.loss, c_pfas.train.loss)
+        self.assertFalse(c_pfas.model.pfas.use_global_anchor)
+        self.assertTrue(c_pfas.model.pfas.apply_global_l2_norm_to_concat_form)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            splits_dir = os.path.join(tmpdir, "splits")
+            os.makedirs(splits_dir, exist_ok=True)
+            dummy_csv = os.path.join(splits_dir, "dummy.csv")
+            with open(dummy_csv, "w", encoding="utf-8") as f:
+                f.write("spk1,/other_host/data/speaker_datasets/splits/dummy.csv\n")
+            old_env = os.environ.get("FLAXSPEAKER_DATA_ROOT")
+            os.environ["FLAXSPEAKER_DATA_ROOT"] = tmpdir
+            try:
+                resolved = dataset.resolve_data_path(
+                    "/other_host/data/speaker_datasets/splits/dummy.csv"
+                )
+                self.assertEqual(resolved, dummy_csv)
+                spk_map = dataset.get_csv_spk_to_utts(
+                    "/other_host/data/speaker_datasets/splits/dummy.csv"
+                )
+                self.assertEqual(spk_map["spk1"], [dummy_csv])
+            finally:
+                if old_env is None:
+                    os.environ.pop("FLAXSPEAKER_DATA_ROOT", None)
+                else:
+                    os.environ["FLAXSPEAKER_DATA_ROOT"] = old_env
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -31,13 +31,20 @@ from flaxspeaker import hf_compat  # noqa: E402
 
 
 def _load_multi_enroll_trials(path: str) -> list[dataset.MultiEnrollTrial]:
+    path = dataset.resolve_data_path(path)
     trials: list[dataset.MultiEnrollTrial] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split("\t")
             if len(parts) != 3:
                 continue
-            trials.append((int(parts[0]), [x for x in parts[1].split(",") if x], parts[2]))
+            trials.append(
+                (
+                    int(parts[0]),
+                    [dataset.resolve_data_path(x) for x in parts[1].split(",") if x],
+                    dataset.resolve_data_path(parts[2]),
+                )
+            )
     return trials
 
 

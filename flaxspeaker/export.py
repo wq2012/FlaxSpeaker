@@ -29,6 +29,10 @@ def _resolve_export_seq_len(
         return int(seq_len)
     model_cfg = getattr(myconfig, "model", None)
     export_cfg = getattr(myconfig, "export", None)
+    if export_cfg is not None and hasattr(export_cfg, "sequence_length"):
+        exp_seq_len = int(getattr(export_cfg, "sequence_length"))
+        if exp_seq_len > 0 and (exp_seq_len != 100 or model_cfg is None or not hasattr(model_cfg, "seq_len")):
+            return exp_seq_len
     if model_cfg is not None and hasattr(model_cfg, "seq_len"):
         return int(getattr(model_cfg, "seq_len"))
     if export_cfg is not None and hasattr(export_cfg, "sequence_length"):
