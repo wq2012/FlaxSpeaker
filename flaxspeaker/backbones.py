@@ -593,6 +593,12 @@ class SERes2Block(nn.Module):
     dilation: int = 2
     scale: int = 4
     se_bottleneck_dim: int = 64
+    norm_after_activation: bool = False
+
+    def _norm_act(self, h: jax.Array, name: str) -> jax.Array:
+        if self.norm_after_activation:
+            return nn.LayerNorm(name=name)(nn.relu(h))
+        return nn.relu(nn.LayerNorm(name=name)(h))
 
     @nn.compact
     def __call__(
@@ -604,9 +610,7 @@ class SERes2Block(nn.Module):
         if mask_f is not None:
             x = x * mask_f
         residual = x
-        h = nn.relu(
-            nn.LayerNorm(name="ln1")(nn.Dense(self.channels, name="pw1")(x))
-        )
+        h = self._norm_act(nn.Dense(self.channels, name="pw1")(x), "ln1")
         if mask_f is not None:
             h = h * mask_f
 
@@ -626,16 +630,14 @@ class SERes2Block(nn.Module):
                 padding="SAME",
                 name=f"res2_conv_{s_idx}",
             )(cur)
-            cur = nn.relu(nn.LayerNorm(name=f"res2_ln_{s_idx}")(cur))
+            cur = self._norm_act(cur, f"res2_ln_{s_idx}")
             if mask_f is not None:
                 cur = cur * mask_f
             outs.append(cur)
             prev = cur
 
         h = jnp.concatenate(outs, axis=-1)
-        h = nn.relu(
-            nn.LayerNorm(name="ln2")(nn.Dense(self.channels, name="pw2")(h))
-        )
+        h = self._norm_act(nn.Dense(self.channels, name="pw2")(h), "ln2")
         h = SqueezeExcitation1D(
             channels=self.channels,
             bottleneck_dim=self.se_bottleneck_dim,
@@ -660,6 +662,12 @@ class EcapaTdnnBackbone(nn.Module):
     dilations: Sequence[int] = (1, 2, 3, 4)
     mfa_dim: int = 512
     se_bottleneck_dim: int = 64
+    norm_after_activation: bool = False
+
+    def _norm_act(self, h: jax.Array, name: str) -> jax.Array:
+        if self.norm_after_activation:
+            return nn.LayerNorm(name=name)(nn.relu(h))
+        return nn.relu(nn.LayerNorm(name=name)(h))
 
     @nn.compact
     def __call__(
@@ -680,7 +688,7 @@ class EcapaTdnnBackbone(nn.Module):
             padding="SAME",
             name="stem_conv",
         )(x)
-        h = nn.relu(nn.LayerNorm(name="stem_ln")(h))
+        h = self._norm_act(h, "stem_ln")
         if mask_f is not None:
             h = h * mask_f
 
@@ -695,16 +703,15 @@ class EcapaTdnnBackbone(nn.Module):
                 dilation=dil,
                 scale=self.scale,
                 se_bottleneck_dim=self.se_bottleneck_dim,
+                norm_after_activation=self.norm_after_activation,
                 name=f"se_res2_{i}",
             )(h, mask=mask)
             block_outputs.append(h)
 
         # Multi-layer Feature Aggregation (MFA)
         cat = jnp.concatenate(block_outputs, axis=-1)
-        out = nn.relu(
-            nn.LayerNorm(name="mfa_ln")(
-                nn.Dense(self.mfa_dim, name="mfa_proj")(cat)
-            )
+        out = self._norm_act(
+            nn.Dense(self.mfa_dim, name="mfa_proj")(cat), "mfa_ln"
         )
         if mask_f is not None:
             out = out * mask_f

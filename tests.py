@@ -895,6 +895,58 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         cos = jnp.sum(out_short * out_pad, axis=-1)
         self.assertTrue(np.all(np.asarray(cos) > 0.9999))
 
+    def test_frontend_agc_ecapa_norm_order_and_eval_cap(self):
+        wav = np.sin(np.linspace(0.0, 40.0 * np.pi, 16000)).astype(np.float32) * 0.1
+        fe_cfg = configs.FrontendConfig(apply_cmvn=False)
+        fe_no_agc = feature_extraction.AudioFrontend(
+            fe_cfg, configs.VadConfig(enabled=False, apply_agc=False)
+        )
+        fe_with_agc = feature_extraction.AudioFrontend(
+            fe_cfg, configs.VadConfig(enabled=False, apply_agc=True)
+        )
+        f_no = fe_no_agc.extract_from_waveform(wav)
+        f_yes = fe_with_agc.extract_from_waveform(wav)
+        self.assertGreater(float(np.max(f_yes - f_no)), 2.0)
+        self.assertGreater(float(np.mean(f_yes - f_no)), 0.2)
+
+        rng = jax.random.PRNGKey(77)
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.ECAPA_TDNN
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.ecapa_tdnn.norm_after_activation = True
+        cfg.model.max_eval_seq_len = 64
+        _, state = neural_net.get_speaker_encoder(cfg)
+        long_feats = jax.random.normal(rng, (120, 80))
+        emb_long = evaluation.run_inference(long_feats, state, cfg)
+        emb_crop = evaluation.run_inference(long_feats[28:92], state, cfg)
+        self.assertTrue(np.allclose(np.asarray(emb_long), np.asarray(emb_crop), atol=1e-5))
+        self.assertEqual(
+            dataset.resolve_data_path("hf_space/examples/librispeech_spk1_utt1.flac"),
+            "hf_space/examples/librispeech_spk1_utt1.flac",
+        )
+
+    def test_hf_space_gradio_app_verification(self):
+        from hf_space import app as hf_app  # pytype: disable=import-error
+
+        models = hf_app.list_available_models()
+        self.assertGreaterEqual(len(models), 44)
+        p1 = "hf_space/examples/librispeech_spk1_utt1.flac"
+        p2 = "hf_space/examples/librispeech_spk1_utt2.flac"
+        verdict, details, fig = hf_app.verify_pair(
+            p1,
+            p2,
+            "univ_conformer_small_ge2e",
+            0.50,
+            enroll_audio_2=p1,
+            use_vad=True,
+            vad_snr_margin_db=4.5,
+            use_as_norm=True,
+        )
+        self.assertIn("SPEAKER", verdict)
+        self.assertEqual(details["num_enrollment_utterances"], 2)
+        self.assertTrue(details["as_norm_applied"])
+        self.assertIsNotNone(fig)
+
 
 if __name__ == "__main__":
     unittest.main()

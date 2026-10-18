@@ -5,9 +5,9 @@ data:
   test_dir: ''
   train_librispeech_dir: ''
   test_librispeech_dir: ''
-  train_csv: /usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/train.csv
-  test_csv: /usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/eval.csv
-  trials_file: /usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/trials.tsv
+  train_csv: data/speaker_datasets/splits/universal/train.csv
+  test_csv: data/speaker_datasets/splits/universal/eval.csv
+  trials_file: data/speaker_datasets/splits/universal/trials.tsv
   audio_format: .flac
   speaker_label_index: -2
   within_domain_prob: 0.75

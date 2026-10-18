@@ -136,10 +136,13 @@ class VadProcessor:
                 waveform = waveform / peak
         return waveform
 
-    def detect_frames_from_waveform(self, waveform: np.ndarray) -> np.ndarray:
+    def detect_frames_from_waveform(
+        self, waveform: np.ndarray, pre_normalized: bool = False
+    ) -> np.ndarray:
         """Returns a boolean speech mask of shape (num_frames,) for a 1D waveform."""
         cfg = self.config
-        waveform = self.normalize_waveform(waveform)
+        if not pre_normalized:
+            waveform = self.normalize_waveform(waveform)
         energy_db = compute_frame_energy_db(
             waveform,
             sample_rate=cfg.sample_rate,
@@ -203,7 +206,7 @@ class VadProcessor:
             return waveform
 
         cfg = self.config
-        mask = self.detect_frames_from_waveform(waveform)
+        mask = self.detect_frames_from_waveform(waveform, pre_normalized=True)
         frame_step = max(
             1, int(round(cfg.sample_rate * cfg.frame_step_ms / 1000.0))
         )
@@ -226,6 +229,7 @@ class VadProcessor:
         self,
         features: np.ndarray,
         waveform: Optional[np.ndarray] = None,
+        pre_normalized: bool = False,
     ) -> np.ndarray:
         """Filters frame-level acoustic features of shape (T, D) using VAD."""
         features = np.asarray(features, dtype=np.float32)
@@ -233,7 +237,9 @@ class VadProcessor:
             return features
 
         if waveform is not None:
-            mask = self.detect_frames_from_waveform(waveform)
+            mask = self.detect_frames_from_waveform(
+                waveform, pre_normalized=pre_normalized
+            )
             if mask.shape[0] != features.shape[0]:
                 # Align mask length to feature length via nearest-neighbor interpolation
                 indices = np.linspace(

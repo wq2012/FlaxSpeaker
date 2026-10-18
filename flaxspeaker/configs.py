@@ -261,6 +261,7 @@ class EcapaTdnnConfig:
     se_bottleneck_dim: int = 64
     mfa_channels: int = 768
     mfa_dim: int = 512
+    norm_after_activation: bool = False
 
 
 @dataclasses.dataclass

@@ -23,8 +23,30 @@ TrialPair = tuple[int, str, str]  # (label, enroll_utt, test_utt)
 MultiEnrollTrial = tuple[int, list[str], str]  # (label, [enroll_utts], test_utt)
 
 
+def resolve_data_path(path: str) -> str:
+    """Resolve a dataset or manifest path, falling back to FLAXSPEAKER_DATA_ROOT or ~/Data/speaker_datasets."""
+    if not path or os.path.exists(path):
+        return path
+    expanded = os.path.expanduser(path)
+    if os.path.exists(expanded):
+        return expanded
+    prefix = "data/speaker_datasets"
+    norm = path.replace("\\", "/")
+    if norm == prefix or norm.startswith(prefix + "/"):
+        rel = norm[len(prefix):].lstrip("/")
+        data_root = os.environ.get(
+            "FLAXSPEAKER_DATA_ROOT",
+            os.path.expanduser("~/Data/speaker_datasets"),
+        )
+        candidate = os.path.join(data_root, rel) if rel else data_root
+        if os.path.exists(candidate):
+            return candidate
+    return path
+
+
 def get_librispeech_spk_to_utts(data_dir: str) -> SpkToUtts:
     """Get the dict from speaker to list of utterances for LibriSpeech."""
+    data_dir = resolve_data_path(data_dir)
     flac_files = sorted(glob.glob(os.path.join(data_dir, "*", "*", "*.flac")))
     spk_to_utts: SpkToUtts = {}
     for flac_file in flac_files:
@@ -44,6 +66,7 @@ def get_voxceleb_spk_to_utts(data_dir: str) -> SpkToUtts:
     Supports both `<data_dir>/idXXXXX/<video_id>/<utt>.wav` and
     `<data_dir>/wav/idXXXXX/<video_id>/<utt>.wav` layouts.
     """
+    data_dir = resolve_data_path(data_dir)
     search_roots = [data_dir]
     for sub in ("wav", "vox1_test_wav/wav", "vox1_dev_wav/wav", "dev/aac"):
         candidate = os.path.join(data_dir, sub)
@@ -69,6 +92,7 @@ def get_cnceleb_spk_to_utts(data_dir: str) -> SpkToUtts:
     Supports `<data_dir>/idXXXXX/<utt>.flac`, `<data_dir>/data/idXXXXX/<utt>.flac`,
     and `<data_dir>/CN-Celeb2_flac/data/idXXXXX/<utt>.flac`.
     """
+    data_dir = resolve_data_path(data_dir)
     search_roots = [data_dir]
     for sub in ("data", "CN-Celeb_flac/data", "CN-Celeb2_flac/data", "eval/enroll", "eval/test"):
         candidate = os.path.join(data_dir, sub)
@@ -94,6 +118,7 @@ def get_folder_spk_to_utts(
     speaker_label_index: int = -2,
 ) -> SpkToUtts:
     """Scan an arbitrary directory tree and group audio files by speaker ID."""
+    data_dir = resolve_data_path(data_dir)
     spk_to_utts: SpkToUtts = {}
     for dirpath, _, files in os.walk(data_dir):
         for fname in sorted(files):
@@ -110,6 +135,7 @@ def get_folder_spk_to_utts(
 
 def get_csv_spk_to_utts(csv_file: str) -> SpkToUtts:
     """Get the dict from speaker to list of utterances from CSV file."""
+    csv_file = resolve_data_path(csv_file)
     spk_to_utts: SpkToUtts = {}
     with open(csv_file, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
@@ -285,6 +311,8 @@ def load_voxceleb_veri_test(
     seed: int = 42,
 ) -> list[TrialPair]:
     """Load official VoxCeleb1 verification trials (`veri_test.txt` / `veri_test2.txt`)."""
+    veri_test_path = resolve_data_path(veri_test_path)
+    wav_root = resolve_data_path(wav_root)
     # Resolve wav_root if nested under wav/
     for sub in ("", "wav", "vox1_test_wav/wav"):
         candidate = os.path.join(wav_root, sub) if sub else wav_root
@@ -329,6 +357,7 @@ def save_trials_file(trials: Sequence[TrialPair], output_path: str) -> None:
 
 def load_trials_file(trials_path: str) -> list[TrialPair]:
     """Load verification trials from TSV or whitespace-separated file."""
+    trials_path = resolve_data_path(trials_path)
     trials: list[TrialPair] = []
     with open(trials_path, "r", encoding="utf-8") as f:
         for line in f:

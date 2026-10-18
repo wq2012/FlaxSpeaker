@@ -234,6 +234,9 @@ def build_modern_encoder_from_config(
             "dilations": tuple(m_cfg.ecapa_tdnn.dilations),
             "mfa_dim": m_cfg.ecapa_tdnn.mfa_dim,
             "se_bottleneck_dim": m_cfg.ecapa_tdnn.se_bottleneck_dim,
+            "norm_after_activation": bool(
+                getattr(m_cfg.ecapa_tdnn, "norm_after_activation", False)
+            ),
         }
     elif b_type == "resnet":
         b_kwargs = {

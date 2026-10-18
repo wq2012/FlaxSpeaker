@@ -57,6 +57,17 @@ def run_inference(
         reps = (min_len // max(1, int(features.shape[0]))) + 1
         features = jnp.tile(features, (reps, 1))[:min_len]
     if _get_full_seq_flag(myconfig):
+        if is_modern:
+            max_eval_len = int(
+                getattr(
+                    getattr(myconfig, "model", None),
+                    "max_eval_seq_len",
+                    max(400, seq_len * 2),
+                )
+            )
+            if features.shape[0] > max_eval_len:
+                offset = (int(features.shape[0]) - max_eval_len) // 2
+                features = features[offset:offset + max_eval_len]
         batch_input = jnp.expand_dims(features, axis=0)
         batch_output = state.apply_fn({"params": state.params}, batch_input)
         return batch_output[0, :]

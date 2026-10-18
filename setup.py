@@ -48,6 +48,7 @@ setuptools.setup(
     extras_require={
         "export": ["tensorflow", "ai-edge-litert"],
         "demo": ["gradio"],
+        "hf": ["safetensors>=0.4.0", "huggingface-hub>=0.20.0", "transformers>=4.36.0"],
         "dev": ["pytest", "pytest-cov", "flake8", "pytype", "pdoc"],
     },
     entry_points={

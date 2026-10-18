@@ -67,6 +67,7 @@ class AudioFrontend:
         vad_config: Optional[configs.VadConfig] = None,
     ):
         self.config = frontend_config or configs.FrontendConfig()
+        self.vad_config = vad_config
         self.vad_processor = (
             vad.VadProcessor(vad_config)
             if (vad_config and vad_config.enabled)
@@ -124,10 +125,15 @@ class AudioFrontend:
         """
         waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
         if waveform.size > 0:
+            vad_cfg = (
+                self.vad_processor.config
+                if self.vad_processor is not None
+                else self.vad_config
+            )
             apply_agc = (
                 True
-                if self.vad_processor is None
-                else getattr(self.vad_processor.config, "apply_agc", True)
+                if vad_cfg is None
+                else bool(getattr(vad_cfg, "apply_agc", True))
             )
             if apply_agc:
                 peak = float(np.max(np.abs(waveform)))
@@ -213,7 +219,7 @@ class AudioFrontend:
         # Apply frame-level VAD after STFT extraction and before CMVN
         if self.vad_processor is not None and self.vad_processor.config.enabled:
             features = self.vad_processor.filter_features(
-                features, waveform=clean_waveform
+                features, waveform=clean_waveform, pre_normalized=True
             )
 
         if cfg.apply_cmvn and ftype != configs.FeatureType.WHISPER_MEL.value:

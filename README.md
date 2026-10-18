@@ -27,25 +27,25 @@ Because the original papers were trained and evaluated on proprietary internal d
 ![FlaxSpeaker System Architecture](resources/architecture_diagram.png)
 
 ### 1. Six Neural Sequence Backbones & Four Size Presets (`< 100M` params)
-All backbones share a unified `(B, T, F) -> (B, T', D)` sequence interface with **exact variable-length padding mask invariance** via `ModernSpeakerEncoder` ([`flaxspeaker/backbones.py`](flaxspeaker/backbones.py)) and scale automatically via `size_variant: tiny | small | base | large`:
-- **Conformer** (`conformer`): 2-Layer ConvSubsampling Stem (`ConvStem`) + Macaron FFN + Masked Multi-Head Self-Attention + Mask-Aware GroupNorm Depthwise Separable Convolution + Multi-Layer Feature Aggregation (MFA).
+All backbones share a unified `(B, T, F) -> (B, T, D)` frame-rate-preserving sequence interface with **exact variable-length padding mask invariance** via `ModernSpeakerEncoder` ([`flaxspeaker/backbones.py`](flaxspeaker/backbones.py)) and scale automatically via `size_variant: tiny | small | base | large`:
+- **Conformer** (`conformer`): Parallel Linear + 1D Conv Stem (`Dense(D) + SiLU(LayerNorm(Conv1D(k=3)))`) + Macaron FFN + Masked Multi-Head Self-Attention + Mask-Aware GroupNorm Depthwise Separable Convolution + Multi-Layer Feature Aggregation (MFA).
 - **ECAPA-TDNN** (`ecapa_tdnn`): 1D SE-Res2Net dilated multi-scale blocks with Multi-Layer Feature Aggregation (MFA).
 - **Mamba** (`mamba`): Selective State Space Model (SSM) implemented in pure JAX via parallel `jax.lax.associative_scan` (`O(T)` linear time complexity, supporting both causal unidirectional and mask-aware bidirectional `bidirectional: true` modes).
-- **ResNet** (`resnet`): 2D Time-Frequency Residual Network with Squeeze-and-Excitation (SE-ResNet).
-- **Transformer** (`transformer`): 2-Layer ConvSubsampling Stem (`ConvStem`) + Pre-LayerNorm Multi-Head Self-Attention encoder with Multi-Layer Feature Aggregation (MFA).
-- **LSTM** (`lstm`): Deep stacked unidirectional LSTM with configurable hidden size and dropout.
+- **ResNet** (`resnet`): 2D Time-Frequency Residual Network with Squeeze-and-Excitation (SE-ResNet, 8 residual blocks across 4 stages `(2, 2, 2, 2)`).
+- **Transformer** (`transformer`): Parallel Linear + 1D Conv Stem (`Dense(D) + SiLU(LayerNorm(Conv1D(k=3)))`) + Pre-LayerNorm Multi-Head Self-Attention encoder with Multi-Layer Feature Aggregation (MFA).
+- **LSTM** (`lstm`): Deep stacked unidirectional LSTM with configurable hidden size, LayerNorm, and dropout.
 
 ### 2. Eight Temporal Pooling Heads ([`flaxspeaker/pooling.py`](flaxspeaker/pooling.py))
-- **Attentive Temporal Pooling** (`atp`): Sigmoid frame-gated subspace multi-head statistics pooling (`concat(mu_h, sigma_h)`) for Conformer and Transformer speaker encoders ([Wang et al., Odyssey 2022, `arXiv:2202.12163`](https://arxiv.org/pdf/2202.12163)).
+- **Attentive Temporal Pooling** (`atp`): Sigmoid frame-gated subspace multi-head statistics pooling (`concat(mu_h, sigma_h)`) followed by a nonlinear bottleneck FFN (`LayerNorm -> Dense(256) -> LayerNorm -> ReLU -> Dense(d_e) -> L2_norm`) for Conformer and Transformer speaker encoders ([Wang et al., Odyssey 2022, `arXiv:2202.12163`](https://arxiv.org/pdf/2202.12163)).
 - **Self-Attentive Pooling** (`sap`) & **Attentive Statistics Pooling** (`asp`): Softmax attention-weighted frame mean and standard deviation.
 - **Mean Pooling** (`mean`), **Last-Frame Pooling** (`last`), & **Temporal Statistics Pooling** (`stats`).
 - **Cumulative Statistics Pooling** (`cumulative_stats`): Frame-wise causal running statistics for streaming inference.
-- **Parameter-Free Attentive Scoring Head** (`pfas`): Global `ATP` bottleneck value anchor + multi-head `(K, V)` residual projection with concatenated dual L2-normalization ([Pelecanos et al., Odyssey 2022, `arXiv:2203.05642v3`](https://arxiv.org/pdf/2203.05642v3)).
+- **Parameter-Free Attentive Scoring Head** (`pfas`): Global `ATP` bottleneck value anchor + multi-head `(K, V)` residual projection with per-key L2-normalization and trial-time attention-weighted global concatenated L2-normalization ([Pelecanos et al., Odyssey 2022, `arXiv:2203.05642v3`](https://arxiv.org/pdf/2203.05642v3)).
 
 ### 3. Nine Speaker Recognition Losses & Three Scoring Backends ([`flaxspeaker/losses.py`](flaxspeaker/losses.py), [`flaxspeaker/scoring.py`](flaxspeaker/scoring.py))
 - **Generalized End-to-End (GE2E) Loss**: `ge2e_softmax` and `ge2e_contrast` with learnable scale `w` and bias `b` ([Wan et al., ICASSP 2018](https://arxiv.org/pdf/1710.10467)).
-- **Extended-Set (Multi-Row) Softmax Loss**: `extended_set_softmax` for training with negative prototype banks ([Pelecanos et al., Interspeech 2021](https://arxiv.org/pdf/2104.01989)).
-- **Decision Residual Networks (Dr-Vectors)**: `scoring_type: dr_vector` — residual feed-forward network scoring `[e_t, e_e, cos(e_t, e_e)]` ([arXiv:2104.01989](https://arxiv.org/pdf/2104.01989)).
+- **Extended-Set (Multi-Row) Softmax Loss**: `extended_set_softmax` for training with negative prototype banks, supporting both pure Eq. (3) and a 50/50 split-batch blend with speaker-count scaling `-log(N)` ([Pelecanos et al., Interspeech 2021](https://arxiv.org/pdf/2104.01989)).
+- **Decision Residual Networks (Dr-Vectors)**: `scoring_type: dr_vector` — single-stage end-to-end residual feed-forward network scoring `[e_t, e_e, cos(e_t, e_e)]` (or 3-term `[e_t, e_e, cos(e_t, e_e), cos(e_e, e_e), cos(e_t, e_t)]`) ([arXiv:2104.01989](https://arxiv.org/pdf/2104.01989)).
 - **Parameter-Free Attentive Scoring (PFAS)**: `scoring_type: pfas` — asymmetric cross-attention between test and enrollment `(K, V)` representations with learnable temperature scaling and seamless multi-utterance enrollment averaging ([Pelecanos et al., Odyssey 2022](https://arxiv.org/pdf/2203.05642v3)).
 - **Angular Margin Classification Losses**:
   - **ArcFace / AAM-Softmax** (`arcface`): `cos(theta + m)`
@@ -55,10 +55,10 @@ All backbones share a unified `(B, T, F) -> (B, T', D)` sequence interface with 
 - **Adaptive Symmetric Score Normalization (AS-Norm)**: Top-`K` imposter cohort calibration (`use_as_norm: true`).
 
 ### 4. End-to-End Audio Pipeline, Mutually Exclusive Augmentation, Variable-Length Training & Universal Multi-Domain Batching
-- **Post-STFT Voice Activity Detection (VAD v2) & AGC** ([`flaxspeaker/vad.py`](flaxspeaker/vad.py)): Frame-level energy/spectral/hybrid VAD with Automatic Gain Control (`apply_agc`), relative-to-95th-percentile peak (`26.0 dB`) + adaptive noise floor thresholding, and hangover smoothing enabled identically for both training and evaluation.
+- **Post-STFT Voice Activity Detection (VAD) & AGC** ([`flaxspeaker/vad.py`](flaxspeaker/vad.py)): Frame-level energy/spectral/hybrid VAD with Automatic Gain Control (`apply_agc = True`, target peak `1.0`), 3-term dynamic thresholding `max(-42.0 dB, P_95(E) - 26.0 dB, P_10(E) + 4.5 dB)`, spectral flatness `<= 0.65` and speech-band (`300-3400 Hz`) energy ratio `>= 0.25`, hangover smoothing (`min_speech_frames = 3`, `hangover_frames = 8`), and top-8 frame fallback enabled identically for both training and evaluation.
 - **Acoustic Frontends & Variable-Length Training** ([`flaxspeaker/feature_extraction.py`](flaxspeaker/feature_extraction.py)): `log_mel`, `whisper_mel`, `hf_compat` (100% compatible with HuggingFace `WhisperFeatureExtractor` / `SeamlessM4TFeatureExtractor`), `mfcc`, Cepstral Mean and Variance Normalization (CMVN), per-utterance variable sequence length sampling (`[min_seq_len, max_seq_len]`) with exact binary padding masks `(B, T)`, and two-tier RAM + `.npy` disk caching (`FeatureCache`).
-- **Mutually Exclusive SpecAugment & Multi-Style Training (MTR)** ([`flaxspeaker/specaug.py`](flaxspeaker/specaug.py)): Calibrated moderate-SNR (`12–25 dB`) additive noise + room reverberation (MTR) and time/frequency masking (`SpecAugment`), strictly mutually exclusive (`never_simultaneous_with_specaug = True`: `35%` clean, `40%` SpecAugment only, `25%` MTR waveform noise/reverb only).
-- **Universal Multi-Domain Stratified Batching** ([`flaxspeaker/dataset.py`](flaxspeaker/dataset.py)): Combines multiple heterogeneous datasets (`LibriSpeech`, `CN-Celeb2`, `VoxCeleb1`) using `75%` within-domain hard-negative batches and `25%` cross-domain score-calibration batches.
+- **Mutually Exclusive SpecAugment & Multi-Style Training (MTR)** ([`flaxspeaker/specaug.py`](flaxspeaker/specaug.py)): Feature-domain multi-style noise perturbation (`SNR in [12, 20] dB`) and time/frequency masking (`SpecAugment`, up to 2 frequency masks `<= 8` mel bins and 2 time masks `<= 12` frames), strictly mutually exclusive via `augment_features_mutually_exclusive` (`35%` feature-domain MTR noise only, `32.5%` SpecAugment only, `32.5%` clean unaugmented features), plus standalone waveform-domain RIR/noise augmentation (`apply_waveform_augmentation`).
+- **Universal Multi-Domain Stratified Batching** ([`flaxspeaker/feature_extraction.py`](flaxspeaker/feature_extraction.py)): Combines multiple heterogeneous datasets (`LibriSpeech`, `CN-Celeb2`, `VoxCeleb1`) using `75%` within-domain hard-negative batches and `25%` cross-domain score-calibration batches with temperature-balanced domain sampling `p_d proportional to |S_d|^0.35`.
 - **Production Model Export** ([`flaxspeaker/export.py`](flaxspeaker/export.py), [`flaxspeaker/hf_compat.py`](flaxspeaker/hf_compat.py)): Export via `jax2tf` to **TFLite (FP32, dynamic-range INT8, full INT8)**, **TF SavedModel**, **SafeTensors**, and **HuggingFace Hub** directories (`config.json`, `model.safetensors`, `preprocessor_config.json`, auto-generated model card).
 
 ---

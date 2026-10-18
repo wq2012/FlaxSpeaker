@@ -88,32 +88,32 @@ All datasets are stored under `/usr/local/google/home/quanw/Data/speaker_dataset
 
 ### 4.1 Why Conformer Originally Underperformed — and How Conformer + ATP (`arXiv:2202.12163`) Became #1
 1. **Conformer Block Architecture (`flaxspeaker/backbones.py`)**:
-   - Implements the full Macaron-style Conformer block (`HalfStepFFN -> MultiHeadSelfAttention -> ConformerConvModule -> HalfStepFFN -> LayerNorm`) with depthwise convolution (`kernel_size = 15`), GLU gating, and Pre-LayerNorm, preceded by a 2-layer convolutional subsampling stem (`Conv1D(k=3) + GELU + LayerNorm` × 2) and sinusoidal positional encoding.
+   - Implements the Macaron-style Conformer block (`HalfStepFFN -> MultiHeadSelfAttention -> ConformerConvModule -> HalfStepFFN -> LayerNorm`) with depthwise separable convolution (`kernel_size = 15`), GLU gating, Mask-Aware GroupNorm (`G = 2` groups), and Multi-Layer Feature Aggregation (MFA), preceded by a frame-rate-preserving ($T'=T$) parallel linear + convolutional stem (`Dense(D) + SiLU(LayerNorm(Conv1D(k=3)))`) with relative local context captured by the stem and depthwise convolutions (`use_positional_encoding = False` by default).
 2. **Attentive Temporal Pooling (`ATP`, `arXiv:2202.12163`, `flaxspeaker/pooling.py`)**:
-   - Implements Wang et al. (Odyssey 2022) with a shared bottleneck `b = 128` (`z_t = tanh(W_1 h_t + b_1)`), `N_head = 4` query heads computing masked sigmoid temporal attention weights `alpha_{t,k}`, weighted mean `mu_k` and standard deviation `sigma_k` over channel subspaces (`subspace_heads = True`), concatenated across all heads (`2 * D`) and projected to `192-D`.
-   - **Impact**: Upgrading Conformer-Small from single-query ASP to 4-head ATP + ConvStem + Cosine Warmup (`1.5e-3`) reduced LibriSpeech 1-Utt EER from **`16.53%` → `9.67%`** (`3-Utt EER = 5.50%`), outperforming ECAPA-TDNN (`13.83%`).
+   - Implements Wang et al. (Odyssey 2022) with a shared bottleneck `d_a = 128` (`z_t = tanh(W_1 h_t + b_1)`), `N_h = 4` query heads computing masked sigmoid temporal attention weights `alpha_{t,k}`, weighted mean `mu_k` and standard deviation `sigma_k` over channel subspaces (`subspace_heads = True`), concatenated across all heads (`2 * D`) and passed through a nonlinear bottleneck FFN (`LayerNorm -> Dense(256) -> LayerNorm -> ReLU -> Dense(192) -> L2_norm`).
+   - **Impact**: Upgrading Conformer-Small from single-query ASP to 4-head ATP + parallel ConvStem + Cosine Warmup (`1.5e-3`) reduced LibriSpeech 1-Utt EER from **`16.53%` → `9.67%`** (`3-Utt EER = 5.50%`), outperforming ECAPA-TDNN (`13.83%`).
 
 ### 4.2 Parameter-Free Attentive Scoring (`PFAS`, `arXiv:2203.05642v3`)
-1. **Key-Value Concatenation & Global L2 Normalization (`flaxspeaker/pooling.py`, `flaxspeaker/scoring.py`)**:
-   - Given `K = 4` learnable frame-selection queries, `PfasRepresentationHead` extracts `K` L2-normalized key vectors `k_i` (`dim = 32`) and `K` value vectors `v_i = v_global + 0.25 * v_local,i` (`dim = 128`). Crucially, the `K` value vectors are concatenated (`K * d_v = 512`) and **globally L2-normalized across the concatenated vector** (`apply_global_l2_norm_to_concat_form = True`), yielding a `640-D` packed representation.
+1. **Key-Value Representation & Attention-Weighted Global Concatenated L2 Normalization (`flaxspeaker/pooling.py`, `flaxspeaker/scoring.py`)**:
+   - Given `K = 4` learnable frame-selection queries, `PfasRepresentationHead` extracts `K` L2-normalized key vectors `k_i` (`dim = 32`, `apply_l2_norm_to_keys = True`) and `K` unnormalized value vectors `v_i = v_global + 0.25 * v_local,i` (`dim = 128`, `apply_l2_norm_to_values = False`), packed into a `640-D` representation (`4 * (32 + 128)`).
 2. **Pairwise Cross-Attention & Learnable Log-Scale**:
-   - For each trial pair `(test, enroll)`, PFAS computes the cross-similarity matrix `S_{i,j} = <k_i^test, k_j^enroll>`, applies exponential/softmax attention weighting (`scale_factor = 2.0`), aligns value segments, and applies a learnable log-scale temperature (`_aux_pfas_log_scale`) during GE2E / Extended-Set Softmax training.
+   - For each trial pair `(test, enroll)`, PFAS computes the cross-similarity matrix `S_{i,j} = <k_i^test, k_j^enroll>`, computes exponential/softmax attention weights `A_{i,j}` (`scale_factor = 16.0` or learnable `_aux_pfas_log_scale`), and normalizes the aligned test and enrollment value matrices dynamically using attention-weighted global concatenated L2 norms (`norm_t = sqrt(sum_i (sum_j A_{i,j}) ||v_i^test||^2)` and `norm_e = sqrt(sum_j (sum_i A_{i,j}) ||v_j^enroll||^2)`, `apply_global_l2_norm_to_concat_form = True`).
 
 ### 4.3 Voice Activity Detection (VAD) & Automatic Gain Control (AGC) (`flaxspeaker/vad.py`)
 - Enabled identically in both training and evaluation (`vad.enabled = True`, `vad.mode = "energy"`):
-  1. Peak-normalizes waveform amplitude (`apply_agc = True`, target peak `0.98`).
-  2. `VadProcessor` computes frame log-RMS energy in dB (`25 ms` window, `10 ms` hop) and retains frames exceeding `max(-42.0 dB, noise_floor_10th_pct + 4.5 dB)`, with `min_speech_frames = 3` and `hangover_frames = 8` (`80 ms`) smoothing and a top-50% energy fallback if no frame passes.
+  1. Peak-normalizes waveform amplitude to `[-1, 1]` (`apply_agc = True`, target peak `1.0`).
+  2. `VadProcessor` computes rectangular-frame log-RMS energy in dB (`25 ms` window, `10 ms` hop) after STFT extraction and before utterance CMVN, retaining frames exceeding the 3-term dynamic threshold `max(-42.0 dB, P_95(E) - 26.0 dB, P_10(E) + 4.5 dB)` (with optional spectral flatness `<= 0.65` and speech-band `300-3400 Hz` energy ratio `>= 0.25` in `spectral`/`hybrid` modes), followed by `min_speech_frames = 3` and `hangover_frames = 8` (`80 ms`) smoothing and a top-`min(max(min_speech_frames, 8), T)` frame fallback for very quiet recordings.
 
 ### 4.4 Mutually Exclusive Data Augmentation (`flaxspeaker/specaug.py`)
-- Enforces **strict mutual exclusion** (`never_simultaneous_with_specaug = True`) on every training utterance:
-  - `35%` clean unaugmented features
-  - `40%` moderate SpecAugment *only* (1 time mask `<= 12` frames, 1 frequency mask `<= 6` mel bins)
-  - `25%` moderate acoustic noise/reverb simulation *only* (`SNR in [12, 25] dB`)
-  - Never applies SpecAugment and acoustic noise simultaneously.
+- Enforces **strict mutual exclusion** (`augment_features_mutually_exclusive`) on every training utterance in the feature domain (alongside standalone waveform-domain noise/RIR augmentation in `apply_waveform_augmentation`):
+  - `35%` moderate feature-domain multi-style noise perturbation *only* (`aug_prob = 0.35`, `SNR in [12, 20] dB`)
+  - `32.5%` SpecAugment *only* (`(1 - 0.35) * 0.50 = 0.325`, up to `2` frequency masks `<= 8` mel bins and `2` time masks `<= 12` frames, each sampled independently with probability `0.5`)
+  - `32.5%` clean unaugmented features
+  - Never applies SpecAugment and multi-style noise simultaneously.
 
 ### 4.5 Variable-Length Masked Training & Full-Sequence Inference
-- Training utterances are sampled with variable duration `L ~ Uniform(90, 180)` frames (`0.9 s` to `1.8 s`) with an explicit binary frame mask `(B, T)` propagated through every Conformer/Transformer/ECAPA-TDNN/ResNet/Mamba/LSTM layer and temporal pooling head so padded frames receive zero weight.
-- At evaluation time (`full_sequence_inference = True`), utterances up to `max_eval_seq_len = 400` frames (`4.0 s`) are encoded in a single masked forward pass.
+- Training utterances are sampled with variable duration `L ~ Uniform(80, 200)` frames (`0.8 s` to `2.0 s` in default presets; `[100, 180]` in YAML configs) with an explicit binary frame mask `(B, T)` propagated through every Conformer/Transformer/ECAPA-TDNN/ResNet/Mamba/LSTM layer and temporal pooling head so padded frames receive zero weight.
+- At evaluation time (`full_sequence_inference = True`), utterances up to `max_eval_seq_len = 500` frames (`5.0 s`) are encoded in a single masked forward pass.
 
 ---
 
