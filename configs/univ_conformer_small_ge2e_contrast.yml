@@ -123,6 +123,7 @@ model:
     se_bottleneck_dim: 64
     mfa_channels: 512
     mfa_dim: 512
+    norm_after_activation: false
   resnet:
     base_channels: 24
     stage_blocks:
@@ -183,6 +184,7 @@ model:
     residual_weight: 0.25
     add_cosine_to_network_output: true
     append_cosine_as_feature_to_network_input: true
+    append_cosine_to_final_hidden: false
     num_cosine_terms: 1
     symmetric_input: false
     layer_type: relu

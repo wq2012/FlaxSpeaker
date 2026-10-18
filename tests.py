@@ -1008,20 +1008,23 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(np.asarray(scores))))
 
     def test_paper_presets_and_foreign_path_resolution(self):
-        c_ge2e = configs.icassp2018_ge2e_config()
+        c_ge2e = configs.icassp2018_ge2e_config(paper_faithful=True)
         self.assertIs(c_ge2e.loss, c_ge2e.train.loss)
         self.assertTrue(c_ge2e.train.loss.ge2e_exact_leave_one_out)
+        self.assertEqual(c_ge2e.model.pooling.pooling_type, "last")
 
         c_dr = configs.interspeech2021_dr_vectors_config(pure_paper_mode=True)
         self.assertIs(c_dr.loss, c_dr.train.loss)
         self.assertEqual(c_dr.model.dr_vector.num_cosine_terms, 3)
         self.assertTrue(c_dr.model.dr_vector.append_cosine_to_final_hidden)
+        self.assertTrue(c_dr.model.dr_vector.skip_connect_cosine_to_readout)
         self.assertTrue(c_dr.train.loss.pure_extended_set)
 
         c_atp = configs.odyssey2022_conformer_atp_config(pure_paper_mode=True)
         self.assertIs(c_atp.loss, c_atp.train.loss)
         self.assertEqual(c_atp.model.conformer.layer_order, "conv_before_mhsa")
         self.assertFalse(c_atp.model.conformer.use_conv_stem)
+        self.assertTrue(c_atp.model.conformer.use_positional_encoding)
         self.assertEqual(c_atp.model.conformer.subsample_factor, 2)
         self.assertFalse(c_atp.model.pooling.use_global_context)
 

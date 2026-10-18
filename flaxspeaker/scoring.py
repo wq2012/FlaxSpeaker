@@ -314,6 +314,7 @@ class DecisionResidualNetwork(nn.Module):
     include_cosine_in_input: bool = True
     append_cosine_as_feature_to_network_input: bool = True
     append_cosine_to_final_hidden: bool = False
+    skip_connect_cosine_to_readout: bool = False
     add_cosine_to_network_output: bool = True
     num_cosine_terms: int = 1
     symmetric_input: bool = False
@@ -370,7 +371,7 @@ class DecisionResidualNetwork(nn.Module):
                 h = nn.LayerNorm(name=f"dr_ln_{idx}")(h)
             h = self._act_fn(h)
 
-        if self.append_cosine_to_final_hidden:
+        if self.append_cosine_to_final_hidden or self.skip_connect_cosine_to_readout:
             h = jnp.concatenate([h] + cos_feats, axis=-1)
 
         res = nn.Dense(

@@ -20,10 +20,10 @@
       },
       "num_trials": 3000,
       "num_multi_enroll_trials": 1000,
-      "train_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/train.csv",
-      "eval_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/eval.csv",
-      "trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/trials.tsv",
-      "multi_trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/librispeech/multi_enroll_trials.tsv"
+      "train_csv": "data/speaker_datasets/splits/librispeech/train.csv",
+      "eval_csv": "data/speaker_datasets/splits/librispeech/eval.csv",
+      "trials_file": "data/speaker_datasets/splits/librispeech/trials.tsv",
+      "multi_trials_file": "data/speaker_datasets/splits/librispeech/multi_enroll_trials.tsv"
     },
     "cnceleb2": {
       "train_stats": {
@@ -44,10 +44,10 @@
       },
       "num_trials": 3000,
       "num_multi_enroll_trials": 1000,
-      "train_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/cnceleb2/train.csv",
-      "eval_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/cnceleb2/eval.csv",
-      "trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/cnceleb2/trials.tsv",
-      "multi_trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/cnceleb2/multi_enroll_trials.tsv"
+      "train_csv": "data/speaker_datasets/splits/cnceleb2/train.csv",
+      "eval_csv": "data/speaker_datasets/splits/cnceleb2/eval.csv",
+      "trials_file": "data/speaker_datasets/splits/cnceleb2/trials.tsv",
+      "multi_trials_file": "data/speaker_datasets/splits/cnceleb2/multi_enroll_trials.tsv"
     },
     "voxceleb1": {
       "total_stats": {
@@ -76,12 +76,12 @@
       },
       "num_split_trials": 2000,
       "num_official_veri_test2_trials": 2500,
-      "train_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/voxceleb1/train.csv",
-      "eval_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/voxceleb1/eval.csv",
-      "trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/voxceleb1/trials.tsv",
-      "official_trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/voxceleb1/vox1_o_official_2500.tsv",
+      "train_csv": "data/speaker_datasets/splits/voxceleb1/train.csv",
+      "eval_csv": "data/speaker_datasets/splits/voxceleb1/eval.csv",
+      "trials_file": "data/speaker_datasets/splits/voxceleb1/trials.tsv",
+      "official_trials_file": "data/speaker_datasets/splits/voxceleb1/vox1_o_official_2500.tsv",
       "num_multi_enroll_trials": 1000,
-      "multi_trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/voxceleb1/multi_enroll_trials.tsv"
+      "multi_trials_file": "data/speaker_datasets/splits/voxceleb1/multi_enroll_trials.tsv"
     },
     "universal": {
       "domains": [
@@ -107,10 +107,10 @@
       },
       "num_trials": 8000,
       "num_multi_enroll_trials": 3000,
-      "train_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/train.csv",
-      "eval_csv": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/eval.csv",
-      "trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/trials.tsv",
-      "multi_trials_file": "/usr/local/google/home/quanw/Data/speaker_datasets/splits/universal/multi_enroll_trials.tsv"
+      "train_csv": "data/speaker_datasets/splits/universal/train.csv",
+      "eval_csv": "data/speaker_datasets/splits/universal/eval.csv",
+      "trials_file": "data/speaker_datasets/splits/universal/trials.tsv",
+      "multi_trials_file": "data/speaker_datasets/splits/universal/multi_enroll_trials.tsv"
     }
   },
   "experiments": {

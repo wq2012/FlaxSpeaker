@@ -1,4 +1,5 @@
 {
+  "_explicit_embedding_dim": true,
   "backbone": "ecapa_tdnn",
   "embedding_dim": 256,
   "experiment_dict": {
@@ -6,6 +7,7 @@
       "audio_format": ".flac",
       "dataset_name": "librispeech",
       "dataset_type": "librispeech",
+      "domain_temp_alpha": 0.35,
       "speaker_label_index": -2,
       "test_csv": "data/speaker_datasets/splits/librispeech/eval.csv",
       "test_dir": "",
@@ -13,7 +15,8 @@
       "train_csv": "data/speaker_datasets/splits/librispeech/train.csv",
       "train_dir": "",
       "train_librispeech_dir": "",
-      "trials_file": "data/speaker_datasets/splits/librispeech/trials.tsv"
+      "trials_file": "data/speaker_datasets/splits/librispeech/trials.tsv",
+      "within_domain_prob": 0.75
     },
     "eval": {
       "apply_as_norm": false,
@@ -56,6 +59,8 @@
       "stack_right_context": 0
     },
     "loss": {
+      "ext_softmax_normalize_by_num_speakers": true,
+      "ext_softmax_row_softmax_weight": 0.5,
       "ge2e_exact_leave_one_out": true,
       "ge2e_init_b": -5.0,
       "ge2e_init_w": 10.0,
@@ -72,6 +77,7 @@
       "num_classes": 256,
       "num_speakers_per_batch": 8,
       "num_utts_per_speaker": 4,
+      "pure_extended_set": false,
       "scale": 30.0,
       "scoring_type": "cosine",
       "sphereface_lambda_base": 1000.0,
@@ -103,6 +109,7 @@
         "activation": "relu",
         "add_cosine_to_network_output": true,
         "append_cosine_as_feature_to_network_input": true,
+        "append_cosine_to_final_hidden": false,
         "hidden_dims": [
           128,
           64
@@ -115,6 +122,7 @@
         ],
         "num_cosine_terms": 1,
         "residual_weight": 0.25,
+        "symmetric_input": false,
         "use_layer_norm": true
       },
       "ecapa_tdnn": {
@@ -134,6 +142,7 @@
         ],
         "mfa_channels": 768,
         "mfa_dim": 768,
+        "norm_after_activation": false,
         "scale": 4,
         "se_bottleneck_dim": 64,
         "se_channels": 64
@@ -152,6 +161,7 @@
         "use_layer_norm": true
       },
       "mamba": {
+        "bidirectional": false,
         "conv_kernel_size": 4,
         "d_conv": 4,
         "d_state": 16,
@@ -175,11 +185,13 @@
         "attention_dim": 128,
         "attention_type": "shared_nonlinear",
         "key_dim": 32,
+        "local_value_scale": 0.25,
         "normalize_keys_and_values": false,
         "normalize_overall_output": false,
         "num_keys": 4,
         "per_trial_softmax": true,
         "scale_factor": 16.0,
+        "use_global_anchor": true,
         "use_keys_and_queries": false,
         "use_trainable_scale_factor": true,
         "value_dim": 128
@@ -245,6 +257,8 @@
       "grad_clip_norm": 3.0,
       "learning_rate": 0.0012,
       "loss": {
+        "ext_softmax_normalize_by_num_speakers": true,
+        "ext_softmax_row_softmax_weight": 0.5,
         "ge2e_exact_leave_one_out": true,
         "ge2e_init_b": -5.0,
         "ge2e_init_w": 10.0,
@@ -261,6 +275,7 @@
         "num_classes": 256,
         "num_speakers_per_batch": 8,
         "num_utts_per_speaker": 4,
+        "pure_extended_set": false,
         "scale": 30.0,
         "scoring_type": "cosine",
         "sphereface_lambda_base": 1000.0,
@@ -279,6 +294,7 @@
       "num_utts_per_spk": 4,
       "optimizer": "adamw",
       "save_model_frequency": 0,
+      "saved_model_dir": "",
       "seed": 42,
       "specaug": {
         "apply_prob": 0.5,

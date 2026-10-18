@@ -471,5 +471,10 @@ def build_demo() -> Any:
 
 
 if __name__ == "__main__":
+    import inspect
+
     app = build_demo()
-    app.launch()
+    launch_kwargs: dict[str, Any] = {"ssr_mode": False}
+    if gr is not None and "theme" in inspect.signature(app.launch).parameters:
+        launch_kwargs["theme"] = gr.themes.Soft()
+    app.launch(**launch_kwargs)

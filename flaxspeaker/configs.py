@@ -353,6 +353,14 @@ class DrVectorConfig:
     layer_type: str = "relu"
     num_cells: tuple[int, ...] = (128, 64)
 
+    @property
+    def skip_connect_cosine_to_readout(self) -> bool:
+        return self.append_cosine_to_final_hidden
+
+    @skip_connect_cosine_to_readout.setter
+    def skip_connect_cosine_to_readout(self, value: bool) -> None:
+        self.append_cosine_to_final_hidden = bool(value)
+
 
 @dataclasses.dataclass
 class LossConfig:
@@ -750,15 +758,25 @@ def _update_dataclass(instance: Any, updates: dict[str, Any]) -> None:
                 setattr(instance, k, tuple(v))
             else:
                 setattr(instance, k, v)
+        elif hasattr(type(instance), k) and isinstance(
+            getattr(type(instance), k), property
+        ):
+            setattr(instance, k, v)
 
 
 def icassp2018_ge2e_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
+    pure_paper_mode: bool = True,
+    paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
     """Preset for Generalized End-to-End (GE2E) Loss (Wan et al., ICASSP 2018, arXiv:1710.10467)."""
+    if paper_faithful is not None:
+        pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
     cfg.model.backbone = BackboneType.LSTM.value
-    cfg.model.pooling.pooling_type = PoolingType.ASP.value
+    cfg.model.pooling.pooling_type = (
+        PoolingType.LAST.value if pure_paper_mode else PoolingType.ASP.value
+    )
     cfg.model.scoring_type = ScoringType.COSINE.value
     cfg.model.apply_size_variant(size)
     cfg.train.loss.loss_type = LossType.GE2E_SOFTMAX.value
@@ -772,8 +790,11 @@ def interspeech2021_dr_vectors_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
     backbone: str = BackboneType.CONFORMER.value,
     pure_paper_mode: bool = True,
+    paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
     """Preset for Dr-Vectors & Extended-Set Softmax (Pelecanos et al., Interspeech 2021, arXiv:2104.01989)."""
+    if paper_faithful is not None:
+        pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
     cfg.model.backbone = backbone
     cfg.model.pooling.pooling_type = (
@@ -797,8 +818,11 @@ def interspeech2021_dr_vectors_config(
 def odyssey2022_conformer_atp_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
     pure_paper_mode: bool = True,
+    paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
     """Preset for Conformer + Attentive Temporal Pooling (Wang et al., Odyssey 2022, arXiv:2202.12163)."""
+    if paper_faithful is not None:
+        pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
     cfg.model.backbone = BackboneType.CONFORMER.value
     cfg.model.pooling.pooling_type = PoolingType.ATP.value
@@ -807,6 +831,7 @@ def odyssey2022_conformer_atp_config(
     if pure_paper_mode:
         cfg.model.conformer.layer_order = "conv_before_mhsa"
         cfg.model.conformer.use_conv_stem = False
+        cfg.model.conformer.use_positional_encoding = True
         cfg.model.conformer.subsample_factor = 2
         cfg.model.pooling.use_global_context = False
         cfg.model.pooling.share_params = True
@@ -821,8 +846,11 @@ def odyssey2022_pfas_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
     loss_type: str = LossType.GE2E_SOFTMAX.value,
     pure_paper_mode: bool = True,
+    paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
     """Preset for Parameter-Free Attentive Scoring (Pelecanos et al., Odyssey 2022, arXiv:2203.05642v3)."""
+    if paper_faithful is not None:
+        pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
     cfg.model.backbone = BackboneType.CONFORMER.value
     cfg.model.pooling.pooling_type = PoolingType.PFAS.value
@@ -838,6 +866,11 @@ def odyssey2022_pfas_config(
     cfg.train.loss.scoring_type = ScoringType.PFAS.value
     cfg.loss = cfg.train.loss
     return cfg
+
+
+icassp2018_lstm_ge2e_config = icassp2018_ge2e_config
+interspeech2021_lstm_dr_vectors_config = interspeech2021_dr_vectors_config
+odyssey2022_conformer_pfas_config = odyssey2022_pfas_config
 
 
 def universal_multi_domain_config(

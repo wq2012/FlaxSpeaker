@@ -621,8 +621,19 @@ def draw_benchmark_charts(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo_root", type=str, default=REPO_ROOT)
-    parser.add_argument("--paper_fig_dir", type=str, default=DEFAULT_PAPER_FIG_DIR)
+    parser.add_argument("--repo_root", "--repo-root", type=str, default=REPO_ROOT)
+    parser.add_argument(
+        "--paper_fig_dir",
+        "--paper-fig-dir",
+        "--output-dir",
+        "--output_dir",
+        dest="paper_fig_dir",
+        type=str,
+        default=DEFAULT_PAPER_FIG_DIR,
+    )
+    parser.add_argument("--benchmark-json", type=str, default=None)
+    parser.add_argument("--ablation-json", type=str, default=None)
+    parser.add_argument("--vox1o-json", type=str, default=None)
     args = parser.parse_args()
     draw_architecture_diagram(args.repo_root, args.paper_fig_dir)
     draw_benchmark_charts(args.repo_root, args.paper_fig_dir)

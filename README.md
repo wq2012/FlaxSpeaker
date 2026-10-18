@@ -40,13 +40,13 @@ All backbones share a unified `(B, T, F) -> (B, T, D)` frame-rate-preserving seq
 - **Self-Attentive Pooling** (`sap`) & **Attentive Statistics Pooling** (`asp`): Softmax attention-weighted frame mean and standard deviation.
 - **Mean Pooling** (`mean`), **Last-Frame Pooling** (`last`), & **Temporal Statistics Pooling** (`stats`).
 - **Cumulative Statistics Pooling** (`cumulative_stats`): Frame-wise causal running statistics for streaming inference.
-- **Parameter-Free Attentive Scoring Head** (`pfas`): Global `ATP` bottleneck value anchor + multi-head `(K, V)` residual projection with per-key L2-normalization and trial-time attention-weighted global concatenated L2-normalization ([Pelecanos et al., Odyssey 2022, `arXiv:2203.05642v3`](https://arxiv.org/pdf/2203.05642v3)).
+- **Parameter-Free Attentive Scoring Head** (`pfas`): Global `ATP` bottleneck value anchor + multi-head `(K, V)` residual projection with per-key L2-normalization, pooling-time unweighted concatenated value L2-normalization (`[v_1; ...; v_K]`), and trial-time attention-weighted concatenated value L2-normalization ([Pelecanos et al., Odyssey 2022, `arXiv:2203.05642v3`](https://arxiv.org/pdf/2203.05642v3)).
 
 ### 3. Nine Speaker Recognition Losses & Three Scoring Backends ([`flaxspeaker/losses.py`](flaxspeaker/losses.py), [`flaxspeaker/scoring.py`](flaxspeaker/scoring.py))
 - **Generalized End-to-End (GE2E) Loss**: `ge2e_softmax` and `ge2e_contrast` with learnable scale `w` and bias `b` ([Wan et al., ICASSP 2018](https://arxiv.org/pdf/1710.10467)).
-- **Extended-Set (Multi-Row) Softmax Loss**: `extended_set_softmax` for training with negative prototype banks, supporting both pure Eq. (3) and a 50/50 split-batch blend with speaker-count scaling `-log(N)` ([Pelecanos et al., Interspeech 2021](https://arxiv.org/pdf/2104.01989)).
-- **Decision Residual Networks (Dr-Vectors)**: `scoring_type: dr_vector` — single-stage end-to-end residual feed-forward network scoring `[e_t, e_e, cos(e_t, e_e)]` (or 3-term `[e_t, e_e, cos(e_t, e_e), cos(e_e, e_e), cos(e_t, e_t)]`) ([arXiv:2104.01989](https://arxiv.org/pdf/2104.01989)).
-- **Parameter-Free Attentive Scoring (PFAS)**: `scoring_type: pfas` — asymmetric cross-attention between test and enrollment `(K, V)` representations with learnable temperature scaling and seamless multi-utterance enrollment averaging ([Pelecanos et al., Odyssey 2022](https://arxiv.org/pdf/2203.05642v3)).
+- **Extended-Set (Multi-Row) Softmax Loss**: `extended_set_softmax` for training with negative prototype banks, supporting both pure Eq. (3) (`pure_extended_set: true`) and a 50/50 split-batch row+column blend (`pure_extended_set: false`, default) with speaker-count scaling `-log(N)` ([Pelecanos et al., Interspeech 2021](https://arxiv.org/pdf/2104.01989)).
+- **Decision Residual Networks (Dr-Vectors)**: `scoring_type: dr_vector` — single-stage end-to-end residual feed-forward network scoring `[e_t, e_e, c]` (`num_cosine_terms: 1`, default) or 3-term non-linear cosine features `[e_t, e_e, c, c^2, sqrt(max(c, 0))]` where `c = cos(e_t, e_e)` (`num_cosine_terms: 3`, Eq. 7 of Pelecanos et al., 2021), with optional skip-concatenation of cosine features to the final hidden representation (`append_cosine_to_final_hidden: true`, Fig. 1 of [arXiv:2104.01989](https://arxiv.org/pdf/2104.01989)).
+- **Parameter-Free Attentive Scoring (PFAS)**: `scoring_type: pfas` — asymmetric cross-attention between test and enrollment `(K, V)` representations with normalized key-key attention weights `A_{ij}`, learnable temperature scaling, and seamless multi-utterance enrollment averaging ([Pelecanos et al., Odyssey 2022](https://arxiv.org/pdf/2203.05642v3)).
 - **Angular Margin Classification Losses**:
   - **ArcFace / AAM-Softmax** (`arcface`): `cos(theta + m)`
   - **CosFace / AM-Softmax** (`cosface`): `cos(theta) - m`
@@ -78,7 +78,7 @@ pip install -e ".[dev,export,hf]"
 
 ## Quickstart & CLI Workflows
 
-FlaxSpeaker provides five standalone command-line scripts in [`scripts/`](scripts/) in addition to `python -m flaxspeaker`:
+FlaxSpeaker provides standalone command-line scripts in [`scripts/`](scripts/) covering the full dataset preparation, training, evaluation, ablation, figure generation, and deployment lifecycle (in addition to `python -m flaxspeaker`):
 
 ### 1. Prepare Datasets & Multi-Domain Splits (`scripts/prepare_datasets.py` / `scripts/prepare_data.py`)
 Generate speaker-disjoint `train.csv`, `eval.csv`, single-utterance `trials.tsv`, 3-utterance `multi_enroll_trials.tsv`, and precomputed feature caches for **LibriSpeech**, **CN-Celeb2**, **VoxCeleb1**, and the combined **Universal** multi-domain split:
@@ -104,8 +104,8 @@ python scripts/train.py \
   --output_dir ./checkpoints/univ_conformer_small_ge2e
 ```
 
-### 3. Evaluate 1-Utt and 3-Utt Verification Trials (`scripts/evaluate.py`)
-Compute 1-utterance and 3-utterance EER (%), `minDCF@0.01`, `minDCF@0.05`, `minDCF@0.10`, ROC-AUC, and 95% bootstrap confidence intervals using any [Hugging Face Hub model ID (`wq2012/<model_id>`)](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) or local checkpoint directory:
+### 3. Evaluate 1-Utt, 3-Utt, and Official `VoxCeleb1-O` (`veri_test2.txt`) Trials (`scripts/evaluate.py` / `scripts/eval_voxceleb1_official.py`)
+Compute 1-utterance and 3-utterance EER (%), `minDCF@0.01`, `minDCF@0.05`, `minDCF@0.10`, ROC-AUC, and 95% bootstrap confidence intervals using any [Hugging Face Hub model ID (`wq2012/<model_id>`)](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) or local checkpoint directory, as well as the speaker-disjoint official `VoxCeleb1-O` (`veri_test2.txt`) trial list:
 
 ```bash
 python scripts/evaluate.py \
@@ -113,6 +113,12 @@ python scripts/evaluate.py \
   --trials_file ./data/speaker_datasets/splits/universal/trials.tsv \
   --multi_trials_file ./data/speaker_datasets/splits/universal/multi_enroll_trials.tsv \
   --output_json eval_summary.json
+
+# Evaluate all 44 models on the speaker-disjoint official VoxCeleb1-O (veri_test2.txt) protocol
+python scripts/eval_voxceleb1_official.py \
+  --data-root ./data/speaker_datasets \
+  --pretrained-dir ./pretrained_models \
+  --output-json ./pretrained_models/voxceleb1_o_official_results.json
 ```
 
 ### 4. Run End-to-End Speaker Verification Inference (`scripts/inference.py`)
@@ -125,13 +131,29 @@ python scripts/inference.py \
   --test_audio hf_space/examples/librispeech_spk1_utt2.flac
 ```
 
-### 5. Export to HuggingFace Hub & TFLite (`scripts/export_model.py`)
+### 5. Export to HuggingFace Hub & TFLite (`scripts/export_model.py` / `scripts/publish_hf.py`)
 ```bash
 python scripts/export_model.py \
   --model_dir wq2012/univ_conformer_small_ge2e \
   --output_dir ./exported_models/univ_conformer_small_ge2e \
   --export_tflite \
   --quantize_int8
+```
+
+### 6. Reproduce Full 44-Model Benchmark Suite, Controlled Ablations & Paper Figures (`scripts/run_benchmark_suite.py`, `scripts/run_r1_ablations.py`, `scripts/generate_figures.py`, `scripts/generate_demo_examples.py`)
+```bash
+# Run the complete 44-model benchmark matrix across all domains
+python scripts/run_benchmark_suite.py --data-root ./data/speaker_datasets
+
+# Reproduce the 5 controlled ablation studies (pretrained_models/ablation_results.json)
+python scripts/run_r1_ablations.py --data-root ./data/speaker_datasets
+
+# Regenerate all 6 paper figures from the JSON benchmark & ablation artifacts
+python scripts/generate_figures.py \
+  --benchmark-json pretrained_models/benchmark_results.json \
+  --ablation-json pretrained_models/ablation_results.json \
+  --vox1o-json pretrained_models/voxceleb1_o_official_results.json \
+  --output-dir ./figures
 ```
 
 ---

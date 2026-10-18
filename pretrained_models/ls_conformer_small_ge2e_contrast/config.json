@@ -109,6 +109,7 @@
         "activation": "relu",
         "add_cosine_to_network_output": true,
         "append_cosine_as_feature_to_network_input": true,
+        "append_cosine_to_final_hidden": false,
         "hidden_dims": [
           128,
           64
@@ -141,6 +142,7 @@
         ],
         "mfa_channels": 512,
         "mfa_dim": 512,
+        "norm_after_activation": false,
         "scale": 4,
         "se_bottleneck_dim": 64,
         "se_channels": 64

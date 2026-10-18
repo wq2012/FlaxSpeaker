@@ -127,15 +127,21 @@ def main() -> None:
                 info = ds_summary[dname]
                 c_dir = os.path.join(args.data_root, "feature_cache", dname)
                 cache = feature_extraction.FeatureCache(frontend, cache_dir=c_dir)
-                t_1 = dataset.load_trials_file(info["trials_file"])
+                t_1 = dataset.load_trials_file(
+                    dataset.resolve_data_path(info["trials_file"])
+                )
                 domains_1utt[dname] = evaluation.evaluate_verification_trials(
                     model.state, t_1, exp_cfg, feature_cache=cache
                 )
-                if "multi_trials_file" in info and os.path.exists(info["multi_trials_file"]):
-                    t_3 = _load_multi_enroll_trials(info["multi_trials_file"])
-                    domains_3utt[dname] = evaluation.evaluate_multi_enroll_trials(
-                        model.state, t_3, exp_cfg, feature_cache=cache
+                if "multi_trials_file" in info:
+                    multi_trials_path = dataset.resolve_data_path(
+                        info["multi_trials_file"]
                     )
+                    if os.path.exists(multi_trials_path):
+                        t_3 = _load_multi_enroll_trials(multi_trials_path)
+                        domains_3utt[dname] = evaluation.evaluate_multi_enroll_trials(
+                            model.state, t_3, exp_cfg, feature_cache=cache
+                        )
             results["multi_domain_1utt"] = domains_1utt
             results["multi_domain_3utt"] = domains_3utt
 
