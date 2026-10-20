@@ -47,6 +47,10 @@ All 44 selectable checkpoints were trained for **400 gradient steps × 32 uttera
 
 The dropdown lists all 44 checkpoints: **19 universal multi-domain models** (`univ_*`, trained jointly on LibriSpeech + CN-Celeb2 + VoxCeleb1 with domain-balanced batching) and **25 single-domain specialists** (`ls_*` LibriSpeech-only, `cn_*` CN-Celeb2-only, `vox_*` VoxCeleb1-only). The default `univ_conformer_tiny_ge2e` (0.69 M parameters) has the lowest pooled 1-utt EER (18.75%) and the best VoxCeleb1-O-subset EER among universal models (23.94%) in `pretrained_models/benchmark_results.json`. Per-model numbers, confidence intervals, and a per-checkpoint "Deviations from the source papers" section are in each model card.
 
+## Hosting status
+
+This folder is a complete Gradio Space, but **no public Space is currently hosted** under `wq2012`: the Hub returns HTTP 402 for Gradio Spaces on the free tier (PRO subscription required). `scripts/deploy_hf_space.py` deploys it to any namespace that can host Gradio Spaces.
+
 ## Running locally
 
 ```bash

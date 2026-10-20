@@ -194,7 +194,7 @@ cfg = universal_multi_domain_config(
 
 ## Interactive Gradio Demo (`hf_space/`)
 
-An interactive [Gradio 5.50.0](https://gradio.app) web application is included in [`hf_space/`](hf_space/) featuring:
+An interactive [Gradio 5.50.0](https://gradio.app) web application is included in [`hf_space/`](hf_space/). **It is not hosted on the Hugging Face Hub**: creating a Gradio Space under `wq2012` currently returns HTTP 402 (free CPU Spaces require a PRO subscription), so run it locally (`python hf_space/app.py`) or deploy it yourself with `python scripts/deploy_hf_space.py --repo_id <your-namespace>/FlaxSpeaker`. Features:
 - Real inference only (no precomputed outputs) with a model selector across all 44 Universal Multi-Domain (`univ_*`) and Single-Domain (`ls_*`, `cn_*`, `vox_*`) checkpoints from [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (`Cosine`, `PFAS`, and `Dr-Vectors` scoring).
 - The decision threshold defaults to the selected model's **own pooled 1-utt EER operating point** from `eval_results.json` (slider range adapts to the scoring back-end); latency is reported as steady-state model inference after a JIT warm-up.
 - 1-utterance and 3-utterance speaker enrollment with real speech samples from **LibriSpeech**, **CN-Celeb2**, and **VoxCeleb1**; waveform + VAD gate, post-VAD log-Mel spectrogram, and embedding-profile plots.
