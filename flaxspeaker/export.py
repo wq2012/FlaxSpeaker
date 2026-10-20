@@ -27,17 +27,17 @@ def _resolve_export_seq_len(
 ) -> int:
     if seq_len is not None and seq_len > 0:
         return int(seq_len)
+    # Precedence: explicit argument > `export.sequence_length` (if > 0) > `model.seq_len`.
+    # No magic sentinel values: any positive `export.sequence_length` is honoured.
     model_cfg = getattr(myconfig, "model", None)
     export_cfg = getattr(myconfig, "export", None)
     if export_cfg is not None and hasattr(export_cfg, "sequence_length"):
         exp_seq_len = int(getattr(export_cfg, "sequence_length"))
-        if exp_seq_len > 0 and (exp_seq_len != 100 or model_cfg is None or not hasattr(model_cfg, "seq_len")):
+        if exp_seq_len > 0:
             return exp_seq_len
     if model_cfg is not None and hasattr(model_cfg, "seq_len"):
         return int(getattr(model_cfg, "seq_len"))
-    if export_cfg is not None and hasattr(export_cfg, "sequence_length"):
-        return int(getattr(export_cfg, "sequence_length"))
-    return 100
+    return 180
 
 
 def _make_tf_module(

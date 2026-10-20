@@ -1,6 +1,6 @@
 """Spectrum augmentation (SpecAugment) and Multi-Style Training (MTR) waveform/feature augmentation.
 
-Enforces the strict speaker recognition rule (cf. Google SID / arXiv:2202.12163):
+Enforces mutual exclusion between feature-domain noise augmentation and SpecAugment:
 - Additive noise SNR is kept moderate (e.g., 8 to 20 dB; never too high).
 - SpecAugment and Multi-Style Training (MTR waveform/noise/reverb augmentation)
   are NEVER applied to the same utterance simultaneously; SpecAugment is applied
@@ -226,12 +226,14 @@ def apply_feature_mtr_augmentation(
     waveform_aug_config: Any,
     rng: Optional[np.random.Generator] = None,
 ) -> tuple[np.ndarray, bool]:
-    """Applies calibrated Multi-Style Training (MTR) in the standardized log-Mel domain.
+    """Feature-domain "MTR" noise augmentation in the standardized log-Mel domain.
 
-    Simulates mild room reverberation (temporal RIR smoothing across adjacent frames)
-    and additive colored/babble noise at moderate SNR `[12, 22]` dB (`noise_scale`
-    in `[0.035, 0.11]`, gated by low-energy frames so noise is never too high),
-    followed by zero-mean centering.
+    This is NOT waveform-domain multi-style training with recorded noises and room
+    impulse responses. It applies (i) with probability `reverb_prob` a one-tap
+    temporal smoothing of adjacent frames and (ii) frequency-shaped Gaussian noise
+    with amplitude `0.45 * 10^(-SNR/20)` for `SNR ~ U(snr_min_db, snr_max_db)`,
+    sigmoid-gated towards low-energy time-frequency bins, followed by per-utterance
+    mean re-centering.
 
     Returns:
         (augmented_features, was_augmented)
@@ -260,10 +262,10 @@ def apply_feature_mtr_augmentation(
         reverb[1:] = (1.0 - alpha_rev) * out[1:] + alpha_rev * out[:-1]
         out = reverb
 
-    # 2. Moderate SNR additive noise (SNR floor >= 12 dB so noise is never too high)
-    snr_min_db = max(12.0, float(_get_attr(waveform_aug_config, "snr_min_db", 12.0)))
+    # 2. Additive noise at an SNR sampled from the *configured* range (no hidden clamp).
+    snr_min_db = float(_get_attr(waveform_aug_config, "snr_min_db", 12.0))
     snr_max_db = max(
-        snr_min_db + 2.0, float(_get_attr(waveform_aug_config, "snr_max_db", 22.0))
+        snr_min_db, float(_get_attr(waveform_aug_config, "snr_max_db", 20.0))
     )
     target_snr_db = _rand_uniform(snr_min_db, snr_max_db, rng)
     noise_scale = 0.45 * (10.0 ** (-target_snr_db / 20.0))
@@ -301,7 +303,7 @@ def augment_features_mutually_exclusive(
 ) -> tuple[np.ndarray, str]:
     """Applies either MTR augmentation OR SpecAugment (never both on the same utterance).
 
-    Following best practice in speaker recognition (`SpecAugOnClean`, arXiv:2202.12163):
+    Mutually exclusive augmentation (a FlaxSpeaker design choice):
     1. If the utterance is already MTR-augmented (`is_already_mtr=True`), SpecAugment is
        strictly skipped and `(features, "mtr")` is returned.
     2. Otherwise, if `waveform_aug_config` is enabled, MTR is sampled with probability

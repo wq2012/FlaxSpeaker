@@ -106,6 +106,9 @@ def make_exp_config(
     lr_val = 1.2e-3 if str(size_variant).lower() == "base" else learning_rate
     cfg.train.num_steps = num_steps
     cfg.train.learning_rate = lr_val
+    # End value of the cosine schedule used for every released checkpoint
+    # (1.5e-5 for lr = 1.5e-3; 1.2e-5 for the `base` models).
+    cfg.train.min_learning_rate = max(1e-5, 0.01 * lr_val)
     cfg.train.warmup_steps = max(10, num_steps // 10)
     cfg.train.batch_size = 32
     cfg.train.save_model_frequency = 0
@@ -256,9 +259,13 @@ def run_all_benchmarks(
     caches["universal"] = univ_cache
     preloaded_train_domains: set[str] = set()
 
-    # Also load official VoxCeleb1-O trials (4,000 trials on 40 test speakers, for models not trained on VoxCeleb1)
+    # VoxCeleb1-O 10-speaker subset trials (filtered veri_test2.txt over the 10 held-out
+    # eval speakers; NOT the published 37,720-trial protocol). The canonical evaluation of
+    # all 44 models on this subset is `scripts/eval_vox1_o_subset.py`.
     vox_official_trials = dataset.load_trials_file(
-        ds_summary["voxceleb1"]["official_trials_file"]
+        ds_summary["voxceleb1"].get(
+            "vox1_o_10spk_subset_trials_file", ds_summary["voxceleb1"].get("official_trials_file", "")
+        )
     )
 
     # Define experiment suite (25 single-domain + 19 universal multi-domain = 44 models)
@@ -423,7 +430,7 @@ def run_all_benchmarks(
                 cached_rec["multi_enroll_3utt_eval"] = md_eval["domains_3utt"].get(primary_dom)
                 cached_rec["multi_domain_eval"] = md_eval
                 if dname == "librispeech":
-                    existing_vox_o = cached_rec.get("cross_dataset_eval", {}).get("voxceleb1_o_official")
+                    existing_vox_o = cached_rec.get("cross_dataset_eval", {}).get("vox1_o_10spk_subset")
                     if not existing_vox_o:
                         vox_o_metrics = evaluation.evaluate_verification_trials(
                             state,
@@ -432,7 +439,7 @@ def run_all_benchmarks(
                             feature_cache=caches["voxceleb1"],
                             precomputed_embeddings=shared_embs,
                         )
-                        cached_rec.setdefault("cross_dataset_eval", {})["voxceleb1_o_official"] = vox_o_metrics
+                        cached_rec.setdefault("cross_dataset_eval", {})["vox1_o_10spk_subset"] = vox_o_metrics
                     cached_rec.setdefault("cross_dataset_eval", {})[
                         "cnceleb2_zero_shot"
                     ] = md_eval["domains_1utt"]["cnceleb2"]
@@ -585,7 +592,7 @@ def run_all_benchmarks(
                 feature_cache=caches["voxceleb1"],
                 precomputed_embeddings=shared_embs,
             )
-            cross_eval["voxceleb1_o_official"] = vox_o_metrics
+            cross_eval["vox1_o_10spk_subset"] = vox_o_metrics
             cross_eval["cnceleb2_zero_shot"] = md_eval["domains_1utt"]["cnceleb2"]
 
         exp_record = {

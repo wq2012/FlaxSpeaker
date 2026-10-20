@@ -215,6 +215,11 @@ def build_modern_encoder_from_config(
             ),
             "use_conv_stem": getattr(m_cfg.conformer, "use_conv_stem", True),
             "use_group_norm": getattr(m_cfg.conformer, "use_group_norm", True),
+            "layer_order": str(getattr(m_cfg.conformer, "layer_order", "mhsa_before_conv")),
+            "subsample_factor": int(getattr(m_cfg.conformer, "subsample_factor", 1)),
+            "subsample_after_layer": int(
+                getattr(m_cfg.conformer, "subsample_after_layer", 3)
+            ),
         }
     elif b_type == "mamba":
         b_kwargs = {
@@ -257,6 +262,11 @@ def build_modern_encoder_from_config(
             "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
             "atp_num_heads": getattr(m_cfg.pooling, "num_heads", 4),
             "attention_type": m_cfg.pfas.attention_type,
+            "atp_ffn_use_layer_norm": bool(
+                getattr(m_cfg.pfas, "atp_ffn_use_layer_norm", True)
+            ),
+            "atp_attention_dim": int(getattr(m_cfg.pooling, "attention_dim", 128)),
+            "atp_subspace_heads": bool(getattr(m_cfg.pooling, "subspace_heads", True)),
             "apply_l2_norm_to_keys": getattr(
                 m_cfg.pfas, "apply_l2_norm_to_keys", True
             ),
@@ -332,8 +342,9 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
     """Create Optax optimizer with optional warmup cosine schedule and grad clip."""
     train_cfg = getattr(myconfig, "train", myconfig)
     lr = float(getattr(train_cfg, "learning_rate", 1e-3))
-    min_lr = float(getattr(train_cfg, "min_learning_rate", lr * 0.05))
-    end_lr = min(lr, max(min_lr, lr * 0.01))
+    # `min_learning_rate` is honoured exactly (end value of the cosine schedule).
+    min_lr = float(getattr(train_cfg, "min_learning_rate", lr * 0.01))
+    end_lr = min(lr, max(min_lr, 0.0))
     opt_name = str(getattr(train_cfg, "optimizer", "adam")).lower()
     weight_decay = float(getattr(train_cfg, "weight_decay", 0.0))
     grad_clip = float(getattr(train_cfg, "grad_clip_norm", 0.0))
@@ -413,10 +424,11 @@ def create_train_state(
             "extended_set_softmax",
             "pairwise",
         ):
+            # No hidden overrides: `ge2e_init_w` / `ge2e_init_b` are used verbatim for
+            # every GE2E-style loss (the released `*_ge2e_contrast` configs set
+            # `ge2e_init_b = -1.0` explicitly).
             init_w = float(loss_cfg.ge2e_init_w)
             init_b = float(loss_cfg.ge2e_init_b)
-            if loss_type == "ge2e_contrast" and init_b == -5.0:
-                init_b = -1.0
             params["_aux_w"] = jnp.array(init_w, dtype=jnp.float32)
             params["_aux_b"] = jnp.array(init_b, dtype=jnp.float32)
 
@@ -431,25 +443,7 @@ def create_train_state(
 
         # Initialize Decision Residual Network (Dr-Vectors) parameters if enabled
         if scoring_type == "dr_vector":
-            dr_cfg = exp_cfg.model.dr_vector
-            dr_net = scoring.DecisionResidualNetwork(
-                hidden_dims=tuple(dr_cfg.hidden_dims),
-                activation=dr_cfg.activation,
-                use_layer_norm=dr_cfg.use_layer_norm,
-                include_cosine_in_input=dr_cfg.include_cosine_in_input,
-                append_cosine_as_feature_to_network_input=getattr(
-                    dr_cfg, "append_cosine_as_feature_to_network_input", True
-                ),
-                append_cosine_to_final_hidden=bool(
-                    getattr(dr_cfg, "append_cosine_to_final_hidden", False)
-                ),
-                add_cosine_to_network_output=getattr(
-                    dr_cfg, "add_cosine_to_network_output", True
-                ),
-                num_cosine_terms=int(getattr(dr_cfg, "num_cosine_terms", 1)),
-                symmetric_input=bool(getattr(dr_cfg, "symmetric_input", False)),
-                residual_weight=dr_cfg.residual_weight,
-            )
+            dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
             emb_dim = exp_cfg.model.output_embedding_dim
             dr_rng = jax.random.fold_in(rng, 101)
             dr_params = dr_net.init(
@@ -551,6 +545,19 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     exact_loo = bool(getattr(loss_cfg, "ge2e_exact_leave_one_out", True))
     learn_wb = bool(getattr(loss_cfg, "ge2e_learn_wb", True))
     wb_grad_scale = float(getattr(exp_cfg.train, "ge2e_grad_scale", 0.01))
+    contrast_surrogate = bool(getattr(loss_cfg, "ge2e_contrast_surrogate", False))
+    contrast_b_scale = float(getattr(loss_cfg, "ge2e_contrast_b_grad_scale", 0.0))
+    b_grad_scale = (
+        contrast_b_scale
+        if (loss_type == "ge2e_contrast" and contrast_b_scale > 0.0)
+        else wb_grad_scale
+    )
+    if loss_type == "ge2e_contrast" and scoring_type == "pfas":
+        raise ValueError(
+            "loss_type='ge2e_contrast' does not support scoring_type='pfas' "
+            "(the packed PFAS key/value representation cannot be mean-pooled into "
+            "GE2E centroids). Use 'ge2e_softmax' or 'extended_set_softmax' with PFAS."
+        )
     multi_row_window = int(loss_cfg.multi_row_window)
     pure_ext = bool(getattr(loss_cfg, "pure_extended_set", False))
     ext_norm_spks = bool(
@@ -571,26 +578,8 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
 
     pfas_cfg = exp_cfg.model.pfas
     is_pfas = scoring_type == "pfas"
-    dr_cfg = exp_cfg.model.dr_vector
     dr_net = (
-        scoring.DecisionResidualNetwork(
-            hidden_dims=tuple(dr_cfg.hidden_dims),
-            activation=dr_cfg.activation,
-            use_layer_norm=dr_cfg.use_layer_norm,
-            include_cosine_in_input=dr_cfg.include_cosine_in_input,
-            append_cosine_as_feature_to_network_input=getattr(
-                dr_cfg, "append_cosine_as_feature_to_network_input", True
-            ),
-            append_cosine_to_final_hidden=bool(
-                getattr(dr_cfg, "append_cosine_to_final_hidden", False)
-            ),
-            add_cosine_to_network_output=getattr(
-                dr_cfg, "add_cosine_to_network_output", True
-            ),
-            num_cosine_terms=int(getattr(dr_cfg, "num_cosine_terms", 1)),
-            symmetric_input=bool(getattr(dr_cfg, "symmetric_input", False)),
-            residual_weight=dr_cfg.residual_weight,
-        )
+        scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
         if scoring_type == "dr_vector"
         else None
     )
@@ -680,6 +669,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     split_batch=split_batch,
                     exact_leave_one_out=exact_loo,
                     score_matrix_fn=score_fn,
+                    surrogate=contrast_surrogate,
                 )
             elif loss_type == "extended_set_softmax":
                 return losses.extended_set_softmax_loss(
@@ -754,12 +744,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 grads["_aux_b"] = jnp.zeros_like(grads["_aux_b"])
             else:
                 grads["_aux_w"] = grads["_aux_w"] * wb_grad_scale
-                b_scale = (
-                    max(wb_grad_scale, 0.5)
-                    if loss_type == "ge2e_contrast"
-                    else wb_grad_scale
-                )
-                grads["_aux_b"] = grads["_aux_b"] * b_scale
+                grads["_aux_b"] = grads["_aux_b"] * b_grad_scale
         new_state = state.apply_gradients(grads=grads)
         return new_state, loss_val
 

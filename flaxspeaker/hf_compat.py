@@ -10,7 +10,7 @@ Provides:
   registered under `model_type = "flaxspeaker"`, serializing to `config.json`.
 - `FlaxSpeakerModel`: High-level model wrapper supporting `.save_pretrained()` and
   `.from_pretrained()` (writing `config.json`, `model.safetensors`,
-  `flax_model.msgpack`, `preprocessor_config.json`, and a HuggingFace Model Card),
+  `flax_model.msgpack`, and a HuggingFace Model Card),
   plus one-line `.extract_embedding()` and `.verify()` methods.
 """
 
@@ -30,6 +30,7 @@ from transformers import AutoConfig, PretrainedConfig
 from flaxspeaker import configs
 from flaxspeaker import evaluation
 from flaxspeaker import feature_extraction
+from flaxspeaker import model_card
 from flaxspeaker import neural_net
 from flaxspeaker import scoring
 
@@ -389,7 +390,6 @@ class FlaxSpeakerModel:
         - `config.json`
         - `model.safetensors`
         - `flax_model.msgpack`
-        - `preprocessor_config.json`
         - `README.md` (Model Card)
         """
         os.makedirs(save_directory, exist_ok=True)
@@ -413,22 +413,12 @@ class FlaxSpeakerModel:
             {"params": export_params},
         )
 
-        # 3. HuggingFace Whisper/Audio FeatureExtractor compatible preprocessor_config.json
-        preproc_cfg = {
-            "feature_extractor_type": "WhisperFeatureExtractor",
-            "feature_size": self.exp_config.frontend.feature_dim,
-            "sampling_rate": self.exp_config.frontend.sample_rate,
-            "hop_length": self.exp_config.frontend.hop_length,
-            "n_fft": self.exp_config.frontend.n_fft,
-            "padding_value": 0.0,
-            "return_attention_mask": False,
-        }
-        with open(
-            os.path.join(save_directory, "preprocessor_config.json"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-            json.dump(preproc_cfg, f, indent=2)
+        # 3. No `preprocessor_config.json`: the frontend (natural-log Mel + energy VAD +
+        # CMVN) is not expressible as a Hugging Face `AutoFeatureExtractor`; its full
+        # configuration lives in `config.json` and is applied by `flaxspeaker.AudioFrontend`.
+        stale_preproc = os.path.join(save_directory, "preprocessor_config.json")
+        if os.path.exists(stale_preproc):
+            os.remove(stale_preproc)
 
         # 4. Save metrics if provided
         model_id = os.path.basename(os.path.normpath(save_directory))
@@ -440,261 +430,18 @@ class FlaxSpeakerModel:
             ) as f:
                 json.dump(metrics, f, indent=2)
 
-        # 5. Model card README.md
-        train_ds = (
-            metrics.get("train_dataset", "universal")
-            if isinstance(metrics, dict)
-            else "universal"
+        # 5. Model card README.md (generated from config + metrics only; see model_card.py)
+        card_text = model_card.build_model_card(
+            model_id=model_id,
+            exp_cfg=self.exp_config,
+            num_parameters=self.num_parameters,
+            metrics=metrics,
+            save_directory=save_directory,
         )
-        card_lines = [
-            "---",
-            "license: apache-2.0",
-            "library_name: flaxspeaker",
-            "pipeline_tag: audio-classification",
-            "tags:",
-            "- audio",
-            "- speaker-verification",
-            "- speaker-recognition",
-            "- speaker-embeddings",
-            "- jax",
-            "- flax",
-            "- safetensors",
-            f"- {self.config.backbone}",
-            f"- {self.config.loss_type}",
-            f"- {self.config.scoring_type}",
-            "datasets:",
-            "- librispeech_asr",
-            "- cnceleb",
-            "- voxceleb",
-            "metrics:",
-            "- eer",
-            "- min_dcf",
-            "- roc_auc",
-            "---",
-            "",
-            f"# FlaxSpeaker: `{model_id}` (`{self.config.backbone}` - `{self.config.size_variant}`)",
-            "",
-            "## Disclaimer & Open-Source Reproduction Notice",
-            "",
-            "> **This is not an officially supported Google product.**",
-            ">",
-            (
-                "> This model checkpoint and the accompanying `FlaxSpeaker` library "
-                "are an independent, clean-room open-source reproduction in JAX/Flax "
-                "of speaker recognition algorithms published in:"
-            ),
-            (
-                "> - **GE2E**: *Generalized End-to-End Loss for Speaker Verification* "
-                "([arXiv:1710.10467](https://arxiv.org/abs/1710.10467))"
-            ),
-            (
-                "> - **Dr-Vectors**: *Decision Residual Networks and an Improved Loss "
-                "for Speaker Recognition* ([arXiv:2104.01989](https://arxiv.org/abs/2104.01989))"
-            ),
-            (
-                "> - **Conformer-ATP**: *Attentive Temporal Pooling for Conformer-based "
-                "Streaming Language Identification in Long-form Speech* "
-                "([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))"
-            ),
-            (
-                "> - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* "
-                "([arXiv:2203.05642v3](https://arxiv.org/abs/2203.05642v3))"
-            ),
-            ">",
-            (
-                "> The experiments in those original papers were conducted using "
-                "Google's proprietary internal infrastructure and internal datasets, "
-                "not this open-source library or public dataset split."
-            ),
-            "",
-            "## Model Summary",
-            "",
-            "| Property | Value |",
-            "| :--- | :--- |",
-            f"| **Model ID** | `{model_id}` |",
-            (
-                f"| **Hugging Face Repository** | "
-                f"[`wq2012/{model_id}`](https://huggingface.co/wq2012/{model_id}) |"
-            ),
-            (
-                "| **Hugging Face Collection** | "
-                "[FlaxSpeaker Collection]"
-                "(https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) |"
-            ),
-            "| **GitHub Repository** | [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker) |",
-            "| **PyPI Package** | [`flaxspeaker`](https://pypi.org/project/flaxspeaker/) |",
-            f"| **Backbone Architecture** | `{self.config.backbone}` (`{self.config.size_variant}`) |",
-            f"| **Temporal Pooling** | `{self.config.pooling_type}` |",
-            f"| **Training Loss** | `{self.config.loss_type}` |",
-            f"| **Verification Scoring** | `{self.config.scoring_type}` |",
-            f"| **Output Embedding Dim** | `{self.exp_config.model.output_embedding_dim}` |",
-            f"| **Encoder Parameters** | `{self.num_parameters:,}` |",
-            f"| **Training Domain** | `{train_ds}` |",
-            (
-                f"| **Audio Frontend** | `{self.config.n_mels}`-dim `{self.config.feature_type}` "
-                f"@ `{self.config.sample_rate}` Hz + Energy VAD + CMVN |"
-            ),
-            "",
-            "## Model Files Included",
-            "",
-            "- `model.safetensors`: Primary model weights in SafeTensors format",
-            "- `flax_model.msgpack`: Native Flax Msgpack serialized parameters",
-            "- `config.json`: `FlaxSpeakerConfig` model & training architecture configuration",
-            "- `preprocessor_config.json`: `WhisperFeatureExtractor`-compatible frontend configuration",
-            (
-                "- `eval_results.json`: Verified multi-domain evaluation metrics "
-                "(1-utt & 3-utt EER, minDCF, ROC-AUC, 95% bootstrap CIs)"
-            ),
-        ]
-        if os.path.exists(os.path.join(save_directory, "model_fp32.tflite")):
-            card_lines.append(
-                "- `model_fp32.tflite`: Exported FP32 TensorFlow Lite model for edge/mobile CPU inference"
-            )
-        if os.path.exists(os.path.join(save_directory, "model_int8.tflite")):
-            card_lines.append(
-                "- `model_int8.tflite`: Dynamic-range INT8 quantized TensorFlow Lite model (~3.5x smaller)"
-            )
-        card_lines += [
-            "",
-            "## Quickstart Usage",
-            "",
-            "### Python API (from Hugging Face Hub or Local Directory)",
-            "",
-            "```python",
-            "from flaxspeaker import load_pretrained",
-            "",
-            f'model = load_pretrained("wq2012/{model_id}")',
-            'emb = model.extract_embedding("path/to/utterance.flac")',
-            'score = model.verify("path/to/enroll.flac", "path/to/test.flac")',
-            'print(f"Embedding shape: {emb.shape}, Verification score: {score:.4f}")',
-            "```",
-            "",
-            "### Command-Line Inference",
-            "",
-            "```bash",
-            f"python scripts/inference.py --model_dir wq2012/{model_id} \\",
-            "    --enroll_audio path/to/enroll.flac --test_audio path/to/test.flac",
-            "```",
-        ]
-        if isinstance(metrics, dict):
-            card_lines += [
-                "",
-                "## Multi-Domain Evaluation Results",
-                "",
-            ]
-            md_eval = metrics.get("multi_domain_eval", {})
-            if md_eval and "domains_1utt" in md_eval:
-                card_lines += [
-                    "### 1-Utterance Verification Across Evaluation Domains",
-                    "",
-                    (
-                        "| Evaluation Split | Trials | EER (%) | 95% Bootstrap CI (%) "
-                        "| minDCF@0.01 | minDCF@0.10 | ROC-AUC |"
-                    ),
-                    "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
-                ]
-                for dom_label, dom_key in [
-                    ("LibriSpeech (English Read)", "librispeech"),
-                    ("CN-Celeb2 (Chinese Multi-Genre)", "cnceleb2"),
-                    ("VoxCeleb1 (In-the-Wild Celebrity)", "voxceleb1"),
-                    ("Universal Pooled (All 3 Domains)", "universal_pooled"),
-                ]:
-                    d_m = md_eval["domains_1utt"].get(dom_key)
-                    if d_m:
-                        ci_str = (
-                            f"[{d_m.get('eer_ci95_low_percent', d_m['eer_percent']):.2f}, "
-                            f"{d_m.get('eer_ci95_high_percent', d_m['eer_percent']):.2f}]"
-                        )
-                        card_lines.append(
-                            f"| **{dom_label}** | {d_m['num_trials']:,} | **{d_m['eer_percent']:.2f}%** | "
-                            f"{ci_str} | {d_m['min_dcf_001']:.4f} | {d_m['min_dcf_01']:.4f} | {d_m['roc_auc']:.4f} |"
-                        )
-                macro_1 = md_eval.get("universal_macro_avg_1utt")
-                if macro_1:
-                    card_lines.append(
-                        f"| **Universal Macro-Average (3 Domains)** | 8,000 | **{macro_1['eer_percent']:.2f}%** | "
-                        f"— | {macro_1['min_dcf_001']:.4f} | {macro_1['min_dcf_01']:.4f} | {macro_1['roc_auc']:.4f} |"
-                    )
-                if "domains_3utt" in md_eval:
-                    card_lines += [
-                        "",
-                        "### 3-Utterance Multi-Enrollment Verification Across Evaluation Domains",
-                        "",
-                        "| Evaluation Split | Trials | 3-Utt EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | ROC-AUC |",
-                        "| :--- | :---: | :---: | :---: | :---: | :---: |",
-                    ]
-                    for dom_label, dom_key in [
-                        ("LibriSpeech (3-Utt)", "librispeech"),
-                        ("CN-Celeb2 (3-Utt)", "cnceleb2"),
-                        ("VoxCeleb1 (3-Utt)", "voxceleb1"),
-                        ("Universal Pooled (3-Utt)", "universal_pooled"),
-                    ]:
-                        d_m = md_eval["domains_3utt"].get(dom_key)
-                        if d_m:
-                            ci_str = (
-                                f"[{d_m.get('eer_ci95_low_percent', d_m['eer_percent']):.2f}, "
-                                f"{d_m.get('eer_ci95_high_percent', d_m['eer_percent']):.2f}]"
-                            )
-                            card_lines.append(
-                                f"| **{dom_label}** | {d_m['num_trials']:,} | **{d_m['eer_percent']:.2f}%** | "
-                                f"{ci_str} | {d_m['min_dcf_001']:.4f} | {d_m['roc_auc']:.4f} |"
-                            )
-                    macro_3 = md_eval.get("universal_macro_avg_3utt")
-                    if macro_3:
-                        card_lines.append(
-                            f"| **Universal Macro-Average (3-Utt)** | 3,000 | **{macro_3['eer_percent']:.2f}%** | "
-                            f"— | {macro_3['min_dcf_001']:.4f} | {macro_3['roc_auc']:.4f} |"
-                        )
-            elif "in_domain_eval" in metrics and metrics["in_domain_eval"]:
-                ind = metrics["in_domain_eval"]
-                card_lines += [
-                    f"- **In-Domain EER**: `{ind['eer_percent']:.2f}%`",
-                    f"- **In-Domain minDCF@0.01**: `{ind['min_dcf_001']:.4f}`",
-                    f"- **In-Domain ROC-AUC**: `{ind['roc_auc']:.4f}`",
-                ]
-        card_lines += [
-            "",
-            "## Citation",
-            "",
-            "```bibtex",
-            "@inproceedings{wan2018generalized,",
-            "  title={Generalized End-to-End Loss for Speaker Verification},",
-            "  author={Wan, Li and Wang, Quan and Papir, Alan and Moreno, Ignacio Lopez},",
-            "  booktitle={IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},",
-            "  pages={4879--4883},",
-            "  year={2018}",
-            "}",
-            "",
-            "@inproceedings{pelecanos2021dr,",
-            "  title={Dr-Vectors: Decision Residual Networks and an Improved Loss for Speaker Recognition},",
-            "  author={Pelecanos, Jason and Wang, Quan and Moreno, Ignacio Lopez},",
-            "  booktitle={Interspeech},",
-            "  pages={4603--4607},",
-            "  year={2021}",
-            "}",
-            "",
-            "@inproceedings{wang2022attentive,",
-            (
-                "  title={Attentive Temporal Pooling for Conformer-based Streaming "
-                "Language Identification in Long-form Speech},"
-            ),
-            "  author={Wang, Quan and Yu, Yang and Pelecanos, Jason and Huang, Yiling and Moreno, Ignacio Lopez},",
-            "  booktitle={The Speaker and Language Recognition Workshop (Odyssey)},",
-            "  year={2022}",
-            "}",
-            "",
-            "@inproceedings{pelecanos2022parameter,",
-            "  title={Parameter-Free Attentive Scoring for Speaker Verification},",
-            "  author={Pelecanos, Jason and Wang, Quan and Huang, Yiling and Moreno, Ignacio Lopez},",
-            "  booktitle={The Speaker and Language Recognition Workshop (Odyssey)},",
-            "  year={2022}",
-            "}",
-            "```",
-        ]
         with open(
             os.path.join(save_directory, "README.md"), "w", encoding="utf-8"
         ) as f:
-            f.write("\n".join(card_lines) + "\n")
+            f.write(card_text)
 
     @staticmethod
     def _has_local_weights(dir_path: str) -> bool:

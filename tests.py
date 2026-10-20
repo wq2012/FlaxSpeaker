@@ -932,19 +932,24 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         self.assertGreaterEqual(len(models), 44)
         p1 = "hf_space/examples/librispeech_spk1_utt1.flac"
         p2 = "hf_space/examples/librispeech_spk1_utt2.flac"
+        # Default threshold = the model's own pooled 1-utt EER operating point.
+        ops = hf_app.get_default_threshold("univ_conformer_small_ge2e")
+        self.assertIn("pooled", ops)
+        self.assertGreater(ops["pooled"], 0.0)
         verdict, details, fig = hf_app.verify_pair(
             p1,
             p2,
             "univ_conformer_small_ge2e",
-            0.50,
+            None,  # -> per-model default threshold
             enroll_audio_2=p1,
             use_vad=True,
             vad_snr_margin_db=4.5,
-            use_as_norm=True,
         )
         self.assertIn("SPEAKER", verdict)
         self.assertEqual(details["num_enrollment_utterances"], 2)
-        self.assertTrue(details["as_norm_applied"])
+        self.assertAlmostEqual(details["threshold"], round(ops["pooled"], 4), places=4)
+        self.assertIn("model_inference_latency_ms", details)
+        self.assertNotIn("as_norm_applied", details)
         self.assertIsNotNone(fig)
 
     def test_ge2e_contrast_loss_wan2018_eq7(self):
@@ -1012,12 +1017,22 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         self.assertIs(c_ge2e.loss, c_ge2e.train.loss)
         self.assertTrue(c_ge2e.train.loss.ge2e_exact_leave_one_out)
         self.assertEqual(c_ge2e.model.pooling.pooling_type, "last")
+        self.assertEqual(c_ge2e.model.lstm.hidden_size, 768)
+        self.assertEqual(c_ge2e.model.lstm.proj_size, 256)
+        self.assertEqual(c_ge2e.model.embedding_dim, 256)
+        self.assertFalse(c_ge2e.model.pooling.use_nonlinear_bottleneck)
 
         c_dr = configs.interspeech2021_dr_vectors_config(pure_paper_mode=True)
         self.assertIs(c_dr.loss, c_dr.train.loss)
-        self.assertEqual(c_dr.model.dr_vector.num_cosine_terms, 3)
-        self.assertTrue(c_dr.model.dr_vector.append_cosine_to_final_hidden)
-        self.assertTrue(c_dr.model.dr_vector.skip_connect_cosine_to_readout)
+        # Paper (arXiv:2104.01989): no 3-term cosine expansion, d=200 base dims,
+        # 3 x 256 leaky-ReLU(0.2), weighted sum, trainable affine, pure Eq. 2.
+        self.assertEqual(c_dr.model.dr_vector.num_cosine_terms, 1)
+        self.assertEqual(c_dr.model.dr_vector.cosine_dims, 200)
+        self.assertEqual(tuple(c_dr.model.dr_vector.hidden_dims), (256, 256, 256))
+        self.assertEqual(c_dr.model.dr_vector.activation, "leaky_relu")
+        self.assertFalse(c_dr.model.dr_vector.use_layer_norm)
+        self.assertEqual(c_dr.model.dr_vector.readout, "weighted_sum")
+        self.assertTrue(c_dr.model.dr_vector.trainable_affine)
         self.assertTrue(c_dr.train.loss.pure_extended_set)
 
         c_atp = configs.odyssey2022_conformer_atp_config(pure_paper_mode=True)
@@ -1026,12 +1041,18 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         self.assertFalse(c_atp.model.conformer.use_conv_stem)
         self.assertTrue(c_atp.model.conformer.use_positional_encoding)
         self.assertEqual(c_atp.model.conformer.subsample_factor, 2)
-        self.assertFalse(c_atp.model.pooling.use_global_context)
+        self.assertEqual(c_atp.model.pooling.num_heads, 1)
+        self.assertEqual(c_atp.model.pooling.attention_dim, 0)
 
         c_pfas = configs.odyssey2022_pfas_config(pure_paper_mode=True)
         self.assertIs(c_pfas.loss, c_pfas.train.loss)
+        self.assertEqual(c_pfas.model.pfas.attention_type, "atp_ffn")
+        self.assertEqual(c_pfas.model.pfas.num_keys, 32)
+        self.assertEqual(c_pfas.model.pfas.representation_dim, 2048)
         self.assertFalse(c_pfas.model.pfas.use_global_anchor)
         self.assertTrue(c_pfas.model.pfas.apply_global_l2_norm_to_concat_form)
+        self.assertEqual(c_pfas.train.loss.loss_type, "extended_set_softmax")
+        self.assertTrue(c_pfas.train.loss.pure_extended_set)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             splits_dir = os.path.join(tmpdir, "splits")
@@ -1055,6 +1076,290 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
                     os.environ.pop("FLAXSPEAKER_DATA_ROOT", None)
                 else:
                     os.environ["FLAXSPEAKER_DATA_ROOT"] = old_env
+
+
+class TestRound2NumericReferences(unittest.TestCase):
+    """Numeric-reference tests added in Round 2 (lifted from the reviewers' checks)."""
+
+    def _padding_invariance(self, module, x, valid, atol):
+        params = module.init(jax.random.PRNGKey(1), x)
+        full = module.apply(params, x[:, :valid], mask=jnp.ones((x.shape[0], valid)))
+        mask = jnp.concatenate(
+            [jnp.ones((x.shape[0], valid)), jnp.zeros((x.shape[0], x.shape[1] - valid))],
+            axis=1,
+        )
+        padded = module.apply(params, x, mask=mask)
+        if padded.ndim == 3:  # frame outputs
+            diff = float(jnp.max(jnp.abs(padded[:, :valid] - full)))
+            tail = float(jnp.max(jnp.abs(padded[:, valid:])))
+            self.assertLessEqual(tail, atol)
+        else:  # pooled embeddings
+            diff = float(jnp.max(jnp.abs(padded - full)))
+        self.assertLessEqual(diff, atol, f"padding leaked: max diff {diff}")
+
+    def test_padding_invariance_all_seven_backbone_variants(self):
+        from flaxspeaker import backbones
+
+        x = jax.random.normal(jax.random.PRNGKey(0), (2, 24, 16))
+        variants = {
+            "lstm_uni": backbones.LstmBackbone(hidden_size=16, num_layers=2),
+            "lstm_bi": backbones.LstmBackbone(hidden_size=16, num_layers=2, bidirectional=True),
+            "conformer": backbones.ConformerBackbone(dim=16, num_heads=2, num_layers=2, ffn_dim=32),
+            "transformer": backbones.TransformerBackbone(dim=16, num_heads=2, num_layers=2, mlp_dim=32),
+            "mamba_uni": backbones.MambaBackbone(dim=16, num_layers=2, d_state=4, dt_rank=4),
+            "mamba_bi": backbones.MambaBackbone(dim=16, num_layers=2, d_state=4, dt_rank=4, bidirectional=True),
+            "ecapa": backbones.EcapaTdnnBackbone(channels=16, mfa_dim=32, se_bottleneck_dim=8),
+        }
+        for name, module in variants.items():
+            with self.subTest(backbone=name):
+                self._padding_invariance(module, x, valid=15, atol=5e-5)
+
+    def test_bidirectional_lstm_backward_direction_is_time_aligned(self):
+        """`keep_order=True`: the backward half at frame t must depend on frames >= t only."""
+        from flaxspeaker import backbones
+
+        module = backbones.LstmBackbone(hidden_size=8, num_layers=1, bidirectional=True)
+        x = jax.random.normal(jax.random.PRNGKey(0), (1, 10, 4))
+        params = module.init(jax.random.PRNGKey(1), x)
+        # Perturbing the *last* frame must change the backward state at frame 0 ...
+        x_pert = x.at[0, -1].add(1.0)
+        out = module.apply(params, x, mask=jnp.ones((1, 10)))
+        out_p = module.apply(params, x_pert, mask=jnp.ones((1, 10)))
+        self.assertGreater(float(jnp.max(jnp.abs(out[0, 0] - out_p[0, 0]))), 1e-6)
+        # ... but perturbing the *first* frame must not change the backward direction at
+        # the last frame (the backward recurrence at t=T-1 has seen only frame T-1). The
+        # per-layer LayerNorm mixes fwd/bwd halves, so test the raw reversed RNN with the
+        # exact construction used in `LstmBackbone` (reverse=True, keep_order=True).
+        from flax import linen as nn
+
+        bwd = nn.RNN(nn.OptimizedLSTMCell(features=8), reverse=True, keep_order=True)
+        bp = bwd.init(jax.random.PRNGKey(2), x, seq_lengths=jnp.array([10]))
+        y = bwd.apply(bp, x, seq_lengths=jnp.array([10]))
+        y_p = bwd.apply(bp, x.at[0, 0].add(1.0), seq_lengths=jnp.array([10]))
+        self.assertLess(float(jnp.max(jnp.abs(y[0, -1] - y_p[0, -1]))), 1e-6)
+        self.assertGreater(float(jnp.max(jnp.abs(y[0, 0] - y_p[0, 0]))), 1e-6)
+        # With a shorter valid length the backward pass must start at the last *valid* frame.
+        y_short = bwd.apply(bp, x, seq_lengths=jnp.array([6]))
+        y_ref = bwd.apply(bp, x[:, :6], seq_lengths=jnp.array([6]))
+        self.assertLess(float(jnp.max(jnp.abs(y_short[0, :6] - y_ref[0]))), 1e-6)
+
+    def test_contrast_loss_pure_vs_surrogate_gradients(self):
+        embs = jax.random.normal(jax.random.PRNGKey(3), (16, 12))
+        embs = embs / jnp.linalg.norm(embs, axis=-1, keepdims=True)
+        w, b = jnp.array(10.0), jnp.array(-5.0)
+
+        def pure(e):
+            return losses.ge2e_contrast_loss(e, 4, 4, w, b, surrogate=False)
+
+        def surrogate(e):
+            return losses.ge2e_contrast_loss(e, 4, 4, w, b, surrogate=True)
+
+        # Same value, different gradient.
+        self.assertAlmostEqual(float(pure(embs)), float(surrogate(embs)), places=6)
+        g_pure = jax.grad(pure)(embs)
+        g_sur = jax.grad(surrogate)(embs)
+
+        # Pure gradient equals the analytic Eq. 7 gradient computed independently.
+        def eq7_reference(e):
+            sim, labels = losses.compute_ge2e_similarity_matrix_leave_one_out(
+                e, 4, 4, jnp.maximum(jnp.abs(w), 1e-3), b, exact_leave_one_out=True
+            )
+            sig = jax.nn.sigmoid(sim)
+            tm = jax.nn.one_hot(labels, 4)
+            pos = jnp.sum(sig * tm, -1)
+            neg = jnp.max(jnp.where(tm > 0, -1e9, sig), -1)
+            return jnp.mean(1 - pos + neg)
+
+        g_ref = jax.grad(eq7_reference)(embs)
+        self.assertLess(float(jnp.max(jnp.abs(g_pure - g_ref))), 1e-5)
+        cos = float(jnp.sum(g_pure * g_sur) / (jnp.linalg.norm(g_pure) * jnp.linalg.norm(g_sur)))
+        self.assertLess(cos, 0.99, "surrogate gradient should differ from pure Eq. 7")
+
+    def test_unknown_config_key_raises_and_deprecated_key_warns(self):
+        with self.assertRaises(ValueError):
+            configs.ExperimentConfig.from_dict({"model": {"conformer": {"nmu_layers": 3}}})
+        with self.assertRaises(ValueError):
+            configs.ExperimentConfig.from_dict({"train": {"lerning_rate": 1e-3}})
+        import glob
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            cfg = configs.ExperimentConfig.from_dict({"loss": {"num_classes": 256}})
+        self.assertTrue(any(issubclass(c.category, DeprecationWarning) for c in caught))
+        self.assertFalse(hasattr(cfg.train.loss, "num_classes"))
+        # Every shipped YAML loads cleanly (no deprecated keys left).
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            for p in glob.glob(os.path.join(os.path.dirname(__file__), "configs", "*.yml")):
+                configs.ExperimentConfig.from_yaml(p)
+
+    def test_pure_paper_mode_fields_change_the_built_module(self):
+        """Every field a pure preset sets must be consumed by the built encoder."""
+        x = jnp.ones((1, 40, 80))
+
+        def n_params_and_shape(cfg):
+            enc = neural_net.build_modern_encoder_from_config(cfg)
+            p = enc.init(jax.random.PRNGKey(0), x)["params"]
+            return neural_net.count_parameters(p), jax.tree_util.tree_structure(p)
+
+        # Conformer-ATP: conv_before_mhsa / positional encoding / no stem / subsample /
+        # single-head linear ATP all change parameters or outputs.
+        pure = configs.odyssey2022_conformer_atp_config(pure_paper_mode=True)
+        base = configs.odyssey2022_conformer_atp_config(pure_paper_mode=False)
+        self.assertNotEqual(n_params_and_shape(pure)[1], n_params_and_shape(base)[1])
+        enc_pure = neural_net.build_modern_encoder_from_config(pure)
+        p_pure = enc_pure.init(jax.random.PRNGKey(0), x)["params"]
+        self.assertIn("subsample_proj", p_pure["backbone"])
+        self.assertNotIn("stem_conv", p_pure["backbone"])
+        self.assertNotIn("atp_hid", p_pure["pool"])  # attention_dim = 0 -> linear sigmoid
+        self.assertEqual(p_pure["pool"]["atp_ffn"]["kernel"].shape[-1], 1)  # single head
+        # layer_order changes the forward output for identical parameters.
+        swapped = configs.odyssey2022_conformer_atp_config(pure_paper_mode=True)
+        swapped.model.conformer.layer_order = "mhsa_before_conv"
+        enc_sw = neural_net.build_modern_encoder_from_config(swapped)
+        xr = jax.random.normal(jax.random.PRNGKey(5), (1, 40, 80))
+        self.assertGreater(
+            float(jnp.max(jnp.abs(enc_pure.apply({"params": p_pure}, xr) - enc_sw.apply({"params": p_pure}, xr)))),
+            1e-6,
+        )
+        # positional encoding changes outputs for identical parameters.
+        nope = configs.odyssey2022_conformer_atp_config(pure_paper_mode=True)
+        nope.model.conformer.use_positional_encoding = False
+        enc_np = neural_net.build_modern_encoder_from_config(nope)
+        self.assertGreater(
+            float(jnp.max(jnp.abs(enc_pure.apply({"params": p_pure}, xr) - enc_np.apply({"params": p_pure}, xr)))),
+            1e-6,
+        )
+        # PFAS pure: atp_ffn head, 32 keys, no LayerNorm.
+        pf = configs.odyssey2022_pfas_config(pure_paper_mode=True)
+        enc_pf = neural_net.build_modern_encoder_from_config(pf)
+        p_pf = enc_pf.init(jax.random.PRNGKey(0), x)["params"]["pfas_head"]
+        self.assertIn("pfas_kv_out", p_pf)
+        self.assertNotIn("pfas_pool_ln", p_pf)
+        self.assertEqual(p_pf["pfas_kv_out"]["kernel"].shape[-1], 32 * (16 + 48))
+        full_pf = enc_pf.init(jax.random.PRNGKey(0), x)
+        self.assertEqual(enc_pf.apply(full_pf, x).shape, (1, 2048))
+        # Dr-Vectors pure: trainable affine params exist, cosine over 200 dims.
+        dr = configs.interspeech2021_dr_vectors_config(pure_paper_mode=True)
+        _, st = neural_net.get_speaker_encoder(dr, num_classes=0)
+        self.assertIn("dr_affine_scale", st.params["_aux_dr_net"])
+        self.assertEqual(st.params["_aux_dr_net"]["dr_fc_0"]["kernel"].shape[-1], 256)
+        self.assertEqual(st.params["_aux_dr_net"]["dr_out"]["kernel"].shape[0], 3 * 256)
+        # GE2E pure: 768-cell LSTM with 256 projection, plain linear output.
+        ge = configs.icassp2018_ge2e_config(pure_paper_mode=True)
+        _, st_ge = neural_net.get_speaker_encoder(ge, num_classes=0)
+        self.assertEqual(st_ge.params["backbone"]["lstm_proj_0"]["kernel"].shape, (768, 256))
+        self.assertNotIn("bottleneck_fc", st_ge.params)
+
+    def test_conformer_subsampling_shapes_and_mask_invariance(self):
+        from flaxspeaker import backbones
+
+        module = backbones.ConformerBackbone(
+            dim=16, num_heads=2, num_layers=3, ffn_dim=32, subsample_factor=2, subsample_after_layer=1
+        )
+        x = jax.random.normal(jax.random.PRNGKey(0), (2, 21, 8))
+        params = module.init(jax.random.PRNGKey(1), x)
+        out = module.apply(params, x, mask=jnp.ones((2, 21)))
+        self.assertEqual(out.shape, (2, 11, 16))
+        self.assertEqual(backbones.subsample_mask(jnp.ones((2, 21)), 2).shape, (2, 11))
+        # Padding invariance on the subsampled frames (valid = 14 -> 7 groups).
+        full = module.apply(params, x[:, :14], mask=jnp.ones((2, 14)))
+        mask = jnp.concatenate([jnp.ones((2, 14)), jnp.zeros((2, 7))], axis=1)
+        padded = module.apply(params, x, mask=mask)
+        self.assertLess(float(jnp.max(jnp.abs(padded[:, :7] - full))), 1e-4)
+        self.assertLess(float(jnp.max(jnp.abs(padded[:, 7:]))), 1e-6)
+        # Unsupported layer order is rejected.
+        bad = backbones.ConformerBackbone(dim=16, num_heads=2, num_layers=1, ffn_dim=32, layer_order="foo")
+        with self.assertRaises(ValueError):
+            bad.init(jax.random.PRNGKey(1), x)
+
+    def test_contrast_loss_with_pfas_scoring_is_rejected(self):
+        cfg = configs.odyssey2022_pfas_config(loss_type="ge2e_contrast", pure_paper_mode=False)
+        with self.assertRaises(ValueError):
+            neural_net.make_modern_train_step(cfg)
+
+    def test_as_norm_requires_disjoint_cohort(self):
+        rng = np.random.default_rng(0)
+        utt_to_emb = {f"u{i}": rng.standard_normal(8).astype(np.float32) for i in range(12)}
+        with self.assertRaises(ValueError):
+            evaluation.require_disjoint_cohort(None, utt_to_emb)
+        with self.assertRaises(ValueError):  # too small
+            evaluation.require_disjoint_cohort(rng.standard_normal((3, 8)), utt_to_emb)
+        with self.assertRaises(ValueError):  # cohort == eval set
+            evaluation.require_disjoint_cohort(np.stack(list(utt_to_emb.values())), utt_to_emb)
+        cohort = evaluation.require_disjoint_cohort(rng.standard_normal((20, 8)), utt_to_emb)
+        self.assertEqual(cohort.shape, (20, 8))
+        # End-to-end: evaluating with AS-Norm on and no cohort raises.
+        cfg = configs.ExperimentConfig()
+        cfg.eval.use_as_norm = True
+        cfg.model.apply_size_variant("tiny")
+        _, state = neural_net.get_speaker_encoder(cfg, num_classes=0)
+        emb = {f"u{i}": rng.standard_normal(cfg.model.embedding_dim).astype(np.float32) for i in range(12)}
+        trials = [(1, "u0", "u1"), (0, "u2", "u3"), (1, "u4", "u5"), (0, "u6", "u7")]
+        with self.assertRaises(ValueError):
+            evaluation.evaluate_verification_trials(
+                state, trials, cfg, precomputed_embeddings=emb
+            )
+
+    def test_export_window_resolution_has_no_sentinel(self):
+        cfg = configs.ExperimentConfig()
+        cfg.model.seq_len = 180
+        cfg.export.sequence_length = 0
+        self.assertEqual(export._resolve_export_seq_len(cfg), 180)
+        cfg.export.sequence_length = 100  # used to be a magic "unset" value
+        self.assertEqual(export._resolve_export_seq_len(cfg), 100)
+        cfg.export.sequence_length = 250
+        self.assertEqual(export._resolve_export_seq_len(cfg), 250)
+        self.assertEqual(export._resolve_export_seq_len(cfg, seq_len=64), 64)
+        # Every shipped config declares the 180-frame window the TFLite files were traced with.
+        import glob
+
+        for p in glob.glob(os.path.join(os.path.dirname(__file__), "configs", "*.yml")):
+            c = configs.ExperimentConfig.from_yaml(p)
+            self.assertEqual(export._resolve_export_seq_len(c), 180, p)
+
+    def test_min_learning_rate_is_honoured(self):
+        import optax
+
+        cfg = configs.ExperimentConfig()
+        cfg.train.learning_rate = 1e-3
+        cfg.train.min_learning_rate = 1e-6
+        cfg.train.num_steps = 100
+        cfg.train.warmup_steps = 10
+        cfg.train.lr_schedule_cosine = True
+        schedule = optax.warmup_cosine_decay_schedule(
+            init_value=1e-4, peak_value=1e-3, warmup_steps=10, decay_steps=100, end_value=1e-6
+        )
+        tx = neural_net.build_optimizer(cfg)
+        params = {"w": jnp.ones((2, 2))}
+        state = tx.init(params)
+        # Drive the optimizer to the last step and compare the applied LR with the schedule.
+        g = {"w": jnp.ones((2, 2))}
+        for _ in range(100):
+            updates, state = tx.update(g, state, params)
+        # AdamW with constant unit gradients gives update magnitude ~ lr at convergence.
+        self.assertAlmostEqual(float(-updates["w"][0, 0]), float(schedule(99)), delta=2e-7)
+
+    def test_decision_residual_network_paper_options(self):
+        rng = jax.random.PRNGKey(0)
+        net = scoring.DecisionResidualNetwork(
+            hidden_dims=(256, 256, 256), activation="leaky_relu", use_layer_norm=False,
+            cosine_dims=200, readout="weighted_sum", trainable_affine=True, residual_weight=1.0,
+        )
+        t = jax.random.normal(rng, (5, 256))
+        e = jax.random.normal(jax.random.PRNGKey(1), (5, 256))
+        params = net.init(rng, t, e)["params"]
+        self.assertEqual(params["dr_out"]["kernel"].shape, (3 * 256, 1))
+        self.assertIn("dr_affine_scale", params)
+        self.assertNotIn("dr_ln_0", params)
+        scores = net.apply({"params": params}, t, e, method=net.score_pairs)
+        # With dr_out ~ 0 at init and affine = identity, score ~ cosine over first 200 dims.
+        tb = t[:, :200] / jnp.linalg.norm(t[:, :200], axis=-1, keepdims=True)
+        eb = e[:, :200] / jnp.linalg.norm(e[:, :200], axis=-1, keepdims=True)
+        self.assertLess(float(jnp.max(jnp.abs(scores - jnp.sum(tb * eb, -1)))), 0.1)
+        with self.assertRaises(ValueError):
+            scoring.DecisionResidualNetwork(readout="bogus").init(rng, t, e)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,8 @@
 [flake8]
 max-line-length = 120
 exclude = .git,__pycache__,build,dist,.pytype,.venv,venv
+# The two LaTeX/Markdown table generators contain long format strings that mirror the
+# table rows they emit; wrapping them would hurt readability of the generated layout.
+per-file-ignores =
+    scripts/generate_paper_tables.py:E501
+    scripts/generate_report_tables.py:E501

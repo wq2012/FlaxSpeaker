@@ -4,9 +4,18 @@
 Studies:
 1. Domain Mixing Probability (`within_domain_prob` in {0.0, 0.75, 1.0}) on
    `univ_conformer_small_ge2e`.
-2. Pure Extended-Set Softmax (Eq. 3, `pure_extended_set=True`) vs. Blended
-   Extended-Set Softmax, and 3-Term Dr-Vectors (`[c, c^2, sqrt(max(c, 0))]`, Eq. 7)
-   vs. 1-Term Blended Dr-Vectors.
+2. Pure Extended-Set Softmax (Pelecanos et al. 2021 Eq. 2, `pure_extended_set=True`)
+   vs. Blended Extended-Set Softmax (FlaxSpeaker variant), and 3-Term Dr-Vectors
+   (`[c, c^2, sqrt(max(c, 0))]`, a FlaxSpeaker extension NOT in the paper) vs. 1-Term
+   Blended Dr-Vectors.
+
+   NOTE: the baseline rows of Studies 1-5 (`p_within_0.75`, `ext_softmax_blended`,
+   `dr_vectors_1term_blended`, `variable_length_true`, `steps_400`, `unidirectional`)
+   are *copied* from the main benchmark's `eval_results.json`, not re-trained here; the
+   re-trained variants therefore start from a different RNG stream (`initial_loss`
+   differs). Study 4's `steps_800` entry is a mid-schedule snapshot of the single
+   1,200-step run (LR still high), not an 800-step budget run; see
+   `scripts/run_r2_controls.py` for an honest 800-step run with its own schedule.
 3. Variable-Length Training (`variable_length_training=True`) vs. Fixed-Length
    Training (`variable_length_training=False`) evaluated on Full-Sequence and
    Short-Duration (1.0 s / 100-frame) utterances.
@@ -227,7 +236,7 @@ def run_all_ablations(
         "final_loss": rec_ext_blend["final_loss"],
         "multi_domain_eval": rec_ext_blend["multi_domain_eval"],
     }
-    print("\n=== Study 2a: Pure Extended-Set Softmax (Eq. 3, pure_extended_set=True) ===")
+    print("\n=== Study 2a: Pure Extended-Set Softmax (paper Eq. 2, pure_extended_set=True) ===")
     cfg_pure = rrb.make_exp_config(
         dataset_name="universal",
         train_csv=univ_info["train_csv"],
@@ -251,6 +260,8 @@ def run_all_ablations(
         multi_trials_sets,
     )
     res_pure["pure_extended_set"] = True
+    # Key name kept for backward compatibility with the archived JSON ("eq3" is historical;
+    # the pure extended-set softmax is Eq. 2 of Pelecanos et al. 2021).
     results["extended_set_and_dr_ablation"]["ext_softmax_pure_eq3"] = res_pure
 
     with open(
@@ -267,7 +278,7 @@ def run_all_ablations(
         "final_loss": rec_dr1["final_loss"],
         "multi_domain_eval": rec_dr1["multi_domain_eval"],
     }
-    print("\n=== Study 2b: 3-Term Dr-Vectors (Eq. 7) + Pure Extended-Set Softmax ===")
+    print("\n=== Study 2b: 3-Term Dr-Vectors (FlaxSpeaker extension) + Pure Extended-Set Softmax ===")
     cfg_dr3 = rrb.make_exp_config(
         dataset_name="universal",
         train_csv=univ_info["train_csv"],
@@ -293,6 +304,8 @@ def run_all_ablations(
     )
     res_dr3["num_cosine_terms"] = 3
     res_dr3["pure_extended_set"] = True
+    # Key name kept for backward compatibility with the archived JSON; the "eq7" suffix
+    # is historical -- the 3-term expansion is NOT an equation of Pelecanos et al. 2021.
     results["extended_set_and_dr_ablation"]["dr_vectors_3term_pure_eq7"] = res_dr3
 
     # Study 3: Variable-Length vs Fixed-Length Training

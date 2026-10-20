@@ -11,7 +11,7 @@ Implements:
 - Adaptive Symmetric Score Normalization (AS-Norm)
 """
 
-from typing import Sequence, Union
+from typing import Any, Sequence, Union
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
@@ -296,20 +296,34 @@ class DecisionResidualNetwork(nn.Module):
     Reference:
     "Dr-Vectors: Decision Residual Networks and an Improved Loss for Speaker
     Recognition" (Pelecanos, Wang, Moreno, Interspeech 2021,
-    https://arxiv.org/pdf/2104.01989).
+    https://arxiv.org/pdf/2104.01989). The paper contains two numbered
+    equations only (Eq. 1 GE2E softmax, Eq. 2 GE2E extended-set softmax); the
+    decision network itself is described in its Sec. 2 / Sec. 4 and Fig. 1.
 
-    Given a test embedding `e_t` and enrollment embedding `e_e`, computes:
-    `score(e_t, e_e) = cos(e_t, e_e) + w_res * MLP([e_t_norm, e_e_norm, cos_feats])`
-    Supports non-linear cosine features (`num_cosine_terms = 3` for
-    `[cos, cos^2, sqrt(max(cos, 0))]` as in Eq. 7 of Pelecanos et al., 2021, or
-    `num_cosine_terms = 1` default), optional skip-concatenation of cosine features
-    to the final hidden representation (`append_cosine_to_final_hidden = True`,
-    Figure 1 of arXiv:2104.01989), and optional symmetric pair features
-    (`symmetric_input = True`).
+    Given a test embedding `e_t` and enrollment embedding `e_e`:
+
+    - `cosine_dims > 0` (paper: `d = 200` base dims of a 256-D embedding) restricts
+      the cosine score to the first `cosine_dims` dimensions; the remaining
+      side-information dimensions are only seen by the decision network.
+      `cosine_dims = 0` (FlaxSpeaker default) uses all dimensions.
+    - The decision network input is `[e_t_norm, e_e_norm, phi(c)]` (switch "B" of the
+      paper when `append_cosine_as_feature_to_network_input=True`).
+    - Hidden layers: `hidden_dims` Dense layers with `activation`
+      (paper: 3 x 256, leaky-ReLU slope 0.2, no normalisation; FlaxSpeaker default:
+      (128, 64) ReLU + LayerNorm).
+    - `readout="weighted_sum"` (paper) forms the intermediate score as a learned
+      weighted sum over *all* hidden-layer activations; `readout="linear"`
+      (FlaxSpeaker default) uses a linear layer on the last hidden layer.
+    - `score = c + residual_weight * net` when `add_cosine_to_network_output`
+      (switch "A"/"C"); `trainable_affine=True` (paper) then applies a trainable
+      `scale * score + offset`.
+    - `num_cosine_terms = 3` (`phi(c) = [c, c^2, sqrt(max(c, 0))]`) is a FlaxSpeaker
+      extension that does **not** appear in the paper.
     """
 
     hidden_dims: Sequence[int] = (128, 64)
     activation: str = "relu"
+    leaky_relu_slope: float = 0.2
     use_layer_norm: bool = True
     include_cosine_in_input: bool = True
     append_cosine_as_feature_to_network_input: bool = True
@@ -319,6 +333,9 @@ class DecisionResidualNetwork(nn.Module):
     num_cosine_terms: int = 1
     symmetric_input: bool = False
     residual_weight: float = 0.25
+    cosine_dims: int = 0
+    readout: str = "linear"
+    trainable_affine: bool = False
     eps: float = 1e-6
 
     def _act_fn(self, x: jax.Array) -> jax.Array:
@@ -329,6 +346,8 @@ class DecisionResidualNetwork(nn.Module):
             return nn.gelu(x)
         elif act == "tanh":
             return jnp.tanh(x)
+        elif act == "leaky_relu":
+            return nn.leaky_relu(x, negative_slope=float(self.leaky_relu_slope))
         return nn.relu(x)
 
     @nn.compact
@@ -336,7 +355,16 @@ class DecisionResidualNetwork(nn.Module):
         """Score aligned `(B, D)` pairs of `(test_embs, enroll_embs)` -> `(B,)`."""
         t_norm = test_embs / (jnp.linalg.norm(test_embs, axis=-1, keepdims=True) + self.eps)
         e_norm = enroll_embs / (jnp.linalg.norm(enroll_embs, axis=-1, keepdims=True) + self.eps)
-        cos_sim = jnp.sum(t_norm * e_norm, axis=-1, keepdims=True)  # (B, 1)
+        d_cos = int(self.cosine_dims)
+        if d_cos > 0 and d_cos < test_embs.shape[-1]:
+            # Paper: cosine over the `d` base dimensions only (re-normalised).
+            t_base = test_embs[..., :d_cos]
+            e_base = enroll_embs[..., :d_cos]
+            t_base = t_base / (jnp.linalg.norm(t_base, axis=-1, keepdims=True) + self.eps)
+            e_base = e_base / (jnp.linalg.norm(e_base, axis=-1, keepdims=True) + self.eps)
+            cos_sim = jnp.sum(t_base * e_base, axis=-1, keepdims=True)  # (B, 1)
+        else:
+            cos_sim = jnp.sum(t_norm * e_norm, axis=-1, keepdims=True)  # (B, 1)
 
         if self.symmetric_input:
             pair_feats = [0.5 * (t_norm + e_norm), jnp.abs(t_norm - e_norm)]
@@ -348,7 +376,7 @@ class DecisionResidualNetwork(nn.Module):
         if n_terms == 1:
             cos_feats = [cos_sim]
         elif n_terms == 3:
-            # Pelecanos et al. (Interspeech 2021, Eq. 7): [c, c^2, sqrt(max(c, 0))]
+            # FlaxSpeaker extension (not in Pelecanos et al. 2021): [c, c^2, sqrt(max(c, 0))]
             cos_feats = [
                 cos_sim,
                 jnp.square(cos_sim),
@@ -365,11 +393,22 @@ class DecisionResidualNetwork(nn.Module):
 
         h = jnp.concatenate(pair_feats, axis=-1)
 
+        hidden_outs: list[jax.Array] = []
         for idx, h_dim in enumerate(self.hidden_dims):
             h = nn.Dense(h_dim, name=f"dr_fc_{idx}")(h)
             if self.use_layer_norm:
                 h = nn.LayerNorm(name=f"dr_ln_{idx}")(h)
             h = self._act_fn(h)
+            hidden_outs.append(h)
+
+        readout = self.readout.lower()
+        if readout == "weighted_sum":
+            # Paper: "The 3 layers are followed by a weighted summation operation to
+            # give a single intermediate score" -- a learned linear read-out over the
+            # concatenation of all hidden-layer activations.
+            h = jnp.concatenate(hidden_outs, axis=-1)
+        elif readout != "linear":
+            raise ValueError(f"Unknown Dr-Vector readout: {self.readout}")
 
         if self.append_cosine_to_final_hidden or self.skip_connect_cosine_to_readout:
             h = jnp.concatenate([h] + cos_feats, axis=-1)
@@ -380,8 +419,16 @@ class DecisionResidualNetwork(nn.Module):
             name="dr_out",
         )(h)
         if self.add_cosine_to_network_output:
-            return (cos_sim + self.residual_weight * res).squeeze(-1)
-        return (self.residual_weight * res).squeeze(-1)
+            score = cos_sim + self.residual_weight * res
+        else:
+            score = self.residual_weight * res
+        if self.trainable_affine:
+            # Paper: "This score is scaled and an offset is applied and is optimized
+            # as part of the end-to-end training loss."
+            affine_scale = self.param("dr_affine_scale", nn.initializers.ones, (1,))
+            affine_offset = self.param("dr_affine_offset", nn.initializers.zeros, (1,))
+            score = score * affine_scale + affine_offset
+        return score.squeeze(-1)
 
     @nn.compact
     def __call__(self, test_embs: jax.Array, enroll_embs: jax.Array) -> jax.Array:
@@ -396,6 +443,32 @@ class DecisionResidualNetwork(nn.Module):
         )
         flat_scores = self.score_pairs(t_rep, e_rep)
         return flat_scores.reshape(n_test, n_enroll)
+
+
+def build_decision_residual_network(dr_cfg: Any) -> DecisionResidualNetwork:
+    """Builds a `DecisionResidualNetwork` from a `configs.DrVectorConfig` (single source of truth)."""
+    return DecisionResidualNetwork(
+        hidden_dims=tuple(dr_cfg.hidden_dims),
+        activation=str(dr_cfg.activation),
+        leaky_relu_slope=float(getattr(dr_cfg, "leaky_relu_slope", 0.2)),
+        use_layer_norm=bool(dr_cfg.use_layer_norm),
+        include_cosine_in_input=bool(dr_cfg.include_cosine_in_input),
+        append_cosine_as_feature_to_network_input=bool(
+            getattr(dr_cfg, "append_cosine_as_feature_to_network_input", True)
+        ),
+        append_cosine_to_final_hidden=bool(
+            getattr(dr_cfg, "append_cosine_to_final_hidden", False)
+        ),
+        add_cosine_to_network_output=bool(
+            getattr(dr_cfg, "add_cosine_to_network_output", True)
+        ),
+        num_cosine_terms=int(getattr(dr_cfg, "num_cosine_terms", 1)),
+        symmetric_input=bool(getattr(dr_cfg, "symmetric_input", False)),
+        residual_weight=float(dr_cfg.residual_weight),
+        cosine_dims=int(getattr(dr_cfg, "cosine_dims", 0)),
+        readout=str(getattr(dr_cfg, "readout", "linear")),
+        trainable_affine=bool(getattr(dr_cfg, "trainable_affine", False)),
+    )
 
 
 def apply_as_norm(

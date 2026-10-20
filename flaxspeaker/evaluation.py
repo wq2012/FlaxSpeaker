@@ -355,6 +355,46 @@ def _extract_eval_embeddings(
     return utt_to_emb, latency_ms
 
 
+def require_disjoint_cohort(
+    cohort_embeddings: Optional[np.ndarray],
+    utt_to_emb: dict[str, np.ndarray],
+    min_cohort_size: int = 10,
+    max_abs_cosine: float = 1.0 - 1e-5,
+) -> np.ndarray:
+    """Validates an AS-Norm impostor cohort.
+
+    AS-Norm z-scores are only meaningful against an impostor cohort that is disjoint
+    from the evaluation trials. Using the evaluation embeddings themselves as the
+    cohort (a) puts every utterance's self-score (cosine 1.0) into its own top-k and
+    (b) fills the top-k with same-speaker utterances, which collapses target z-scores.
+    This helper therefore raises if the cohort is missing, too small, or if any cohort
+    vector is (numerically) identical to a trial embedding.
+    """
+    if cohort_embeddings is None:
+        raise ValueError(
+            "AS-Norm is enabled but no `cohort_embeddings` were provided. Pass a "
+            "(N_cohort, D) array of impostor embeddings disjoint from the trial "
+            "utterances (e.g. embeddings of training speakers)."
+        )
+    cohort = np.asarray(cohort_embeddings, dtype=np.float32)
+    if cohort.ndim != 2 or cohort.shape[0] < min_cohort_size:
+        raise ValueError(
+            f"AS-Norm cohort must be a 2-D array with >= {min_cohort_size} rows; "
+            f"got shape {cohort.shape}."
+        )
+    trial_embs = np.stack(list(utt_to_emb.values()), axis=0).astype(np.float32)
+    c_norm = cohort / (np.linalg.norm(cohort, axis=-1, keepdims=True) + 1e-6)
+    t_norm = trial_embs / (np.linalg.norm(trial_embs, axis=-1, keepdims=True) + 1e-6)
+    max_sim = float(np.max(np.matmul(t_norm, c_norm.T))) if len(t_norm) else 0.0
+    if max_sim > max_abs_cosine:
+        raise ValueError(
+            "AS-Norm cohort overlaps the evaluation trials (a cohort embedding is "
+            f"identical to a trial embedding, cosine={max_sim:.6f}). The cohort must "
+            "be disjoint from the enrollment/test utterances."
+        )
+    return cohort
+
+
 def evaluate_verification_trials(
     state: train_state.TrainState,
     trials: Sequence[dataset.TrialPair],
@@ -362,11 +402,17 @@ def evaluate_verification_trials(
     feature_cache: Optional[feature_extraction.FeatureCache] = None,
     scoring_override: Optional[str] = None,
     precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
+    cohort_embeddings: Optional[np.ndarray] = None,
 ) -> dict[str, Any]:
     """Evaluate speaker verification on a list of `(label, enroll_utt, test_utt)` trials.
 
     Pre-computes embeddings for all unique utterances referenced in `trials` once,
     then scores all trial pairs using Cosine, PFAS, or Decision Residual Network.
+
+    If AS-Norm is enabled (`eval.use_as_norm` / `eval.apply_as_norm`), a
+    `cohort_embeddings` array `(N_cohort, D)` of impostor embeddings **disjoint from
+    the trial utterances and speakers** (e.g. training-speaker embeddings) is
+    required; see `require_disjoint_cohort`.
     """
     t0 = time.time()
     exp_cfg = (
@@ -442,25 +488,7 @@ def evaluate_verification_trials(
         )
         scores_arr = np.asarray(pair_fn(t_keys, t_vals, e_keys, e_vals))
     elif scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
-        dr_cfg = exp_cfg.model.dr_vector
-        dr_net = scoring.DecisionResidualNetwork(
-            hidden_dims=tuple(dr_cfg.hidden_dims),
-            activation=dr_cfg.activation,
-            use_layer_norm=dr_cfg.use_layer_norm,
-            include_cosine_in_input=dr_cfg.include_cosine_in_input,
-            num_cosine_terms=getattr(dr_cfg, "num_cosine_terms", 1),
-            append_cosine_as_feature_to_network_input=getattr(
-                dr_cfg, "append_cosine_as_feature_to_network_input", True
-            ),
-            append_cosine_to_final_hidden=bool(
-                getattr(dr_cfg, "append_cosine_to_final_hidden", False)
-            ),
-            add_cosine_to_network_output=getattr(
-                dr_cfg, "add_cosine_to_network_output", True
-            ),
-            symmetric_input=getattr(dr_cfg, "symmetric_input", False),
-            residual_weight=dr_cfg.residual_weight,
-        )
+        dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
         scores_arr = np.asarray(
             dr_net.apply(
                 {"params": state.params["_aux_dr_net"]},
@@ -483,8 +511,8 @@ def evaluate_verification_trials(
         getattr(exp_cfg.eval, "use_as_norm", False)
         or getattr(exp_cfg.eval, "apply_as_norm", False)
     )
-    if use_as_norm and scoring_type == "cosine" and len(utt_to_emb) >= 10:
-        cohort = np.stack(list(utt_to_emb.values()), axis=0)
+    if use_as_norm and scoring_type == "cosine":
+        cohort = require_disjoint_cohort(cohort_embeddings, utt_to_emb)
         top_k = int(
             getattr(
                 exp_cfg.eval,
@@ -541,8 +569,12 @@ def evaluate_multi_enroll_trials(
     myconfig: Any,
     feature_cache: Optional[feature_extraction.FeatureCache] = None,
     precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
+    cohort_embeddings: Optional[np.ndarray] = None,
 ) -> dict[str, Any]:
-    """Evaluate multi-utterance enrollment trials `(label, [enroll_utts], test_utt)`."""
+    """Evaluate multi-utterance enrollment trials `(label, [enroll_utts], test_utt)`.
+
+    See `evaluate_verification_trials` for the AS-Norm `cohort_embeddings` contract.
+    """
     exp_cfg = (
         myconfig
         if isinstance(myconfig, configs.ExperimentConfig)
@@ -626,25 +658,7 @@ def evaluate_multi_enroll_trials(
         scores_arr = np.asarray(pair_fn(t_keys, t_vals, e_keys, e_vals))
         scores_list = [float(s) for s in scores_arr]
     elif scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
-        dr_cfg = exp_cfg.model.dr_vector
-        dr_net = scoring.DecisionResidualNetwork(
-            hidden_dims=tuple(dr_cfg.hidden_dims),
-            activation=dr_cfg.activation,
-            use_layer_norm=dr_cfg.use_layer_norm,
-            include_cosine_in_input=dr_cfg.include_cosine_in_input,
-            num_cosine_terms=getattr(dr_cfg, "num_cosine_terms", 1),
-            append_cosine_as_feature_to_network_input=getattr(
-                dr_cfg, "append_cosine_as_feature_to_network_input", True
-            ),
-            append_cosine_to_final_hidden=bool(
-                getattr(dr_cfg, "append_cosine_to_final_hidden", False)
-            ),
-            add_cosine_to_network_output=getattr(
-                dr_cfg, "add_cosine_to_network_output", True
-            ),
-            symmetric_input=getattr(dr_cfg, "symmetric_input", False),
-            residual_weight=dr_cfg.residual_weight,
-        )
+        dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
         centroids = []
         tests = []
         for _, e_utts, t_utt in trials:
@@ -684,12 +698,8 @@ def evaluate_multi_enroll_trials(
         getattr(exp_cfg.eval, "use_as_norm", False)
         or getattr(exp_cfg.eval, "apply_as_norm", False)
     )
-    if (
-        use_as_norm
-        and scoring_type == "cosine"
-        and len(utt_to_emb) >= 10
-    ):
-        cohort = np.stack(list(utt_to_emb.values()), axis=0)
+    if use_as_norm and scoring_type == "cosine":
+        cohort = require_disjoint_cohort(cohort_embeddings, utt_to_emb)
         top_k = int(
             getattr(
                 exp_cfg.eval,

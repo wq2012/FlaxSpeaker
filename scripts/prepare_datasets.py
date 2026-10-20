@@ -68,7 +68,9 @@ def prepare_all_datasets(
         n_mels=80,
         apply_cmvn=True,
     )
-    vad_cfg = configs.VadConfig(mode=configs.VadMode.ENERGY, energy_db_threshold=30.0)
+    # Single project-wide VAD constant: the `VadConfig()` default (26 dB), identical to
+    # training (`run_research_benchmarks.py`) and `eval_vox1_o_subset.py`.
+    vad_cfg = configs.VadConfig(mode=configs.VadMode.ENERGY.value)
     frontend = feature_extraction.AudioFrontend(frontend_cfg, vad_cfg)
 
     summary = {}

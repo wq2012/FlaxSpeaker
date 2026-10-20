@@ -311,14 +311,22 @@ def ge2e_contrast_loss(
     split_batch: bool = False,
     exact_leave_one_out: bool = True,
     score_matrix_fn: Optional[Callable[[jax.Array, jax.Array], jax.Array]] = None,
+    surrogate: bool = False,
 ) -> jax.Array:
     """Generalized End-to-End (GE2E) Contrast Loss (Wan et al., ICASSP 2018, Eq. 7).
 
     Computes `L_C(e_ji) = 1 - sigmoid(S_{ji, j}) + max_{k != j} sigmoid(S_{ji, k})`
-    with positive scale constraint `w > 0` (`jnp.maximum(jnp.abs(w), 1e-3)`) and a
-    non-saturating log-sigmoid + softmax contrast surrogate gradient via
-    `jax.lax.stop_gradient` so gradients never vanish when `S_{ji, k}` starts in
-    the flat tail of `sigmoid` (e.g., at `b = -5.0`).
+    with positive scale constraint `w > 0` (`jnp.maximum(jnp.abs(w), 1e-3)`).
+
+    `surrogate=False` (default): value *and gradient* are those of Eq. 7.
+
+    `surrogate=True` (**FlaxSpeaker hybrid contrast surrogate**, used by the released
+    `*_ge2e_contrast` checkpoints): the returned value is still Eq. 7, but the
+    gradient (via `jax.lax.stop_gradient`) is that of
+    `0.25 * Eq7 + 0.25 * BCE(pos/neg logits) + 0.50 * GE2E-softmax CE`, so
+    optimisation does not stall when `b` places the scores in the flat tail of the
+    sigmoid. This is a different objective from Wan et al. Eq. 7 and must be
+    labelled as such.
     """
     w_clamped = jnp.maximum(jnp.abs(w), 1e-3)
     if split_batch or score_matrix_fn is not None:
@@ -345,9 +353,10 @@ def ge2e_contrast_loss(
     pos_sig = jnp.sum(sig_scores * target_mask, axis=-1)
     neg_sig = jnp.max(sig_scores * (1.0 - target_mask) - 1e9 * target_mask, axis=-1)
     eq7_loss = jnp.mean(1.0 - pos_sig + neg_sig)
+    if not surrogate:
+        return eq7_loss
 
-    # Non-saturating surrogate gradient in log-domain so optimization converges
-    # smoothly even when initial `b = -5.0` places `sim_matrix` in the flat tail of sigmoid.
+    # Hybrid surrogate gradient (see docstring).
     pos_logit = jnp.sum(sim_matrix * target_mask, axis=-1)
     neg_logit = jnp.max(sim_matrix * (1.0 - target_mask) - 1e9 * target_mask, axis=-1)
     bce_surrogate = jnp.mean(jax.nn.softplus(-pos_logit) + jax.nn.softplus(neg_logit))
@@ -380,7 +389,7 @@ def extended_set_softmax_loss(
     Recognition" (Interspeech 2021, https://arxiv.org/pdf/2104.01989).
 
     Supports both:
-    1. Exact unnormalized, unblended Pelecanos et al. (2021) Eq. 3 when
+    1. Exact unnormalized, unblended Pelecanos et al. (2021) Eq. 2 when
        `pure_extended_set=True` (`normalize_by_num_speakers=False, row_softmax_weight=0.0`):
        `L(j) = -log( exp(S_{j,j}) / (exp(S_{j,j}) + sum_{p in W, q != p} exp(S_{p,q})) )`
     2. Row-count normalized and row-softmax blended stabilization (default:

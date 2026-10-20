@@ -106,25 +106,26 @@
         "eval_time_sec": 1.786,
         "scoring_type": "cosine"
       },
-      "voxceleb1_o_official": {
-        "eer": 0.25907660425211426,
-        "eer_percent": 25.9077,
-        "eer_ci95_low_percent": 23.4545,
-        "eer_ci95_high_percent": 27.5052,
-        "eer_threshold": 0.3076854348182678,
-        "min_dcf_001": 0.962,
-        "min_dcf_005": 0.9406,
-        "min_dcf_01": 0.9185,
-        "roc_auc": 0.8288,
+      "vox1_o_10spk_subset": {
+        "eer": 0.2533335849098137,
+        "eer_percent": 25.3334,
+        "eer_ci95_low_percent": 23.2913,
+        "eer_ci95_high_percent": 27.458,
+        "eer_threshold": 0.3038387596607208,
+        "min_dcf_001": 0.9642,
+        "min_dcf_005": 0.9451,
+        "min_dcf_01": 0.923,
+        "roc_auc": 0.8289,
         "num_trials": 2500,
         "num_unique_utterances": 937,
-        "latency_ms_per_utterance": 8.01,
-        "eval_time_sec": 7.974,
+        "latency_ms_per_utterance": 8.176,
+        "eval_time_sec": 8.148,
         "scoring_type": "cosine",
         "num_target_trials": 1789,
         "num_impostor_trials": 711,
-        "num_unseen_speakers": 10,
-        "protocol": "veri_test2_speaker_disjoint_10spk_2500trials"
+        "num_eval_speakers": 10,
+        "protocol": "veri_test2_10spk_subset_2500trials",
+        "vad_energy_db_threshold": 26.0
       }
     },
     "universal_macro_avg_1utt": {
@@ -191,25 +192,26 @@
     }
   },
   "cross_dataset_eval": {
-    "voxceleb1_o_official": {
-      "eer": 0.25907660425211426,
-      "eer_percent": 25.9077,
-      "eer_ci95_low_percent": 23.4545,
-      "eer_ci95_high_percent": 27.5052,
-      "eer_threshold": 0.3076854348182678,
-      "min_dcf_001": 0.962,
-      "min_dcf_005": 0.9406,
-      "min_dcf_01": 0.9185,
-      "roc_auc": 0.8288,
+    "vox1_o_10spk_subset": {
+      "eer": 0.2533335849098137,
+      "eer_percent": 25.3334,
+      "eer_ci95_low_percent": 23.2913,
+      "eer_ci95_high_percent": 27.458,
+      "eer_threshold": 0.3038387596607208,
+      "min_dcf_001": 0.9642,
+      "min_dcf_005": 0.9451,
+      "min_dcf_01": 0.923,
+      "roc_auc": 0.8289,
       "num_trials": 2500,
       "num_unique_utterances": 937,
-      "latency_ms_per_utterance": 8.01,
-      "eval_time_sec": 7.974,
+      "latency_ms_per_utterance": 8.176,
+      "eval_time_sec": 8.148,
       "scoring_type": "cosine",
       "num_target_trials": 1789,
       "num_impostor_trials": 711,
-      "num_unseen_speakers": 10,
-      "protocol": "veri_test2_speaker_disjoint_10spk_2500trials"
+      "num_eval_speakers": 10,
+      "protocol": "veri_test2_10spk_subset_2500trials",
+      "vad_energy_db_threshold": 26.0
     }
   },
   "config_yaml": "configs/univ_conformer_small_ge2e_contrast.yml",
@@ -217,7 +219,7 @@
   "hf_repo_id": "wq2012/univ_conformer_small_ge2e_contrast",
   "hf_url": "https://huggingface.co/wq2012/univ_conformer_small_ge2e_contrast",
   "hf_collection_url": "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595",
-  "voxceleb1_o_official_eer_percent": 25.9077,
-  "voxceleb1_o_official_min_dcf_001": 0.962,
-  "voxceleb1_o_official_roc_auc": 0.8288
+  "vox1_o_10spk_subset_eer_percent": 25.3334,
+  "vox1_o_10spk_subset_min_dcf_001": 0.9642,
+  "vox1_o_10spk_subset_roc_auc": 0.8289
 }

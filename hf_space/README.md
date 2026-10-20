@@ -1,5 +1,5 @@
 ---
-title: FlaxSpeaker — Universal Speaker Recognition & Verification
+title: FlaxSpeaker — Speaker Verification Demo (JAX/Flax)
 emoji: 🎙️
 colorFrom: blue
 colorTo: indigo
@@ -8,22 +8,34 @@ sdk_version: 5.50.0
 app_file: app.py
 pinned: false
 license: apache-2.0
-short_description: Universal Speaker Recognition in JAX/Flax (GE2E, Dr-Vectors, Conformer-ATP, PFAS)
+short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS) — 400-step demo checkpoints
 ---
 
-# FlaxSpeaker — Interactive Universal Speaker Verification Demo
+# FlaxSpeaker — Interactive Speaker Verification Demo
 
-## Disclaimer & Open-Source Reproduction Notice
+## Disclaimer & Reproduction Notice
 
 > **This is not an officially supported Google product.**
 >
-> This interactive demo and the `FlaxSpeaker` library are an independent, clean-room open-source reproduction in JAX/Flax of speaker recognition algorithms published in:
+> This demo and the `FlaxSpeaker` library are a from-scratch JAX/Flax re-implementation, written using only the published papers (no proprietary code or data), of speaker recognition algorithms from:
 > - **GE2E**: *Generalized End-to-End Loss for Speaker Verification* ([arXiv:1710.10467](https://arxiv.org/abs/1710.10467))
 > - **Dr-Vectors**: *Decision Residual Networks and an Improved Loss for Speaker Recognition* ([arXiv:2104.01989](https://arxiv.org/abs/2104.01989))
-> - **Conformer-ATP**: *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
-> - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642v3](https://arxiv.org/abs/2203.05642v3))
+> - **ATP** (pooling head repurposed from a *language identification* paper): *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
+> - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642](https://arxiv.org/abs/2203.05642))
 >
-> The original papers were conducted using Google's internal proprietary infrastructure and internal datasets, not this open-source library.
+> The original papers were evaluated on Google-internal infrastructure and data, not with this library.
+
+## Accuracy caveat (read first)
+
+All 44 selectable checkpoints were trained for **400 gradient steps × 32 utterances on a CPU workstation with a single seed** (≈1.35 epochs over 9,447 utterances from 381 speakers). They reach **19–32% EER** on the project's in-house trial lists and **22–32% EER on a 10-speaker VoxCeleb1-O subset** (not comparable to published VoxCeleb1-O numbers); published systems trained on VoxCeleb2 reach about 1%. They are *demonstration* checkpoints for comparing architectures and losses under an identical budget, not production or state-of-the-art models.
+
+## What the demo does
+
+- **Real inference only.** Every verdict runs the selected checkpoint on the uploaded/recorded audio (energy VAD → 80-D log-Mel → JAX encoder → cosine / Dr-Vector / PFAS scoring). Nothing is precomputed; curated examples are *not* cached.
+- **Calibrated default threshold.** When you pick a model, the decision threshold resets to that model's **own pooled 1-utt EER operating point** read from its `eval_results.json` (e.g. 0.625 for `univ_conformer_tiny_ge2e`, 0.671 for `univ_conformer_small_ge2e`); the slider range adapts to the scoring back-end (cosine vs. Dr-Vector vs. PFAS scales).
+- **Multi-utterance enrollment** (centroid for cosine / Dr-Vector, key stacking for PFAS), a VAD on/off toggle with an SNR-margin slider, and a diagnostic plot (waveform + VAD gate, post-VAD log-Mel spectrograms, embedding profile).
+- **Latency** is reported as steady-state model inference time (the JIT is warmed up when a model is loaded) separately from end-to-end time.
+- AS-Norm is intentionally **not** offered in the demo: a meaningful AS-Norm needs an impostor cohort disjoint from the trial audio, which a stateless web demo does not have. The library's `evaluate_verification_trials(..., cohort_embeddings=...)` enforces this requirement.
 
 ## Links & Pretrained Models
 
@@ -31,23 +43,15 @@ short_description: Universal Speaker Recognition in JAX/Flax (GE2E, Dr-Vectors, 
 - **GitHub Repository**: [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker)
 - **PyPI Package**: [`flaxspeaker`](https://pypi.org/project/flaxspeaker/)
 
-### Highlighted Pretrained Checkpoints on Hugging Face Hub
+### Model selection
 
-| Hugging Face Repository | Backbone / Size | Pooling / Loss / Scoring | Params | Macro-Avg 1-Utt / 3-Utt EER (%) | Pooled 1-Utt / 3-Utt EER (%) |
-| :--- | :--- | :--- | :---: | :---: | :---: |
-| [`wq2012/univ_conformer_tiny_ge2e`](https://huggingface.co/wq2012/univ_conformer_tiny_ge2e) | `conformer` (`tiny`) | `atp` / `ge2e_softmax` / `cosine` | `693,126` | **19.26%** / **15.20%** | **18.75%** / **15.03%** |
-| [`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) | `conformer` (`small`) | `atp` / `ge2e_softmax` / `cosine` | `2,029,894` | 19.88% / 16.17% | 19.40% / 16.03% |
-| [`wq2012/univ_conformer_small_dr_vectors`](https://huggingface.co/wq2012/univ_conformer_small_dr_vectors) | `conformer` (`small`) | `atp` / `extended_set_softmax` / `dr_vector` | `2,088,007` | 20.09% / **15.20%** | 20.10% / 15.40% |
-| [`wq2012/univ_conformer_small_pfas_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_pfas_ge2e) | `conformer` (`small`) | `pfas` / `ge2e_softmax` / `pfas` | `2,162,187` | 20.26% / 16.07% | 19.86% / 16.27% |
-| [`wq2012/univ_conformer_small_pfas`](https://huggingface.co/wq2012/univ_conformer_small_pfas) | `conformer` (`small`) | `pfas` / `extended_set_softmax` / `pfas` | `2,162,187` | 20.65% / 15.80% | 20.35% / 16.00% |
-| [`wq2012/univ_mamba_small_ge2e`](https://huggingface.co/wq2012/univ_mamba_small_ge2e) | `mamba` (`small`) | `asp` / `ge2e_softmax` / `cosine` | `1,028,674` | 20.38% / 15.23% | 20.41% / 16.07% |
-| [`wq2012/ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) | `conformer` (`small`) | `atp` / `ge2e_softmax` / `cosine` | `2,029,894` | 20.06% / 16.37% | 20.12% / 16.73% |
-| [`wq2012/cn_conformer_small_dr_vectors`](https://huggingface.co/wq2012/cn_conformer_small_dr_vectors) | `conformer` (`small`) | `atp` / `extended_set_softmax` / `dr_vector` | `2,088,007` | 23.49% / 17.77% | 23.95% / 18.97% |
-| [`wq2012/vox_conformer_small_ge2e`](https://huggingface.co/wq2012/vox_conformer_small_ge2e) | `conformer` (`small`) | `atp` / `ge2e_softmax` / `cosine` | `2,029,894` | 21.67% / 17.97% | 22.40% / 17.63% |
+The dropdown lists all 44 checkpoints: **19 universal multi-domain models** (`univ_*`, trained jointly on LibriSpeech + CN-Celeb2 + VoxCeleb1 with domain-balanced batching) and **25 single-domain specialists** (`ls_*` LibriSpeech-only, `cn_*` CN-Celeb2-only, `vox_*` VoxCeleb1-only). The default `univ_conformer_tiny_ge2e` (0.69 M parameters) has the lowest pooled 1-utt EER (18.75%) and the best VoxCeleb1-O-subset EER among universal models (23.94%) in `pretrained_models/benchmark_results.json`. Per-model numbers, confidence intervals, and a per-checkpoint "Deviations from the source papers" section are in each model card.
 
-## Features
+## Running locally
 
-1. **Universal Multi-Domain Pretrained Models**: Select between all 44 Universal Conformer-ATP (`GE2E`, `Dr-Vectors`, `PFAS`, `Extended-Set Softmax`, `ArcFace`), Universal ECAPA-TDNN, Universal Mamba, Universal Transformer, Universal LSTM, Universal ResNet, and Single-Domain models from the [FlaxSpeaker Hugging Face Collection](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) trained simultaneously on **LibriSpeech + CN-Celeb2 + VoxCeleb1**.
-2. **Real-Time Verification & Scoring**: Supports Cosine Similarity, Parameter-Free Attentive Scoring (PFAS), and Decision Residual Network (Dr-Vector) scoring.
-3. **Acoustic & VAD Diagnostics**: Visualizes the 80-bin Log-Mel Spectrogram after Automatic Gain Control (AGC) and Frame-Energy Voice Activity Detection (26 dB below 95th-percentile frame energy), alongside the 192-D speaker embedding profile.
-4. **Curated Multi-Domain Examples**: Pre-loaded genuine and impostor trials from English read speech (LibriSpeech), Chinese multi-genre speech (CN-Celeb2), and in-the-wild English celebrity interviews (VoxCeleb1).
+```bash
+pip install -r requirements.txt   # installs flaxspeaker from GitHub + gradio
+python app.py
+```
+
+Checkpoints are downloaded from the Hub on first use (or read from `../pretrained_models/` when running inside the repository).

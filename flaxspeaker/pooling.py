@@ -136,10 +136,13 @@ class AttentiveTemporalPooling(nn.Module):
     in Long-Form Speech" (Wang et al., Odyssey 2022, https://arxiv.org/pdf/2202.12163).
 
     For each frame $t$ and head $h \\in \\{1, \\dots, H\\}$:
-    - Computes unnormalized positive importance weight via a feed-forward network
-      with sigmoid activation:
-      $$w_{t,h} = (1 - \\text{padding}_t) \\cdot \\sigma(\\text{FFN}(\\mathbf{x}_t))_h + \\epsilon$$
-      with $\\epsilon = 10^{-4}$ for numerical stability.
+    - Computes unnormalized positive importance weights with a sigmoid:
+      $$w_{t,h} = m_t \\cdot (\\sigma(\\text{FFN}(\\mathbf{x}_t))_h + \\epsilon)$$
+      with mask $m_t$ and $\\epsilon = 10^{-4}$ for numerical stability. With
+      `attention_dim = 0` the FFN is a single linear layer (the paper form); with
+      `attention_dim > 0` a tanh hidden layer is inserted (FlaxSpeaker extension).
+      Note: arXiv:2202.12163 is a streaming *language identification* paper; the
+      pooling head is repurposed here for speaker embeddings.
     - Accumulates weighted zero-th, first, and second moments across all valid frames:
       $$\\eta_h = \\sum_t w_{t,h}, \\quad \\mu_h = \\eta_h^{-1}\\sum_t w_{t,h} x_{t,h}$$
       $$\\sigma_h = \\sqrt{\\max(\\eta_h^{-1}\\sum_t w_{t,h} x_{t,h}^2 - \\mu_h^2, \\epsilon)}$$
@@ -261,9 +264,14 @@ class PfasRepresentationHead(nn.Module):
     - `"unshared_nonlinear"`: Separate multi-head tanh attention for keys and values
     - `"shared_linear"`: Multi-head linear attention shared between keys & values
     - `"maxpool"`: Temporal windowed max-pooling into M segments
-    - `"atp_ffn"`: Pools frames with `AttentiveTemporalPooling` (`MEAN_STD`),
-      passes through a nonlinear bottleneck FFN (`Dense(bottleneck_dim) -> LayerNorm -> ReLU`),
+    - `"atp_ffn"` (the head of Pelecanos et al. 2022, Sec. 2.3.1 / 3): pools frames
+      with `AttentiveTemporalPooling` (`MEAN_STD`; single-head linear-sigmoid when
+      `atp_num_heads=1, atp_attention_dim=0`), applies `Dense(bottleneck_dim) -> ReLU`
+      (plus LayerNorms when `atp_ffn_use_layer_norm=True`, a FlaxSpeaker extension),
       and projects linearly to `M * (key_dim + value_dim)`.
+
+    The default `"shared_nonlinear"` + `use_global_anchor=True` combination is the
+    FlaxSpeaker extension "PFAS-SN" used by the released `*_pfas*` checkpoints.
     """
 
     num_keys: int = 4
@@ -272,7 +280,10 @@ class PfasRepresentationHead(nn.Module):
     attention_dim: int = 128
     bottleneck_dim: int = 256
     atp_num_heads: int = 4
+    atp_attention_dim: int = 128
+    atp_subspace_heads: bool = True
     attention_type: str = "shared_nonlinear"
+    atp_ffn_use_layer_norm: bool = True
     apply_l2_norm_to_keys: bool = True
     apply_l2_norm_to_values: bool = False
     apply_global_l2_norm_to_concat_form: bool = True
@@ -292,12 +303,17 @@ class PfasRepresentationHead(nn.Module):
         if att_mode == "atp_ffn":
             pooled = AttentiveTemporalPooling(
                 num_heads=self.atp_num_heads,
+                attention_dim=self.atp_attention_dim,
+                subspace_heads=self.atp_subspace_heads,
                 pooling_stats="mean_std",
                 name="pfas_atp",
             )(x, mask=mask)
-            h = nn.LayerNorm(name="pfas_pool_ln")(pooled)
-            h = nn.Dense(self.bottleneck_dim, name="pfas_ffn_hid")(h)
-            h = nn.LayerNorm(name="pfas_ffn_ln")(h)
+            if self.atp_ffn_use_layer_norm:
+                h = nn.LayerNorm(name="pfas_pool_ln")(pooled)
+                h = nn.Dense(self.bottleneck_dim, name="pfas_ffn_hid")(h)
+                h = nn.LayerNorm(name="pfas_ffn_ln")(h)
+            else:
+                h = nn.Dense(self.bottleneck_dim, name="pfas_ffn_hid")(pooled)
             h = nn.relu(h)
             packed = nn.Dense(total_kv_dim, name="pfas_kv_out")(h)
             key_size = self.num_keys * self.key_dim

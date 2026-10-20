@@ -41,26 +41,6 @@
     "num_trials": 1000
   },
   "cross_dataset_eval": {
-    "voxceleb1_o_official": {
-      "eer": 0.2687505061011227,
-      "eer_percent": 26.8751,
-      "eer_ci95_low_percent": 24.8562,
-      "eer_ci95_high_percent": 29.0199,
-      "eer_threshold": 0.6361639499664307,
-      "min_dcf_001": 0.9687,
-      "min_dcf_005": 0.9412,
-      "min_dcf_01": 0.9038,
-      "roc_auc": 0.8159,
-      "num_trials": 2500,
-      "num_unique_utterances": 937,
-      "latency_ms_per_utterance": 8.482,
-      "eval_time_sec": 8.518,
-      "scoring_type": "pfas",
-      "num_target_trials": 1789,
-      "num_impostor_trials": 711,
-      "num_unseen_speakers": 10,
-      "protocol": "veri_test2_speaker_disjoint_10spk_2500trials"
-    },
     "cnceleb2_zero_shot": {
       "eer": 0.2886666666666666,
       "eer_percent": 28.8667,
@@ -76,6 +56,27 @@
       "latency_ms_per_utterance": 47.988,
       "eval_time_sec": 37.118,
       "scoring_type": "pfas"
+    },
+    "vox1_o_10spk_subset": {
+      "eer": 0.2715544045931576,
+      "eer_percent": 27.1554,
+      "eer_ci95_low_percent": 25.0578,
+      "eer_ci95_high_percent": 29.0769,
+      "eer_threshold": 0.6324923038482666,
+      "min_dcf_001": 0.9681,
+      "min_dcf_005": 0.9283,
+      "min_dcf_01": 0.9044,
+      "roc_auc": 0.8167,
+      "num_trials": 2500,
+      "num_unique_utterances": 937,
+      "latency_ms_per_utterance": 8.661,
+      "eval_time_sec": 8.668,
+      "scoring_type": "pfas",
+      "num_target_trials": 1789,
+      "num_impostor_trials": 711,
+      "num_eval_speakers": 10,
+      "protocol": "veri_test2_10spk_subset_2500trials",
+      "vad_energy_db_threshold": 26.0
     }
   },
   "config_yaml": "configs/ls_conformer_small_pfas_ge2e.yml",
@@ -145,25 +146,26 @@
         "eval_time_sec": 3.553,
         "scoring_type": "pfas"
       },
-      "voxceleb1_o_official": {
-        "eer": 0.2687505061011227,
-        "eer_percent": 26.8751,
-        "eer_ci95_low_percent": 24.8562,
-        "eer_ci95_high_percent": 29.0199,
-        "eer_threshold": 0.6361639499664307,
-        "min_dcf_001": 0.9687,
-        "min_dcf_005": 0.9412,
-        "min_dcf_01": 0.9038,
-        "roc_auc": 0.8159,
+      "vox1_o_10spk_subset": {
+        "eer": 0.2715544045931576,
+        "eer_percent": 27.1554,
+        "eer_ci95_low_percent": 25.0578,
+        "eer_ci95_high_percent": 29.0769,
+        "eer_threshold": 0.6324923038482666,
+        "min_dcf_001": 0.9681,
+        "min_dcf_005": 0.9283,
+        "min_dcf_01": 0.9044,
+        "roc_auc": 0.8167,
         "num_trials": 2500,
         "num_unique_utterances": 937,
-        "latency_ms_per_utterance": 8.482,
-        "eval_time_sec": 8.518,
+        "latency_ms_per_utterance": 8.661,
+        "eval_time_sec": 8.668,
         "scoring_type": "pfas",
         "num_target_trials": 1789,
         "num_impostor_trials": 711,
-        "num_unseen_speakers": 10,
-        "protocol": "veri_test2_speaker_disjoint_10spk_2500trials"
+        "num_eval_speakers": 10,
+        "protocol": "veri_test2_10spk_subset_2500trials",
+        "vad_energy_db_threshold": 26.0
       }
     },
     "universal_macro_avg_1utt": {
@@ -233,7 +235,7 @@
   "hf_repo_id": "wq2012/ls_conformer_small_pfas_ge2e",
   "hf_url": "https://huggingface.co/wq2012/ls_conformer_small_pfas_ge2e",
   "hf_collection_url": "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595",
-  "voxceleb1_o_official_eer_percent": 26.8751,
-  "voxceleb1_o_official_min_dcf_001": 0.9687,
-  "voxceleb1_o_official_roc_auc": 0.8159
+  "vox1_o_10spk_subset_eer_percent": 27.1554,
+  "vox1_o_10spk_subset_min_dcf_001": 0.9681,
+  "vox1_o_10spk_subset_roc_auc": 0.8167
 }

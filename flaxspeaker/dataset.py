@@ -214,14 +214,21 @@ def split_speakers_train_eval(
     return train_dict, eval_dict
 
 
-def get_triplet(spk_to_utts: SpkToUtts) -> tuple[str, str, str]:
-    """Get a triplet of anchor/pos/neg samples."""
-    pos_spk, neg_spk = random.sample(list(spk_to_utts.keys()), 2)
+def get_triplet(
+    spk_to_utts: SpkToUtts, rng: Optional[random.Random] = None
+) -> tuple[str, str, str]:
+    """Get a triplet of anchor/pos/neg samples.
+
+    Pass a `random.Random(seed)` instance as `rng` for reproducible sampling; the
+    global `random` module is used only when `rng` is None.
+    """
+    r = rng if rng is not None else random
+    pos_spk, neg_spk = r.sample(list(spk_to_utts.keys()), 2)
     # Retry if too few positive utterances.
     while len(spk_to_utts[pos_spk]) < 2:
-        pos_spk, neg_spk = random.sample(list(spk_to_utts.keys()), 2)
-    anchor_utt, pos_utt = random.sample(spk_to_utts[pos_spk], 2)
-    neg_utt = random.sample(spk_to_utts[neg_spk], 1)[0]
+        pos_spk, neg_spk = r.sample(list(spk_to_utts.keys()), 2)
+    anchor_utt, pos_utt = r.sample(spk_to_utts[pos_spk], 2)
+    neg_utt = r.sample(spk_to_utts[neg_spk], 1)[0]
     return (anchor_utt, pos_utt, neg_utt)
 
 

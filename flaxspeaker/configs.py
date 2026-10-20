@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import enum
 from typing import Any, Optional, Union
+import warnings
 import munch
 import yaml
 
@@ -167,66 +168,74 @@ class SpecAugConfig:
 
 @dataclasses.dataclass
 class WaveformAugConfig:
-    """Configuration for Multi-Style Training (MTR) waveform / noise augmentation.
+    """Configuration for feature-domain Multi-Style Training (MTR) noise augmentation.
 
-    Follows arXiv:2202.12163 Section 3.2: applies additive background/ambient noise
-    at moderate SNR (`[snr_min_db, snr_max_db]`, never too high) and optional room
-    reverberation, strictly mutually exclusive with SpecAugment (`clean=0` vs `clean=1`).
+    Despite the historical class name, training applies this augmentation in the
+    *standardized log-Mel feature domain* (`specaug.apply_feature_mtr_augmentation`):
+    frequency-shaped Gaussian noise gated towards low-energy bins at a sampled SNR in
+    `[snr_min_db, snr_max_db]`, plus an optional one-tap temporal smoothing "reverb".
+    It is NOT waveform-domain noise/RIR convolution with recorded corpora (the MTR of
+    the original Google pipelines). Augmentation is strictly mutually exclusive with
+    SpecAugment (see `specaug.augment_features_mutually_exclusive`).
+
+    `reverb_rt60_min/max` are only used by the standalone waveform helper
+    `specaug.apply_waveform_augmentation` (not on the training path).
     """
 
     enabled: bool = True
     use_waveform_aug: bool = True
     aug_prob: float = 0.35
-    snr_min_db: float = 8.0
+    snr_min_db: float = 12.0
     snr_max_db: float = 20.0
     reverb_prob: float = 0.4
     reverb_rt60_min: float = 0.05
     reverb_rt60_max: float = 0.20
-    noise_dir: str = ""
 
 
 @dataclasses.dataclass
 class LstmConfig:
-    """Configuration for LSTM speaker encoder."""
+    """Configuration for LSTM speaker encoder (no dropout is implemented)."""
 
     hidden_size: int = 256
     proj_size: int = 0
     num_layers: int = 3
     bidirectional: bool = False
-    dropout_rate: float = 0.1
     use_layer_norm: bool = True
     frame_aggregation_mean: bool = True
 
 
 @dataclasses.dataclass
 class TransformerConfig:
-    """Configuration for Transformer speaker encoder."""
+    """Configuration for Transformer speaker encoder (no dropout is implemented)."""
 
     dim: int = 256
     num_encoder_layers: int = 4
     num_heads: int = 4
     mlp_dim: int = 512
-    dropout_rate: float = 0.1
     use_positional_encoding: bool = False
     use_conv_stem: bool = True
-    use_rope: bool = False
 
 
 @dataclasses.dataclass
 class ConformerConfig:
-    """Configuration for Conformer speaker encoder (arXiv:2202.12163)."""
+    """Configuration for the Conformer speaker encoder.
+
+    `layer_order` selects the block ordering inside each Conformer block:
+    `"mhsa_before_conv"` (Gulati et al., FlaxSpeaker default) or
+    `"conv_before_mhsa"`. `subsample_factor > 1` applies stack-by-`subsample_factor`
+    time reduction (concatenate adjacent frames + linear projection back to `dim`)
+    after `subsample_after_layer` Conformer blocks. No dropout is implemented.
+    """
 
     dim: int = 256
     num_layers: int = 4
     num_heads: int = 4
-    ffn_expansion: int = 4
     ffn_dim: int = 512
     conv_kernel_size: int = 15
-    dropout_rate: float = 0.1
     subsample_factor: int = 1
+    subsample_after_layer: int = 3
     layer_order: str = "mhsa_before_conv"
     use_group_norm: bool = True
-    num_groups: int = 2
     use_conv_stem: bool = True
     use_positional_encoding: bool = False
     normalize_output: bool = False
@@ -239,12 +248,9 @@ class MambaConfig:
     dim: int = 256
     num_layers: int = 4
     d_state: int = 16
-    state_dim: int = 16
     d_conv: int = 4
-    conv_kernel_size: int = 4
     expand_factor: int = 2
     dt_rank: int = 16
-    dropout_rate: float = 0.1
     bidirectional: bool = False
 
 
@@ -256,59 +262,64 @@ class EcapaTdnnConfig:
     scale: int = 4
     kernel_sizes: tuple[int, ...] = (5, 3, 3, 3)
     dilations: tuple[int, ...] = (1, 2, 3, 4)
-    attention_channels: int = 64
-    se_channels: int = 64
     se_bottleneck_dim: int = 64
-    mfa_channels: int = 768
     mfa_dim: int = 512
     norm_after_activation: bool = False
 
 
 @dataclasses.dataclass
 class ResNetConfig:
-    """Configuration for Thin-ResNet / ResNet-34 speaker encoder."""
+    """Configuration for Thin-ResNet / ResNet-18 speaker encoder."""
 
     base_channels: int = 32
-    stage_blocks: tuple[int, ...] = (2, 2, 2, 2)
     num_blocks: tuple[int, ...] = (2, 2, 2, 2)
     use_se: bool = True
-    se_reduction: int = 8
     out_dim: int = 256
 
 
 @dataclasses.dataclass
 class PoolingConfig:
-    """Configuration for temporal frame aggregation / pooling."""
+    """Configuration for temporal frame aggregation / pooling.
+
+    For `ATP`: `attention_dim > 0` inserts a tanh hidden layer before the sigmoid
+    weight projection (FlaxSpeaker extension); `attention_dim = 0` and
+    `num_heads = 1` recover the single-head linear-sigmoid ATP of Wang et al. 2022 /
+    Pelecanos et al. 2022. `subspace_heads = True` splits the D channels across heads
+    (FlaxSpeaker extension); `False` pools all D channels with every head.
+    """
 
     pooling_type: str = PoolingType.ATP.value
     attention_dim: int = 128
     use_global_context: bool = True
-    share_params: bool = True
-    nonlinear_attention: bool = True
-    divide_layer: bool = False
-    max_pooling_mode: str = "off"
-    top_k: int = 10
-    window_size: int = 10
-    window_stride: int = 5
     stats_type: str = "MEAN_STD"
-    use_weighted_frames: bool = True
     num_heads: int = 4
     subspace_heads: bool = True
     epsilon: float = 1e-4
     bottleneck_dim: int = 256
+    use_nonlinear_bottleneck: bool = True
 
 
 @dataclasses.dataclass
 class PfasConfig:
-    """Configuration for Parameter-Free Attentive Scoring (arXiv:2203.05642v3).
+    """Configuration for Parameter-Free Attentive Scoring (Pelecanos et al., Odyssey 2022).
 
-    Combines multi-head temporal frame attention (`shared_nonlinear`, Section 2.1)
-    anchored on global `AttentiveTemporalPooling` bottleneck statistics with
-    Key & Global Concat L2-Normalization (`arXiv:2203.05642v3`, Eq. 5-6):
-    - `num_keys = 4`, `key_dim = 32`, `value_dim = 128` (total dim 640)
-    - `apply_l2_norm_to_keys = True`, `apply_l2_norm_to_values = False`
-    - `apply_global_l2_norm_to_concat_form = True` (Key & Global L2-Norm, Eq. 5-6)
-    - `scale_factor = 16.0`, `use_trainable_scale_factor = True`
+    Two representation heads are available (`attention_type`):
+
+    - `"atp_ffn"` -- the head described in the paper (Sec. 2.3.1 / 3): attentive
+      temporal pooling -> affine + ReLU bottleneck -> linear -> unpack `num_keys`
+      keys and values. Use `odyssey2022_pfas_config(pure_paper_mode=True)` for the
+      paper configuration (32 tied keys, `key_dim=16`, `value_dim=48` => 2,048-D as
+      inferred from the paper's reported total dimensions, single-head linear-sigmoid
+      ATP, no LayerNorm, GE2E extended-set softmax loss).
+    - `"shared_nonlinear"` (default, **FlaxSpeaker extension "PFAS-SN"**): per-frame
+      key/value projections with multi-head tanh frame attention, optionally anchored
+      on a global ATP value summary (`use_global_anchor`, `local_value_scale`). This is
+      what the released `*_pfas*` checkpoints use; it is *not* the paper's head.
+
+    Scoring (`scoring.pfas_score_pair`) follows the paper: per-trial softmax over the
+    key grid, per-key L2 normalisation (`apply_l2_norm_to_keys`), and global L2
+    normalisation of the concatenated value form (Eqs. 5-7 of the paper,
+    `apply_global_l2_norm_to_concat_form`), with a trainable scale.
     """
 
     num_keys: int = 4
@@ -316,7 +327,7 @@ class PfasConfig:
     value_dim: int = 128
     attention_dim: int = 128
     attention_type: str = "shared_nonlinear"
-    use_keys_and_queries: bool = False
+    atp_ffn_use_layer_norm: bool = True
     scale_factor: float = 16.0
     use_trainable_scale_factor: bool = True
     normalize_keys_and_values: bool = False
@@ -331,17 +342,30 @@ class PfasConfig:
 
     @property
     def representation_dim(self) -> int:
-        if self.use_keys_and_queries:
-            return self.num_keys * (2 * self.key_dim + self.value_dim)
         return self.num_keys * (self.key_dim + self.value_dim)
 
 
 @dataclasses.dataclass
 class DrVectorConfig:
-    """Configuration for Decision Residual Networks (arXiv:2104.01989)."""
+    """Configuration for Decision Residual Networks (Pelecanos et al., Interspeech 2021).
+
+    Paper configuration (`interspeech2021_dr_vectors_config(pure_paper_mode=True)`):
+    256-D embedding split into `cosine_dims = 200` base dims (used for the cosine
+    score) and 56 side-information dims seen only by the decision network;
+    `hidden_dims = (256, 256, 256)` with leaky-ReLU (slope 0.2) and no LayerNorm;
+    `readout = "weighted_sum"` over the three hidden layers; score = cosine +
+    network output, followed by a trainable affine (`trainable_affine = True`).
+
+    FlaxSpeaker default / released `*_dr_vectors` checkpoints ("down-scaled Dr-Vector
+    variant"): no base/side split (`cosine_dims = 0` => all dims), `(128, 64)`
+    ReLU + LayerNorm, linear readout, fixed `residual_weight = 0.25`, no affine.
+    `num_cosine_terms = 3` (`[c, c^2, sqrt(max(c, 0))]`) is a FlaxSpeaker extension
+    that does not appear in the paper.
+    """
 
     hidden_dims: tuple[int, ...] = (128, 64)
     activation: str = "relu"
+    leaky_relu_slope: float = 0.2
     use_layer_norm: bool = True
     include_cosine_in_input: bool = True
     residual_weight: float = 0.25
@@ -350,8 +374,9 @@ class DrVectorConfig:
     append_cosine_to_final_hidden: bool = False
     num_cosine_terms: int = 1
     symmetric_input: bool = False
-    layer_type: str = "relu"
-    num_cells: tuple[int, ...] = (128, 64)
+    cosine_dims: int = 0
+    readout: str = "linear"
+    trainable_affine: bool = False
 
     @property
     def skip_connect_cosine_to_readout(self) -> bool:
@@ -364,7 +389,16 @@ class DrVectorConfig:
 
 @dataclasses.dataclass
 class LossConfig:
-    """Configuration for training loss functions and scoring."""
+    """Configuration for training loss functions and scoring.
+
+    `ge2e_contrast`: by default (`ge2e_contrast_surrogate = False`) the gradient is
+    that of Wan et al. 2018 Eq. 7 exactly. The released `*_ge2e_contrast` checkpoints
+    were trained with `ge2e_contrast_surrogate = True`, i.e. a **hybrid contrast
+    surrogate** whose value is Eq. 7 but whose gradient is
+    `0.25 * Eq7 + 0.25 * BCE(pos/neg logits) + 0.50 * GE2E-softmax CE`, with
+    `ge2e_init_b = -1.0` and `ge2e_contrast_b_grad_scale = 0.5`
+    (`0` => use `train.ge2e_grad_scale`).
+    """
 
     loss_type: str = LossType.GE2E_SOFTMAX.value
     scoring_type: str = ScoringType.COSINE.value
@@ -376,23 +410,19 @@ class LossConfig:
     ge2e_init_b: float = -5.0
     ge2e_split_batch: bool = False
     ge2e_exact_leave_one_out: bool = True
-    ge2e_vary_enroll_utts: bool = False
-    ge2e_mask_dup_spk: bool = False
+    ge2e_contrast_surrogate: bool = False
+    ge2e_contrast_b_grad_scale: float = 0.0
     multi_row_window: int = 0
     pure_extended_set: bool = False
     ext_softmax_normalize_by_num_speakers: bool = True
     ext_softmax_row_softmax_weight: float = 0.5
     scale: float = 30.0
     margin: float = 0.2
-    margin_scale: float = 30.0
-    margin_m: float = 0.2
     sphereface_m: float = 1.35
     sphereface_lambda_min: float = 5.0
     sphereface_lambda_base: float = 1000.0
     sphereface_lambda_gamma: float = 0.12
     sphereface_lambda_power: float = 1.0
-    label_smoothing: float = 0.0
-    num_classes: int = 256
 
 
 @dataclasses.dataclass
@@ -413,7 +443,6 @@ class ModelConfig:
     use_transformer: bool = False
     frame_aggregation_mean: bool = True
     full_sequence_inference: bool = True
-    l2_normalize_embeddings: bool = True
     scoring_type: str = ScoringType.COSINE.value
     saved_model_path: str = ""
     lstm: LstmConfig = dataclasses.field(default_factory=LstmConfig)
@@ -460,10 +489,8 @@ class ModelConfig:
             self.mamba.num_layers = 2
             self.ecapa_tdnn.channels = 128
             self.ecapa_tdnn.mfa_dim = 256
-            self.ecapa_tdnn.mfa_channels = 256
             self.resnet.base_channels = 16
             self.resnet.num_blocks = (1, 1, 1, 1)
-            self.resnet.stage_blocks = (1, 1, 1, 1)
             self.resnet.out_dim = 128
         elif size_val == ModelSize.SMALL.value:
             self.embedding_dim = 192
@@ -481,10 +508,8 @@ class ModelConfig:
             self.mamba.num_layers = 3
             self.ecapa_tdnn.channels = 256
             self.ecapa_tdnn.mfa_dim = 512
-            self.ecapa_tdnn.mfa_channels = 512
             self.resnet.base_channels = 24
             self.resnet.num_blocks = (2, 2, 2, 2)
-            self.resnet.stage_blocks = (2, 2, 2, 2)
             self.resnet.out_dim = 192
         elif size_val == ModelSize.BASE.value:
             self.embedding_dim = 256
@@ -502,10 +527,8 @@ class ModelConfig:
             self.mamba.num_layers = 4
             self.ecapa_tdnn.channels = 384
             self.ecapa_tdnn.mfa_dim = 768
-            self.ecapa_tdnn.mfa_channels = 768
             self.resnet.base_channels = 32
             self.resnet.num_blocks = (2, 2, 2, 2)
-            self.resnet.stage_blocks = (2, 2, 2, 2)
             self.resnet.out_dim = 256
         elif size_val == ModelSize.LARGE.value:
             self.embedding_dim = 512
@@ -523,10 +546,8 @@ class ModelConfig:
             self.mamba.num_layers = 6
             self.ecapa_tdnn.channels = 512
             self.ecapa_tdnn.mfa_dim = 1024
-            self.ecapa_tdnn.mfa_channels = 1024
             self.resnet.base_channels = 48
             self.resnet.num_blocks = (3, 4, 6, 3)
-            self.resnet.stage_blocks = (3, 4, 6, 3)
             self.resnet.out_dim = 384
         else:
             raise ValueError(f"Unknown model size variant: {size_val}")
@@ -565,11 +586,9 @@ class TrainConfig:
     weight_decay: float = 1e-4
     warmup_steps: int = 50
     lr_schedule_cosine: bool = True
-    lr_schedule: str = "cosine"
     grad_clip_norm: float = 3.0
     ge2e_grad_scale: float = 0.01
     save_model_frequency: int = 500
-    eval_frequency: int = 200
     num_steps: int = 500
     num_processes: int = 4
     seed: int = 42
@@ -593,21 +612,22 @@ class EvalConfig:
     apply_as_norm: bool = False
     as_norm_top_k: int = 100
     as_norm_cohort_size: int = 100
-    dcf_p_target: float = 0.01
     dcf_c_miss: float = 1.0
     dcf_c_fa: float = 1.0
 
 
 @dataclasses.dataclass
 class ExportConfig:
-    """Configuration for model export (TFLite, SafeTensors, HuggingFace)."""
+    """Configuration for fixed-window TFLite / SavedModel export.
+
+    `sequence_length` is the fixed, unmasked input window (frames) traced by
+    `jax2tf`. `0` means "use `model.seq_len`" (180 frames = 1.8 s for every released
+    checkpoint). Any positive value is honoured exactly (no magic sentinel).
+    """
 
     output_dir: str = "exported_model"
     export_tflite: bool = True
-    quantize_tflite: bool = True
-    export_safetensors: bool = True
-    export_hf_format: bool = True
-    sequence_length: int = 100
+    sequence_length: int = 0
 
 
 @dataclasses.dataclass
@@ -696,8 +716,6 @@ class ExperimentConfig:
                     _update_dataclass(
                         getattr(cfg.model, sub_name), model_d.pop(sub_name)
                     )
-            if cfg.model.dr_vector.num_cosine_terms == 128:
-                cfg.model.dr_vector.num_cosine_terms = 1
             _update_dataclass(cfg.model, model_d)
 
             if "backbone" not in d["model"]:
@@ -749,8 +767,56 @@ class ExperimentConfig:
         self.model.apply_size_variant(size)
 
 
+# Config keys that existed in earlier FlaxSpeaker releases (and are still present in
+# the `config.json` of checkpoints uploaded before Round 2) but were never consumed by
+# any module. They are dropped with a `DeprecationWarning`; any *other* unknown key
+# raises, so a typo in a YAML can no longer silently train a different model.
+_DEPRECATED_CONFIG_KEYS: dict[str, frozenset[str]] = {
+    "WaveformAugConfig": frozenset({"noise_dir"}),
+    "LstmConfig": frozenset({"dropout_rate"}),
+    "TransformerConfig": frozenset({"dropout_rate", "use_rope"}),
+    "ConformerConfig": frozenset({"ffn_expansion", "dropout_rate", "num_groups"}),
+    "MambaConfig": frozenset({"state_dim", "conv_kernel_size", "dropout_rate"}),
+    "EcapaTdnnConfig": frozenset({"attention_channels", "se_channels", "mfa_channels"}),
+    "ResNetConfig": frozenset({"stage_blocks", "se_reduction"}),
+    "PoolingConfig": frozenset(
+        {
+            "share_params",
+            "nonlinear_attention",
+            "divide_layer",
+            "max_pooling_mode",
+            "top_k",
+            "window_size",
+            "window_stride",
+            "use_weighted_frames",
+        }
+    ),
+    "PfasConfig": frozenset({"use_keys_and_queries"}),
+    "DrVectorConfig": frozenset({"layer_type", "num_cells"}),
+    "LossConfig": frozenset(
+        {
+            "ge2e_vary_enroll_utts",
+            "ge2e_mask_dup_spk",
+            "margin_scale",
+            "margin_m",
+            "label_smoothing",
+            "num_classes",
+        }
+    ),
+    "ModelConfig": frozenset({"l2_normalize_embeddings"}),
+    "TrainConfig": frozenset({"lr_schedule", "eval_frequency"}),
+    "EvalConfig": frozenset({"dcf_p_target"}),
+    "ExportConfig": frozenset(
+        {"quantize_tflite", "export_safetensors", "export_hf_format"}
+    ),
+}
+
+
 def _update_dataclass(instance: Any, updates: dict[str, Any]) -> None:
+    """Applies `updates` to a config dataclass; raises on unknown keys."""
     valid_fields = {f.name for f in dataclasses.fields(instance)}
+    cls_name = type(instance).__name__
+    deprecated = _DEPRECATED_CONFIG_KEYS.get(cls_name, frozenset())
     for k, v in updates.items():
         if k in valid_fields:
             current = getattr(instance, k)
@@ -762,6 +828,18 @@ def _update_dataclass(instance: Any, updates: dict[str, Any]) -> None:
             getattr(type(instance), k), property
         ):
             setattr(instance, k, v)
+        elif k in deprecated:
+            warnings.warn(
+                f"Config key '{cls_name}.{k}' is deprecated and has no effect; "
+                "it is ignored. Remove it from your config.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+        else:
+            raise ValueError(
+                f"Unknown config key '{k}' for {cls_name}. "
+                f"Valid keys: {sorted(valid_fields)}"
+            )
 
 
 def icassp2018_ge2e_config(
@@ -769,19 +847,39 @@ def icassp2018_ge2e_config(
     pure_paper_mode: bool = True,
     paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
-    """Preset for Generalized End-to-End (GE2E) Loss (Wan et al., ICASSP 2018, arXiv:1710.10467)."""
+    """Preset for Generalized End-to-End (GE2E) loss (Wan et al., ICASSP 2018).
+
+    `pure_paper_mode=True` builds the text-independent model of the paper: 3-layer
+    LSTM with 768 cells and a 256-D linear projection per layer, last-frame
+    pooling, a plain linear 256-D output (no nonlinear bottleneck FFN), GE2E softmax
+    with exact leave-one-out centroids, `w=10, b=-5`, and the 0.01 (w, b) gradient
+    scale. `pure_paper_mode=False` uses the FlaxSpeaker size preset (`apply_size_variant`)
+    with ASP pooling and the nonlinear bottleneck. Remaining known differences from the
+    paper (per-layer LayerNorm + residual connections in `LstmBackbone`, the log-Mel
+    frontend, data) are listed in the README "Deviations from the source papers".
+    """
     if paper_faithful is not None:
         pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
     cfg.model.backbone = BackboneType.LSTM.value
-    cfg.model.pooling.pooling_type = (
-        PoolingType.LAST.value if pure_paper_mode else PoolingType.ASP.value
-    )
     cfg.model.scoring_type = ScoringType.COSINE.value
     cfg.model.apply_size_variant(size)
+    if pure_paper_mode:
+        cfg.model.pooling.pooling_type = PoolingType.LAST.value
+        cfg.model.lstm.hidden_size = 768
+        cfg.model.lstm.proj_size = 256
+        cfg.model.lstm.num_layers = 3
+        cfg.model.lstm.bidirectional = False
+        cfg.model.embedding_dim = 256
+        cfg.model.pooling.use_nonlinear_bottleneck = False
+    else:
+        cfg.model.pooling.pooling_type = PoolingType.ASP.value
     cfg.train.loss.loss_type = LossType.GE2E_SOFTMAX.value
     cfg.train.loss.scoring_type = ScoringType.COSINE.value
     cfg.train.loss.ge2e_exact_leave_one_out = True
+    cfg.train.loss.ge2e_init_w = 10.0
+    cfg.train.loss.ge2e_init_b = -5.0
+    cfg.train.ge2e_grad_scale = 0.01
     cfg.loss = cfg.train.loss
     return cfg
 
@@ -792,7 +890,19 @@ def interspeech2021_dr_vectors_config(
     pure_paper_mode: bool = True,
     paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
-    """Preset for Dr-Vectors & Extended-Set Softmax (Pelecanos et al., Interspeech 2021, arXiv:2104.01989)."""
+    """Preset for Dr-Vectors & GE2E extended-set softmax (Pelecanos et al., Interspeech 2021).
+
+    `pure_paper_mode=True` builds the decision residual network of the paper:
+    256-D embedding split into 200 base dims (cosine) + 56 side-information dims,
+    decision net = 3 x Dense(256) + leaky-ReLU(0.2) without normalisation, weighted
+    sum over the three hidden layers, score = cosine + network output followed by a
+    trainable affine (scale, offset), and the *pure* extended-set softmax (paper Eq. 2;
+    no `-log N` shift, no row-softmax blend). The 3-term cosine expansion
+    `[c, c^2, sqrt(max(c,0))]` is a FlaxSpeaker extension and is *not* enabled here.
+    `pure_paper_mode=False` is the down-scaled FlaxSpeaker variant used by the released
+    `*_dr_vectors` checkpoints (no base/side split, (128, 64) ReLU + LayerNorm, fixed
+    0.25 residual weight, 50/50 blended extended-set softmax).
+    """
     if paper_faithful is not None:
         pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
@@ -805,10 +915,23 @@ def interspeech2021_dr_vectors_config(
     cfg.model.scoring_type = ScoringType.DR_VECTOR.value
     cfg.model.apply_size_variant(size)
     if pure_paper_mode:
-        cfg.model.dr_vector.num_cosine_terms = 3
-        cfg.model.dr_vector.append_cosine_to_final_hidden = True
+        cfg.model.embedding_dim = 256
+        dr = cfg.model.dr_vector
+        dr.cosine_dims = 200
+        dr.hidden_dims = (256, 256, 256)
+        dr.activation = "leaky_relu"
+        dr.leaky_relu_slope = 0.2
+        dr.use_layer_norm = False
+        dr.readout = "weighted_sum"
+        dr.trainable_affine = True
+        dr.residual_weight = 1.0
+        dr.num_cosine_terms = 1
+        dr.append_cosine_to_final_hidden = False
+        dr.append_cosine_as_feature_to_network_input = True
+        dr.add_cosine_to_network_output = True
         cfg.train.loss.pure_extended_set = True
         cfg.train.loss.ext_softmax_row_softmax_weight = 0.0
+        cfg.train.loss.ext_softmax_normalize_by_num_speakers = False
     cfg.train.loss.loss_type = LossType.EXTENDED_SET_SOFTMAX.value
     cfg.train.loss.scoring_type = ScoringType.DR_VECTOR.value
     cfg.loss = cfg.train.loss
@@ -820,7 +943,16 @@ def odyssey2022_conformer_atp_config(
     pure_paper_mode: bool = True,
     paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
-    """Preset for Conformer + Attentive Temporal Pooling (Wang et al., Odyssey 2022, arXiv:2202.12163)."""
+    """Preset for Conformer + Attentive Temporal Pooling (Wang et al., Odyssey 2022).
+
+    Note: arXiv:2202.12163 is a *language identification* paper; FlaxSpeaker
+    repurposes its ATP head for speaker embeddings. `pure_paper_mode=True` selects
+    the paper form of the pooling head (single head, linear-sigmoid weights,
+    `attention_dim = 0`, full-D statistics) and the Conformer options closest to the
+    paper (conv module before MHSA, sinusoidal positional encoding, no conv stem,
+    stack-by-2 time subsampling after the third block). Every one of these fields is
+    consumed by `neural_net.build_modern_encoder_from_config` (tested in `tests.py`).
+    """
     if paper_faithful is not None:
         pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
@@ -833,9 +965,10 @@ def odyssey2022_conformer_atp_config(
         cfg.model.conformer.use_conv_stem = False
         cfg.model.conformer.use_positional_encoding = True
         cfg.model.conformer.subsample_factor = 2
-        cfg.model.pooling.use_global_context = False
-        cfg.model.pooling.share_params = True
-        cfg.model.pooling.nonlinear_attention = True
+        cfg.model.conformer.subsample_after_layer = 3
+        cfg.model.pooling.num_heads = 1
+        cfg.model.pooling.attention_dim = 0
+        cfg.model.pooling.subspace_heads = False
     cfg.train.loss.loss_type = LossType.GE2E_SOFTMAX.value
     cfg.train.loss.scoring_type = ScoringType.COSINE.value
     cfg.loss = cfg.train.loss
@@ -844,11 +977,22 @@ def odyssey2022_conformer_atp_config(
 
 def odyssey2022_pfas_config(
     size: Union[str, ModelSize] = ModelSize.SMALL,
-    loss_type: str = LossType.GE2E_SOFTMAX.value,
+    loss_type: str = LossType.EXTENDED_SET_SOFTMAX.value,
     pure_paper_mode: bool = True,
     paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
-    """Preset for Parameter-Free Attentive Scoring (Pelecanos et al., Odyssey 2022, arXiv:2203.05642v3)."""
+    """Preset for Parameter-Free Attentive Scoring (Pelecanos et al., Odyssey 2022).
+
+    `pure_paper_mode=True` builds the paper's representation head and loss:
+    `attention_type="atp_ffn"` (single-head linear-sigmoid ATP -> affine + ReLU ->
+    linear), 32 tied keys with `key_dim=16` / `value_dim=48` (2,048-D total, as
+    inferred from the paper's reported dimensions for the "Key & Global L2-Norm, tied"
+    system), per-key L2 norm + global L2 norm of the concatenated form (paper
+    Eqs. 5-7), trainable scale, and the *pure* GE2E extended-set softmax loss.
+    `pure_paper_mode=False` is the FlaxSpeaker "PFAS-SN" extension used by the released
+    `*_pfas*` checkpoints (`shared_nonlinear` frame attention with a global ATP anchor,
+    4 keys x (32 + 128), blended extended-set softmax).
+    """
     if paper_faithful is not None:
         pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()
@@ -857,10 +1001,25 @@ def odyssey2022_pfas_config(
     cfg.model.scoring_type = ScoringType.PFAS.value
     cfg.model.apply_size_variant(size)
     if pure_paper_mode:
-        cfg.model.pfas.use_global_anchor = False
-        cfg.model.pfas.apply_l2_norm_to_keys = True
-        cfg.model.pfas.apply_l2_norm_to_values = False
-        cfg.model.pfas.apply_global_l2_norm_to_concat_form = True
+        pf = cfg.model.pfas
+        pf.attention_type = "atp_ffn"
+        pf.atp_ffn_use_layer_norm = False
+        pf.num_keys = 32
+        pf.key_dim = 16
+        pf.value_dim = 48
+        pf.use_global_anchor = False
+        pf.apply_l2_norm_to_keys = True
+        pf.apply_l2_norm_to_values = False
+        pf.apply_global_l2_norm_to_concat_form = True
+        pf.use_trainable_scale_factor = True
+        cfg.model.pooling.num_heads = 1
+        cfg.model.pooling.attention_dim = 0
+        cfg.model.pooling.subspace_heads = False
+        cfg.model.pooling.bottleneck_dim = 512
+        if loss_type == LossType.EXTENDED_SET_SOFTMAX.value:
+            cfg.train.loss.pure_extended_set = True
+            cfg.train.loss.ext_softmax_row_softmax_weight = 0.0
+            cfg.train.loss.ext_softmax_normalize_by_num_speakers = False
     cfg.model.embedding_dim = cfg.model.pfas.representation_dim
     cfg.train.loss.loss_type = loss_type
     cfg.train.loss.scoring_type = ScoringType.PFAS.value

@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-"""Interactive Gradio 5.50.0 Demo for FlaxSpeaker Universal Speaker Verification."""
+"""Interactive Gradio demo for FlaxSpeaker speaker verification.
+
+Every verdict is produced by *real* inference of the selected checkpoint on the
+uploaded audio (feature extraction -> JAX encoder -> cosine / Dr-Vector / PFAS
+scoring). Nothing is precomputed or cached across examples.
+
+The folder is self-contained: `flaxspeaker` is installed from `requirements.txt`
+(falling back to the parent checkout for local development) and checkpoints are
+downloaded from the Hugging Face Hub when `pretrained_models/` is not present.
+"""
 
 import dataclasses
-import glob
+import json
 import os
 import sys
 import time
@@ -18,20 +27,34 @@ import numpy as np
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(THIS_DIR)
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-
-from flaxspeaker import evaluation  # noqa: E402
-from flaxspeaker import feature_extraction  # noqa: E402
-from flaxspeaker import hf_compat  # noqa: E402
-from flaxspeaker import scoring  # noqa: E402
-from flaxspeaker import vad  # noqa: E402
+try:  # pip-installed `flaxspeaker` (Hugging Face Space)
+    from flaxspeaker import evaluation
+    from flaxspeaker import feature_extraction
+    from flaxspeaker import hf_compat
+    from flaxspeaker import vad
+except ImportError:  # local development from the repository checkout
+    if REPO_ROOT not in sys.path:
+        sys.path.insert(0, REPO_ROOT)
+    from flaxspeaker import evaluation  # noqa: E402
+    from flaxspeaker import feature_extraction  # noqa: E402
+    from flaxspeaker import hf_compat  # noqa: E402
+    from flaxspeaker import vad  # noqa: E402
 
 
 PRETRAINED_ROOT = os.path.join(REPO_ROOT, "pretrained_models")
 EXAMPLES_DIR = os.path.join(THIS_DIR, "examples")
+DEFAULT_MODEL = "univ_conformer_tiny_ge2e"
 _MODEL_CACHE: dict[str, hf_compat.FlaxSpeakerModel] = {}
-_COHORT_CACHE: dict[str, np.ndarray] = {}
+_THRESHOLD_CACHE: dict[str, dict[str, float]] = {}
+# Threshold slider ranges per scoring back-end (score scales differ: cosine is in
+# [-1, 1]; Dr-Vector adds a residual to the cosine; PFAS is a normalised dot product
+# of attention-weighted value vectors). Defaults come from each model's own pooled
+# 1-utt EER operating point in `eval_results.json` (see `get_default_threshold`).
+_SLIDER_RANGE = {
+    "cosine": (-0.2, 1.0),
+    "dr_vector": (-0.5, 1.5),
+    "pfas": (-0.5, 1.5),
+}
 
 
 def list_available_models() -> list[str]:
@@ -47,46 +70,81 @@ def list_available_models() -> list[str]:
     return (univ + others) or list(hf_compat.PRETRAINED_MODEL_IDS)
 
 
+def _resolve_model_target(model_name: str) -> str:
+    local_path = os.path.join(PRETRAINED_ROOT, model_name)
+    if hf_compat.FlaxSpeakerModel._has_local_weights(local_path):
+        return local_path
+    return f"wq2012/{model_name}"
+
+
 def get_model(model_name: str) -> hf_compat.FlaxSpeakerModel:
+    """Loads (and caches) a checkpoint and warms up the JIT so latency is steady-state."""
     if model_name not in _MODEL_CACHE:
-        local_path = os.path.join(PRETRAINED_ROOT, model_name)
-        target = (
-            local_path
-            if hf_compat.FlaxSpeakerModel._has_local_weights(local_path)
-            else f"wq2012/{model_name}"
+        model = hf_compat.FlaxSpeakerModel.from_pretrained(_resolve_model_target(model_name))
+        # JIT warm-up on a dummy feature matrix; `run_inference` pads to a fixed
+        # bucket so this compiles the kernel used by real inputs.
+        warm = jnp.zeros(
+            (int(model.exp_config.model.max_eval_seq_len), int(model.exp_config.frontend.feature_dim)),
+            dtype=jnp.float32,
         )
-        _MODEL_CACHE[model_name] = hf_compat.FlaxSpeakerModel.from_pretrained(
-            target
-        )
+        np.asarray(evaluation.run_inference(warm, model.state, model.exp_config))
+        _MODEL_CACHE[model_name] = model
     return _MODEL_CACHE[model_name]
 
 
-def _get_example_cohort(
-    model_name: str, model: hf_compat.FlaxSpeakerModel
-) -> Optional[np.ndarray]:
-    if model_name in _COHORT_CACHE:
-        return _COHORT_CACHE[model_name]
-    files = sorted(
-        glob.glob(os.path.join(EXAMPLES_DIR, "*.flac"))
-        + glob.glob(os.path.join(EXAMPLES_DIR, "*.wav"))
+def get_default_threshold(model_name: str) -> dict[str, float]:
+    """Per-model EER operating points read from the checkpoint's `eval_results.json`.
+
+    Returns `{"pooled": t_pooled, "librispeech": ..., "cnceleb2": ..., "voxceleb1": ...}`
+    (whatever is available). Falls back to 0.5 when no metrics file is found.
+    """
+    if model_name in _THRESHOLD_CACHE:
+        return _THRESHOLD_CACHE[model_name]
+    out: dict[str, float] = {}
+    target = _resolve_model_target(model_name)
+    path = os.path.join(target, "eval_results.json")
+    if not os.path.exists(path):
+        try:
+            from huggingface_hub import hf_hub_download  # pytype: disable=import-error
+
+            path = hf_hub_download(repo_id=target, filename="eval_results.json")
+        except Exception:  # pragma: no cover - offline fallback
+            path = ""
+    if path and os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            metrics = json.load(f)
+        d1 = metrics.get("multi_domain_eval", {}).get("domains_1utt", {})
+        for key, name in (
+            ("universal_pooled", "pooled"),
+            ("librispeech", "librispeech"),
+            ("cnceleb2", "cnceleb2"),
+            ("voxceleb1", "voxceleb1"),
+        ):
+            if key in d1 and "eer_threshold" in d1[key]:
+                out[name] = float(d1[key]["eer_threshold"])
+    if "pooled" not in out:
+        out["pooled"] = 0.5
+    _THRESHOLD_CACHE[model_name] = out
+    return out
+
+
+def threshold_slider_update(model_name: str) -> Any:
+    """Gradio callback: reset the threshold slider to the selected model's operating point."""
+    model = get_model(model_name)
+    scoring_type_str = str(model.config.scoring_type).lower()
+    lo, hi = _SLIDER_RANGE.get(scoring_type_str, (-0.5, 1.5))
+    t = get_default_threshold(model_name)["pooled"]
+    if gr is None:
+        return t
+    return gr.update(
+        minimum=lo,
+        maximum=hi,
+        value=round(t, 3),
+        label=(
+            f"Decision Threshold ({scoring_type_str} score; default = this model's pooled "
+            f"1-utt EER operating point {t:.3f})"
+        ),
     )
-    if len(files) < 2:
-        return None
-    embs = []
-    for fpath in files:
-        feats = model.frontend.extract_from_file(fpath)
-        emb = np.asarray(
-            evaluation.run_inference(
-                jnp.asarray(feats, dtype=jnp.float32),
-                model.state,
-                model.exp_config,
-            ),
-            dtype=np.float32,
-        )
-        embs.append(emb)
-    cohort = np.stack(embs, axis=0)
-    _COHORT_CACHE[model_name] = cohort
-    return cohort
 
 
 def build_diagnostic_plot(
@@ -191,18 +249,19 @@ def verify_pair(
     enroll_audio: Optional[str],
     test_audio: Optional[str],
     model_name: str,
-    threshold: float = 0.55,
+    threshold: Optional[float] = None,
     enroll_audio_2: Optional[str] = None,
     enroll_audio_3: Optional[str] = None,
     use_vad: bool = True,
     vad_snr_margin_db: float = 4.5,
-    use_as_norm: bool = False,
 ) -> tuple[str, dict[str, Any], Any]:
     if not enroll_audio or not test_audio:
         return "Please provide both Enrollment and Test audio files.", {}, None
 
     t0 = time.time()
     model = get_model(model_name)
+    if threshold is None:
+        threshold = get_default_threshold(model_name)["pooled"]
     vad_cfg = dataclasses.replace(
         model.exp_config.vad,
         enabled=bool(use_vad),
@@ -231,6 +290,7 @@ def verify_pair(
 
     enroll_feats_list = [frontend.extract_from_file(p) for p in enroll_paths]
     test_feats = frontend.extract_from_file(test_audio)
+    t_infer0 = time.time()
     enroll_embs = [
         np.asarray(
             evaluation.run_inference(
@@ -257,42 +317,17 @@ def verify_pair(
         )
     )
     score = raw_score
-    as_norm_applied = False
-    as_norm_note = "disabled"
+    infer_ms = (time.time() - t_infer0) * 1000.0
     scoring_type_str = str(model.config.scoring_type).lower()
-    if use_as_norm:
-        if scoring_type_str == "cosine":
-            cohort = _get_example_cohort(model_name, model)
-            if cohort is not None and cohort.shape[0] >= 2:
-                e_centroid = np.mean(np.stack(enroll_embs, axis=0), axis=0)
-                e_centroid = e_centroid / (np.linalg.norm(e_centroid) + 1e-6)
-                norm_arr = scoring.apply_as_norm(
-                    np.array([raw_score], dtype=np.float32),
-                    e_centroid[None, :],
-                    test_emb[None, :],
-                    cohort,
-                    top_k=min(6, cohort.shape[0]),
-                )
-                score = float(norm_arr[0])
-                as_norm_applied = True
-                as_norm_note = (
-                    "AS-Norm z-score applied (score is in cohort standard-deviation units)"
-                )
-        else:
-            as_norm_note = (
-                f"skipped (AS-Norm applies to cosine similarity; model uses '{scoring_type_str}')"
-            )
-
     elapsed_ms = (time.time() - t0) * 1000.0
+    operating_points = get_default_threshold(model_name)
 
     is_same = score >= threshold
     verdict = (
-        f"SAME SPEAKER (Score = {score:.4f} >= Threshold {threshold:.2f})"
+        f"SAME SPEAKER (Score = {score:.4f} >= Threshold {threshold:.3f})"
         if is_same
-        else f"DIFFERENT SPEAKER (Score = {score:.4f} < Threshold {threshold:.2f})"
+        else f"DIFFERENT SPEAKER (Score = {score:.4f} < Threshold {threshold:.3f})"
     )
-    if as_norm_applied:
-        verdict += f" [AS-Norm z-score; raw cosine = {raw_score:.4f}]"
 
     display_enroll_emb = np.mean(np.stack(enroll_embs, axis=0), axis=0)
     details = {
@@ -308,16 +343,19 @@ def verify_pair(
         "num_enrollment_utterances": len(enroll_embs),
         "vad_enabled": bool(use_vad),
         "vad_snr_margin_db": round(float(vad_snr_margin_db), 2),
-        "as_norm_applied": as_norm_applied,
-        "as_norm_status": as_norm_note,
-        "raw_similarity_score": round(float(raw_score), 4),
         "similarity_score": round(float(score), 4),
         "threshold": round(float(threshold), 4),
+        "model_eer_operating_points": {k: round(v, 4) for k, v in operating_points.items()},
         "decision": "same_speaker" if is_same else "different_speaker",
         "enroll_vad_frames": int(sum(f.shape[0] for f in enroll_feats_list)),
         "test_vad_frames": int(test_feats.shape[0]),
         "embedding_dim": int(display_enroll_emb.shape[0]),
-        "inference_latency_ms": round(elapsed_ms, 2),
+        "model_inference_latency_ms": round(infer_ms, 2),
+        "end_to_end_latency_ms": round(elapsed_ms, 2),
+        "note": (
+            "Steady-state latency (the JIT is warmed up at model load). 400-step "
+            "demonstration checkpoint: expect ~19-32% EER; see the model card."
+        ),
     }
     fig = build_diagnostic_plot(
         norm_wav_1,
@@ -339,11 +377,8 @@ def build_demo() -> Any:
     if gr is None:
         raise ImportError("gradio is required to build the web UI (`pip install flaxspeaker[demo]`).")
     models = list_available_models()
-    default_model = (
-        "univ_conformer_small_ge2e"
-        if "univ_conformer_small_ge2e" in models
-        else models[0]
-    )
+    default_model = DEFAULT_MODEL if DEFAULT_MODEL in models else models[0]
+    default_threshold = round(get_default_threshold(default_model)["pooled"], 3)
 
     example_rows = []
     for dom, ext in [
@@ -356,22 +391,27 @@ def build_demo() -> Any:
         p3 = os.path.join(EXAMPLES_DIR, f"{dom}_spk2_utt1{ext}")
         if os.path.exists(p1) and os.path.exists(p2):
             example_rows.append(
-                [p1, p2, default_model, 0.55, None, None, True, 4.5, False]
+                [p1, p2, default_model, default_threshold, None, None, True, 4.5]
             )
         if os.path.exists(p1) and os.path.exists(p3):
             example_rows.append(
-                [p1, p3, default_model, 0.55, None, None, True, 4.5, False]
+                [p1, p3, default_model, default_threshold, None, None, True, 4.5]
             )
 
     with gr.Blocks(title="FlaxSpeaker — Universal Speaker Recognition") as demo:
         gr.Markdown(
             "# FlaxSpeaker — Universal Multi-Domain Speaker Verification\n"
             "> **Disclaimer**: **This is not an officially supported Google product.** "
-            "This is an independent open-source JAX/Flax reproduction of "
+            "FlaxSpeaker is a from-scratch JAX/Flax re-implementation (using only the published "
+            "papers, no proprietary code) of "
             "[GE2E (`arXiv:1710.10467`)](https://arxiv.org/abs/1710.10467), "
             "[Dr-Vectors (`arXiv:2104.01989`)](https://arxiv.org/abs/2104.01989), "
-            "[Conformer-ATP (`arXiv:2202.12163`)](https://arxiv.org/abs/2202.12163), and "
-            "[PFAS (`arXiv:2203.05642v3`)](https://arxiv.org/abs/2203.05642v3).\n\n"
+            "[ATP pooling (`arXiv:2202.12163`)](https://arxiv.org/abs/2202.12163), and "
+            "[PFAS (`arXiv:2203.05642`)](https://arxiv.org/abs/2203.05642).\n\n"
+            "> **Accuracy caveat**: all 44 checkpoints are **400-step CPU demonstration models** "
+            "(19-32% EER on the in-house trial lists; published systems reach ~1%). Every verdict "
+            "below is real inference of the selected checkpoint on your audio; the default decision "
+            "threshold is the model's own pooled 1-utt EER operating point from `eval_results.json`.\n\n"
             "**Links**: "
             "[Hugging Face Collection (44 Pretrained Models)]"
             "(https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) | "
@@ -411,17 +451,17 @@ def build_demo() -> Any:
                 )
                 threshold_slider = gr.Slider(
                     minimum=-0.2,
-                    maximum=0.95,
-                    value=0.55,
-                    step=0.01,
-                    label="Verification Decision Threshold",
+                    maximum=1.0,
+                    value=default_threshold,
+                    step=0.005,
+                    label=(
+                        f"Decision Threshold (cosine score; default = this model's pooled "
+                        f"1-utt EER operating point {default_threshold:.3f})"
+                    ),
                 )
                 with gr.Row():
                     vad_checkbox = gr.Checkbox(
-                        value=True, label="Enable Post-STFT VAD"
-                    )
-                    as_norm_checkbox = gr.Checkbox(
-                        value=False, label="Apply AS-Norm Cohort Calibration"
+                        value=True, label="Enable frame-level energy VAD"
                     )
                 vad_margin_slider = gr.Slider(
                     minimum=1.0,
@@ -449,8 +489,10 @@ def build_demo() -> Any:
             enroll_input_3,
             vad_checkbox,
             vad_margin_slider,
-            as_norm_checkbox,
         ]
+        model_dropdown.change(
+            fn=threshold_slider_update, inputs=[model_dropdown], outputs=[threshold_slider]
+        )
         verify_btn.click(
             fn=verify_pair,
             inputs=all_inputs,

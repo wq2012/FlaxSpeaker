@@ -1,7 +1,7 @@
 ---
 license: apache-2.0
 library_name: flaxspeaker
-pipeline_tag: audio-classification
+pipeline_tag: feature-extraction
 tags:
 - audio
 - speaker-verification
@@ -25,17 +25,23 @@ metrics:
 
 # FlaxSpeaker: `univ_conformer_small_arcface` (`conformer` - `small`)
 
-## Disclaimer & Open-Source Reproduction Notice
+## Disclaimer & Reproduction Notice
 
 > **This is not an officially supported Google product.**
 >
-> This model checkpoint and the accompanying `FlaxSpeaker` library are an independent, clean-room open-source reproduction in JAX/Flax of speaker recognition algorithms published in:
+> This checkpoint and the accompanying `FlaxSpeaker` library are a from-scratch re-implementation in JAX/Flax, written using only the published papers (no proprietary code or data), of speaker recognition algorithms from:
 > - **GE2E**: *Generalized End-to-End Loss for Speaker Verification* ([arXiv:1710.10467](https://arxiv.org/abs/1710.10467))
 > - **Dr-Vectors**: *Decision Residual Networks and an Improved Loss for Speaker Recognition* ([arXiv:2104.01989](https://arxiv.org/abs/2104.01989))
-> - **Conformer-ATP**: *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
-> - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642v3](https://arxiv.org/abs/2203.05642v3))
+> - **ATP** (pooling head repurposed from a *language identification* paper): *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
+> - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642](https://arxiv.org/abs/2203.05642))
 >
-> The experiments in those original papers were conducted using Google's proprietary internal infrastructure and internal datasets, not this open-source library or public dataset split.
+> The experiments in those papers were run on Google-internal infrastructure and data, not with this library. **This is a 400-step demonstration checkpoint, not a reproduction of the papers' results** -- see *Training budget* and *Deviations from the source papers* below.
+
+## Training Budget (read this first)
+
+This model was trained for **400 gradient steps** with mini-batches of 32 utterances (8 speakers x 4 utterances), i.e. about 1.35 epochs over the 9,447-utterance universal corpus, on a CPU workstation, with a single seed (42). Losses are not converged at this budget. All EERs below are therefore far from state of the art and are only meaningful for *relative* comparisons between FlaxSpeaker checkpoints trained under the same budget.
+
+For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reach about 0.9% EER on the full VoxCeleb1-O list (Desplanques et al., 2020), and sub-1M-parameter systems about 2% (Wang et al., EfficientTDNN, 2022). The 400-step checkpoints released here are 10-30x worse than that and are intended for relative comparisons within the FlaxSpeaker benchmark, not as state-of-the-art models.
 
 ## Model Summary
 
@@ -48,20 +54,20 @@ metrics:
 | **PyPI Package** | [`flaxspeaker`](https://pypi.org/project/flaxspeaker/) |
 | **Backbone Architecture** | `conformer` (`small`) |
 | **Temporal Pooling** | `atp` |
-| **Training Loss** | `arcface` |
-| **Verification Scoring** | `cosine` |
-| **Output Embedding Dim** | `192` |
-| **Encoder Parameters** | `2,029,892` |
-| **Training Domain** | `universal` |
-| **Audio Frontend** | `80`-dim `log_mel` @ `16000` Hz + Energy VAD + CMVN |
+| **Training Objective** | arcface (`arcface`) |
+| **Verification Scorer** | Cosine similarity (`cosine`) |
+| **Output Representation Dim** | `192` |
+| **Total Parameters (encoder + loss/scoring heads)** | `2,029,892` |
+| **Training Data** | LibriSpeech + CN-Celeb2 + VoxCeleb1 (universal multi-domain, 381 speakers) |
+| **Training Steps / Batch** | `400` steps x 32 utterances, seed 42 |
+| **Audio Frontend** | `80`-dim natural-log Mel @ `16000` Hz + frame-level energy VAD + CMVN (`flaxspeaker.AudioFrontend`; **not** a Hugging Face `AutoFeatureExtractor`) |
 
 ## Model Files Included
 
-- `model.safetensors`: Primary model weights in SafeTensors format
-- `flax_model.msgpack`: Native Flax Msgpack serialized parameters
-- `config.json`: `FlaxSpeakerConfig` model & training architecture configuration
-- `preprocessor_config.json`: `WhisperFeatureExtractor`-compatible frontend configuration
-- `eval_results.json`: Verified multi-domain evaluation metrics (1-utt & 3-utt EER, minDCF, ROC-AUC, 95% bootstrap CIs)
+- `model.safetensors`: model weights (encoder + GE2E `w,b` / Dr-Vector / PFAS heads) in SafeTensors format
+- `flax_model.msgpack`: native Flax Msgpack serialized parameters
+- `config.json`: `FlaxSpeakerConfig` (full `ExperimentConfig`, incl. the frontend/VAD settings)
+- `eval_results.json`: multi-domain evaluation metrics (1-utt & 3-utt EER, minDCF, ROC-AUC, 95% bootstrap CIs, VoxCeleb1-O 10-speaker subset)
 
 ## Quickstart Usage
 
@@ -87,13 +93,18 @@ python scripts/inference.py --model_dir wq2012/univ_conformer_small_arcface \
 
 ### 1-Utterance Verification Across Evaluation Domains
 
+Trial lists are 50/50 target/impostor over held-out speakers (LibriSpeech 40, CN-Celeb2 30, VoxCeleb1 10 speakers); minDCF@0.01 is close to its trivial ceiling of 1.0 for every model under this trial mix.
+
 | Evaluation Split | Trials | EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **LibriSpeech (English Read)** | 3,000 | **20.57%** | [19.07, 21.80] | 0.9900 | 0.9100 | 0.8736 |
 | **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **25.27%** | [23.77, 26.77] | 0.9907 | 0.9567 | 0.8278 |
 | **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **25.00%** | [23.22, 26.93] | 0.9800 | 0.9800 | 0.8344 |
 | **Universal Pooled (All 3 Domains)** | 8,000 | **25.11%** | [24.30, 26.06] | 0.9935 | 0.9460 | 0.8306 |
-| **Universal Macro-Average (3 Domains)** | 8,000 | **23.61%** | — | 0.9869 | 0.9489 | 0.8453 |
+| **Universal Macro-Average (3 Domains)** | — | **23.61%** | — | 0.9869 | 0.9489 | 0.8453 |
+| **VoxCeleb1-O 10-speaker subset** (see caveat) | 2,500 | **25.01%** | [22.93, 26.81] | 0.9463 | 0.9463 | 0.8411 |
+
+Caveat: VoxCeleb1-O **10-speaker subset**: the official `veri_test2.txt` list filtered to trials whose enrollment and test speakers are both among the 10 held-out evaluation speakers (2,500 trials, ~72% target). **Not comparable to published VoxCeleb1-O numbers**; the other 30 of the 40 official test speakers are used as training data by `vox_*` and `univ_*` models.
 
 ### 3-Utterance Multi-Enrollment Verification Across Evaluation Domains
 
@@ -103,7 +114,17 @@ python scripts/inference.py --model_dir wq2012/univ_conformer_small_arcface \
 | **CN-Celeb2 (3-Utt)** | 1,000 | **21.40%** | [18.60, 23.60] | 0.9220 | 0.8670 |
 | **VoxCeleb1 (3-Utt)** | 1,000 | **21.80%** | [19.20, 24.50] | 0.9900 | 0.8733 |
 | **Universal Pooled (3-Utt)** | 3,000 | **21.67%** | [20.03, 23.17] | 0.9367 | 0.8730 |
-| **Universal Macro-Average (3-Utt)** | 3,000 | **20.20%** | — | 0.9160 | 0.8850 |
+| **Universal Macro-Average (3-Utt)** | — | **20.20%** | — | 0.9160 | 0.8850 |
+
+Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences below about 1% absolute EER between FlaxSpeaker checkpoints are within the seed-to-seed variation measured in `pretrained_models/r2_seed_and_control_results.json` (see the GitHub README) and should not be interpreted as rankings.
+
+## Deviations from the Source Papers
+
+- **Training regime**: 400 gradient steps x 32 utterances (N = 8 speakers x M = 4) on <= 25 utterances/speaker from 381 (universal) or fewer speakers; the source papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers.
+- **Augmentation**: synthetic log-Mel-domain noise + one-tap smoothing (`specaug.apply_feature_mtr_augmentation`), not waveform MTR with recorded noise/RIR corpora.
+- **Conformer**: parallel linear + Conv1D stem, no positional encoding, 3 blocks x 192-D, 4 heads, kernel 15, mask-aware GroupNorm(2), no dropout, multi-layer feature aggregation; the Google papers use 12 x 512 blocks, 4-8 heads, kernel 32, relative positional encoding and dropout.
+- **ATP pooling**: 4 heads with a tanh bottleneck (128-D) and `subspace_heads = True`; the papers use a single head with a linear-sigmoid weight (`attention_dim = 0`). Note that arXiv:2202.12163 is a language-identification paper whose pooling head is repurposed here.
+- **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation centre-crops to at most 500 frames (5 s).
 
 ## Citation
 

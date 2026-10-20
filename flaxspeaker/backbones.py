@@ -3,7 +3,7 @@
 Supported backbones:
 - `LstmBackbone`: Multi-layer uni/bidirectional LSTM with optional projections
 - `TransformerBackbone`: Pre-LN Transformer encoder with local conv stem and mask support
-- `ConformerBackbone`: Macaron-style Conformer (FFN + MHSA + Depthwise Conv + FFN, arXiv:2202.12163)
+- `ConformerBackbone`: Macaron-style Conformer (FFN + MHSA + Depthwise Conv + FFN; Gulati et al. 2020, arXiv:2005.08100)
 - `MambaBackbone`: Selective State Space Model (SSM) using `jax.lax.associative_scan`
 - `EcapaTdnnBackbone`: Emphasized Channel Attention, Propagation and Aggregation TDNN
   (SE-Res2Net blocks + Multi-layer Feature Aggregation)
@@ -34,6 +34,49 @@ def sinusoidal_positional_encoding(
     return pe[None, :, :]
 
 
+def _pad_time_to_multiple(
+    x: jax.Array, factor: int, mask: Optional[jax.Array]
+) -> tuple[jax.Array, Optional[jax.Array]]:
+    """Right-pads the time axis of `x` (B, T, ...) and `mask` (B, T) to a multiple of `factor`."""
+    seq_len = x.shape[1]
+    pad = (-seq_len) % factor
+    if pad == 0:
+        return x, mask
+    x = jnp.pad(x, [(0, 0), (0, pad)] + [(0, 0)] * (x.ndim - 2))
+    if mask is not None:
+        mask = jnp.pad(mask, [(0, 0), (0, pad)])
+    return x, mask
+
+
+def subsample_mask(mask: Optional[jax.Array], factor: int) -> Optional[jax.Array]:
+    """Time-subsamples a binary mask (B, T) by `factor`: a group is valid if any frame is."""
+    if mask is None or factor <= 1:
+        return mask
+    m, _ = _pad_time_to_multiple(mask[..., None], factor, None)
+    m = m[..., 0]
+    bsz, seq_len = m.shape
+    return jnp.max(
+        m.reshape(bsz, seq_len // factor, factor), axis=-1
+    ).astype(mask.dtype)
+
+
+def _stack_frames(
+    x: jax.Array, factor: int, mask: Optional[jax.Array]
+) -> tuple[jax.Array, Optional[jax.Array]]:
+    """Stack-by-`factor` time reduction: (B, T, D) -> (B, ceil(T/factor), factor*D)."""
+    x, mask = _pad_time_to_multiple(x, factor, mask)
+    bsz, seq_len, dim = x.shape
+    stacked = x.reshape(bsz, seq_len // factor, factor * dim)
+    return stacked, subsample_mask(mask, factor) if mask is not None else None
+
+
+def _average_frames(x: jax.Array, factor: int) -> jax.Array:
+    """Parameter-free time reduction by averaging each group of `factor` frames."""
+    x, _ = _pad_time_to_multiple(x, factor, None)
+    bsz, seq_len, dim = x.shape
+    return jnp.mean(x.reshape(bsz, seq_len // factor, factor, dim), axis=2)
+
+
 class LstmBackbone(nn.Module):
     """Multi-layer LSTM backbone with optional projection and bidirectionality."""
 
@@ -53,20 +96,32 @@ class LstmBackbone(nn.Module):
         mask_f = (
             (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
         )
+        # Valid-frame lengths are required so that the *backward* recurrence
+        # starts at the last valid frame instead of the zero-padded tail (which
+        # would leak padding into every valid frame of a bidirectional LSTM).
+        seq_lengths = (
+            jnp.sum((mask > 0).astype(jnp.int32), axis=1)
+            if mask is not None
+            else None
+        )
         h = x * mask_f if mask_f is not None else x
         for i in range(self.num_layers):
             fwd_rnn = nn.RNN(
                 nn.OptimizedLSTMCell(features=self.hidden_size),
                 name=f"lstm_fwd_{i}",
             )
-            y_fwd = fwd_rnn(h)
+            y_fwd = fwd_rnn(h, seq_lengths=seq_lengths)
             if self.bidirectional:
+                # `keep_order=True` flips the backward outputs back into forward
+                # time order so they are frame-aligned with `y_fwd`; Flax's default
+                # (`keep_order=False`) would return them time-reversed.
                 bwd_rnn = nn.RNN(
                     nn.OptimizedLSTMCell(features=self.hidden_size),
                     reverse=True,
+                    keep_order=True,
                     name=f"lstm_bwd_{i}",
                 )
-                y_bwd = bwd_rnn(h)
+                y_bwd = bwd_rnn(h, seq_lengths=seq_lengths)
                 y = jnp.concatenate([y_fwd, y_bwd], axis=-1)
             else:
                 y = y_fwd
@@ -184,7 +239,8 @@ class TransformerBackbone(nn.Module):
 class ConformerConvModule(nn.Module):
     """Conformer depthwise separable convolution module with GLU gating and Mask-Aware GroupNorm.
 
-    Follows Google's Conformer Speaker ID design (`arXiv:2202.12163`, `gn_num_groups=2`).
+    Uses a mask-aware GroupNorm with 2 groups in place of the BatchNorm of Gulati et al. 2020
+    (FlaxSpeaker design choice; not taken from any of the cited speaker papers).
     """
 
     dim: int = 256
@@ -264,27 +320,9 @@ class ConformerBlock(nn.Module):
     conv_kernel_size: int = 15
     use_group_norm: bool = True
     normalize_output: bool = True
+    layer_order: str = "mhsa_before_conv"
 
-    @nn.compact
-    def __call__(
-        self,
-        x: jax.Array,
-        deterministic: bool = True,
-        mask: Optional[jax.Array] = None,
-    ) -> jax.Array:
-        mask_f = (
-            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
-        )
-        # 1. First half-step FFN
-        h = nn.LayerNorm(name="ffn1_ln")(x)
-        h = nn.Dense(self.ffn_dim, name="ffn1_up")(h)
-        h = nn.silu(h)
-        h = nn.Dense(self.dim, name="ffn1_down")(h)
-        x = x + 0.5 * h
-        if mask_f is not None:
-            x = x * mask_f
-
-        # 2. Multi-Head Self-Attention
+    def _mhsa(self, x: jax.Array, mask: Optional[jax.Array], mask_f: Optional[jax.Array]) -> jax.Array:
         attn_mask = None
         if mask is not None:
             attn_mask = nn.make_attention_mask(
@@ -302,8 +340,9 @@ class ConformerBlock(nn.Module):
         x = x + h
         if mask_f is not None:
             x = x * mask_f
+        return x
 
-        # 3. Convolution module
+    def _conv(self, x: jax.Array, mask: Optional[jax.Array], mask_f: Optional[jax.Array]) -> jax.Array:
         x = x + ConformerConvModule(
             dim=self.dim,
             kernel_size=self.conv_kernel_size,
@@ -312,6 +351,37 @@ class ConformerBlock(nn.Module):
         )(x, mask=mask)
         if mask_f is not None:
             x = x * mask_f
+        return x
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        order = self.layer_order.lower()
+        if order not in ("mhsa_before_conv", "conv_before_mhsa"):
+            raise ValueError(f"Unknown Conformer layer_order: {self.layer_order}")
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        # 1. First half-step FFN
+        h = nn.LayerNorm(name="ffn1_ln")(x)
+        h = nn.Dense(self.ffn_dim, name="ffn1_up")(h)
+        h = nn.silu(h)
+        h = nn.Dense(self.dim, name="ffn1_down")(h)
+        x = x + 0.5 * h
+        if mask_f is not None:
+            x = x * mask_f
+
+        # 2./3. Multi-Head Self-Attention and Convolution module (configurable order)
+        if order == "mhsa_before_conv":
+            x = self._mhsa(x, mask, mask_f)
+            x = self._conv(x, mask, mask_f)
+        else:
+            x = self._conv(x, mask, mask_f)
+            x = self._mhsa(x, mask, mask_f)
 
         # 4. Second half-step FFN
         h = nn.LayerNorm(name="ffn2_ln")(x)
@@ -330,7 +400,7 @@ class ConformerBlock(nn.Module):
 
 
 class ConformerBackbone(nn.Module):
-    """Conformer encoder backbone for speaker representation learning (`arXiv:2202.12163`).
+    """Conformer encoder backbone for speaker representation learning (Gulati et al. 2020).
 
     Key speaker recognition design choices:
     - Shift-invariant self-attention (`use_positional_encoding=False` by default)
@@ -353,6 +423,9 @@ class ConformerBackbone(nn.Module):
     normalize_output: bool = False
     use_conv_stem: bool = True
     use_group_norm: bool = True
+    layer_order: str = "mhsa_before_conv"
+    subsample_factor: int = 1
+    subsample_after_layer: int = 3
 
     @nn.compact
     def __call__(
@@ -361,6 +434,15 @@ class ConformerBackbone(nn.Module):
         deterministic: bool = True,
         mask: Optional[jax.Array] = None,
     ) -> jax.Array:
+        """Returns frame representations `(B, T', D)`.
+
+        `T' = T` unless `subsample_factor > 1`, in which case stack-by-`subsample_factor`
+        time reduction is applied after `min(subsample_after_layer, num_layers)` blocks and
+        `T' = ceil(T / subsample_factor)`; callers must then use
+        `subsample_mask(mask, subsample_factor)` for downstream pooling.
+        """
+        factor = max(1, int(self.subsample_factor))
+        sub_after = min(max(0, int(self.subsample_after_layer)), self.num_layers)
         mask_f = (
             (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
         )
@@ -382,7 +464,22 @@ class ConformerBackbone(nn.Module):
         if mask_f is not None:
             h = h * mask_f
         layer_outs = []
+        cur_mask = mask
         for i in range(self.num_layers):
+            if factor > 1 and i == sub_after:
+                # Stack-by-`factor` time reduction + linear projection back to `dim`.
+                h, cur_mask = _stack_frames(h, factor, cur_mask)
+                h = nn.Dense(self.dim, name="subsample_proj")(h)
+                mask_f = (
+                    (cur_mask > 0).astype(h.dtype)[..., None]
+                    if cur_mask is not None
+                    else None
+                )
+                if mask_f is not None:
+                    h = h * mask_f
+                # Earlier layer outputs are time-reduced parameter-free (group mean)
+                # so Multi-Layer Feature Aggregation can concatenate them.
+                layer_outs = [_average_frames(lo, factor) for lo in layer_outs]
             h = ConformerBlock(
                 dim=self.dim,
                 num_heads=self.num_heads,
@@ -390,9 +487,21 @@ class ConformerBackbone(nn.Module):
                 conv_kernel_size=self.conv_kernel_size,
                 use_group_norm=self.use_group_norm,
                 normalize_output=False,
+                layer_order=self.layer_order,
                 name=f"conformer_{i}",
-            )(h, deterministic=deterministic, mask=mask)
+            )(h, deterministic=deterministic, mask=cur_mask)
             layer_outs.append(h)
+        if factor > 1 and sub_after >= self.num_layers:
+            h, cur_mask = _stack_frames(h, factor, cur_mask)
+            h = nn.Dense(self.dim, name="subsample_proj")(h)
+            mask_f = (
+                (cur_mask > 0).astype(h.dtype)[..., None]
+                if cur_mask is not None
+                else None
+            )
+            if mask_f is not None:
+                h = h * mask_f
+            layer_outs = [_average_frames(lo, factor) for lo in layer_outs[:-1]] + [h]
         cat = jnp.concatenate(layer_outs, axis=-1)
         out = nn.Dense(self.dim, name="mfa_proj")(nn.LayerNorm(name="mfa_ln")(cat))
         if self.normalize_output:
@@ -854,7 +963,7 @@ class ResNetBackbone(nn.Module):
 class ModernSpeakerEncoder(nn.Module):
     """Unified configurable speaker encoder supporting all backbones and pooling heads.
 
-    Architecture flow (`arXiv:2202.12163` / `arXiv:2203.05642v3`):
+    Architecture flow (backbone -> pooling -> bottleneck -> embedding, cf. arXiv:2203.05642 Sec. 3):
     `Input (B, T, F) -> Backbone -> Temporal Pooling -> Bottleneck FFN (ReLU) -> Linear Proj -> Output (B, D)`
     (When `pooling_type == "pfas"`, the output is the packed Key-Value representation
     of shape `(B, num_keys * (key_dim + value_dim))` directly from `PfasRepresentationHead`.)
@@ -890,6 +999,7 @@ class ModernSpeakerEncoder(nn.Module):
             frames = ConformerBackbone(**b_kwargs, name="backbone")(
                 x, deterministic=deterministic, mask=mask
             )
+            mask = subsample_mask(mask, int(b_kwargs.get("subsample_factor", 1)))
         elif b_type == "mamba":
             frames = MambaBackbone(**b_kwargs, name="backbone")(
                 x, deterministic=deterministic, mask=mask

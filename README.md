@@ -2,7 +2,9 @@
 
 [![Python application](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml/badge.svg)](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml) [![HuggingFace Models](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-44%20Pretrained%20Models-blue)](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) [![PyPI Version](https://img.shields.io/pypi/v/flaxspeaker.svg)](https://pypi.python.org/pypi/flaxspeaker) [![Python Versions](https://img.shields.io/pypi/pyversions/flaxspeaker.svg)](https://pypi.org/project/flaxspeaker) [![Downloads](https://static.pepy.tech/badge/flaxspeaker)](https://pepy.tech/project/flaxspeaker) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**FlaxSpeaker** is a modern, end-to-end open-source speaker recognition and verification library built on [JAX](https://jax.readthedocs.io) and [Flax](https://flax.readthedocs.io). Designed for education, academic research, and production deployment, it unifies dataset preparation, Post-STFT Voice Activity Detection (VAD) with Automatic Gain Control (AGC), HuggingFace `transformers`-compatible acoustic frontends, six neural sequence backbones, eight temporal pooling heads, nine metric-learning and angular-margin loss functions, three scoring paradigms, universal multi-domain stratified training, and one-command export to **TFLite (FP32 / INT8)**, **TensorFlow SavedModel**, **SafeTensors**, and **HuggingFace Hub**.
+**FlaxSpeaker** is an end-to-end open-source speaker verification library built on [JAX](https://jax.readthedocs.io) and [Flax](https://flax.readthedocs.io). Designed for education and academic research, it unifies dataset preparation, frame-level energy Voice Activity Detection (VAD) with peak Automatic Gain Control (AGC), an 80-D log-Mel frontend with CMVN, six neural sequence backbones, eight temporal pooling heads, nine metric-learning and angular-margin training objectives (seven of which are benchmarked), three scoring paradigms, universal multi-domain stratified training, and one-command export to **TFLite (FP32 / dynamic-range INT8)**, **TensorFlow SavedModel**, **SafeTensors**, and the **Hugging Face Hub**.
+
+> **Read this before using the released checkpoints.** All 44 published models are **400-step, single-seed CPU demonstration checkpoints** (32 utterances per step, ≈1.35 epochs over 9,447 utterances from 381 speakers). They reach 19–32 % EER on the project's trial lists and 22–32 % EER on a *10-speaker subset* of VoxCeleb1-O (not comparable to published VoxCeleb1-O numbers; published systems reach ≈1 %). They are intended for *relative* comparisons of architectures and objectives under an identical budget, not as state-of-the-art models. Several released configurations are **FlaxSpeaker variants** of the cited algorithms (see [Deviations from the source papers](#deviations-from-the-source-papers)); the paper-faithful configurations are available as `pure_paper_mode=True` presets but have **not** been trained or released.
 
 For the companion PyTorch educational project, see [SpeakerRecognitionFromScratch](https://github.com/wq2012/SpeakerRecognitionFromScratch).
 
@@ -12,13 +14,13 @@ For the companion PyTorch educational project, see [SpeakerRecognitionFromScratc
 
 **This is not an officially supported Google product.**
 
-This repository provides an independent, clean-room open-source re-implementation in **JAX / Flax** of the mathematical formulations and neural architectures described in the following published research papers:
+This repository provides a from-scratch re-implementation in **JAX / Flax**, written using only the published papers (no proprietary code or data), of the mathematical formulations and neural architectures described in the following research papers:
 1. **Generalized End-to-End Loss for Speaker Verification** — *Li Wan, Quan Wang, Alan Papir, Ignacio Lopez Moreno* ([ICASSP 2018, arXiv:1710.10467](https://arxiv.org/pdf/1710.10467))
 2. **Dr-Vectors: Decision Residual Networks and an Improved Loss for Speaker Recognition** — *Jason Pelecanos, Quan Wang, Ignacio Lopez Moreno* ([Interspeech 2021, arXiv:2104.01989](https://arxiv.org/pdf/2104.01989))
-3. **Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech** — *Quan Wang, Yang Yu, Jason Pelecanos, Yiling Huang, Ignacio Lopez Moreno* ([Odyssey 2022, arXiv:2202.12163](https://arxiv.org/pdf/2202.12163))
-4. **Parameter-Free Attentive Scoring for Speaker Verification** — *Jason Pelecanos, Quan Wang, Yiling Huang, Ignacio Lopez Moreno* ([Odyssey 2022, arXiv:2203.05642v3](https://arxiv.org/pdf/2203.05642v3))
+3. **Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech** — *Quan Wang, Yang Yu, Jason Pelecanos, Yiling Huang, Ignacio Lopez Moreno* ([Odyssey 2022, arXiv:2202.12163](https://arxiv.org/pdf/2202.12163)) — a *language identification* paper whose attentive temporal pooling head is repurposed here for speaker embeddings
+4. **Parameter-Free Attentive Scoring for Speaker Verification** — *Jason Pelecanos, Quan Wang, Yiling Huang, Ignacio Lopez Moreno* ([Odyssey 2022, arXiv:2203.05642](https://arxiv.org/pdf/2203.05642))
 
-Because the original papers were trained and evaluated on proprietary internal datasets and infrastructure, **exact numerical parity with the original paper tables is neither expected nor claimed**. All pretrained checkpoints and benchmark tables in this repository are trained and evaluated from scratch on publicly available open-source speech corpora (**LibriSpeech**, **CN-Celeb2**, and **VoxCeleb1**) with speaker-disjoint splits.
+Because the original papers were trained and evaluated on proprietary internal datasets and infrastructure (for ~500k steps on thousands of speakers), **exact numerical parity with the original paper tables is neither expected nor claimed**, and the released 400-step checkpoints should not be read as reproductions of the papers' results. All pretrained checkpoints and benchmark tables in this repository are trained and evaluated from scratch on publicly available speech corpora (**LibriSpeech**, **CN-Celeb2**, and the 40-speaker **VoxCeleb1 test partition**) with speaker-disjoint splits.
 
 ---
 
@@ -26,40 +28,40 @@ Because the original papers were trained and evaluated on proprietary internal d
 
 ![FlaxSpeaker System Architecture](resources/architecture_diagram.png)
 
-### 1. Six Neural Sequence Backbones & Four Size Presets (`< 100M` params)
+### 1. Six Neural Sequence Backbones & Four Size Presets (0.63 M–4.55 M parameters in the released zoo; `large` is defined but never trained)
 All backbones share a unified `(B, T, F) -> (B, T, D)` frame-rate-preserving sequence interface with **exact variable-length padding mask invariance** via `ModernSpeakerEncoder` ([`flaxspeaker/backbones.py`](flaxspeaker/backbones.py)) and scale automatically via `size_variant: tiny | small | base | large`:
 - **Conformer** (`conformer`): Parallel Linear + 1D Conv Stem (`Dense(D) + SiLU(LayerNorm(Conv1D(k=3)))`) + Macaron FFN + Masked Multi-Head Self-Attention + Mask-Aware GroupNorm Depthwise Separable Convolution + Multi-Layer Feature Aggregation (MFA).
 - **ECAPA-TDNN** (`ecapa_tdnn`): 1D SE-Res2Net dilated multi-scale blocks with Multi-Layer Feature Aggregation (MFA).
 - **Mamba** (`mamba`): Selective State Space Model (SSM) implemented in pure JAX via parallel `jax.lax.associative_scan` (`O(T)` linear time complexity, supporting both causal unidirectional and mask-aware bidirectional `bidirectional: true` modes).
 - **ResNet** (`resnet`): 2D Time-Frequency Residual Network with Squeeze-and-Excitation (SE-ResNet, 8 residual blocks across 4 stages `(2, 2, 2, 2)`).
 - **Transformer** (`transformer`): Parallel Linear + 1D Conv Stem (`Dense(D) + SiLU(LayerNorm(Conv1D(k=3)))`) + Pre-LayerNorm Multi-Head Self-Attention encoder with Multi-Layer Feature Aggregation (MFA).
-- **LSTM** (`lstm`): Deep stacked unidirectional LSTM with configurable hidden size, LayerNorm, and dropout.
+- **LSTM** (`lstm`): Deep stacked uni- or bidirectional LSTM (`bidirectional: true`, mask-aware with `seq_lengths` in both directions) with configurable hidden size, optional per-layer projection, and per-layer LayerNorm + residual connections. No dropout is implemented in any backbone.
 
 ### 2. Eight Temporal Pooling Heads ([`flaxspeaker/pooling.py`](flaxspeaker/pooling.py))
-- **Attentive Temporal Pooling** (`atp`): Sigmoid frame-gated subspace multi-head statistics pooling (`concat(mu_h, sigma_h)`) followed by a nonlinear bottleneck FFN (`LayerNorm -> Dense(256) -> LayerNorm -> ReLU -> Dense(d_e) -> L2_norm`) for Conformer and Transformer speaker encoders ([Wang et al., Odyssey 2022, `arXiv:2202.12163`](https://arxiv.org/pdf/2202.12163)).
+- **Attentive Temporal Pooling** (`atp`): Sigmoid frame-gated statistics pooling (`concat(mu_h, sigma_h)`) extended from the single-head linear-sigmoid ATP of [Wang et al., Odyssey 2022, `arXiv:2202.12163`](https://arxiv.org/pdf/2202.12163) (a language-identification paper). FlaxSpeaker defaults add a tanh bottleneck (`attention_dim: 128`) and 4 channel-subspace heads (`subspace_heads: true`); `attention_dim: 0, num_heads: 1` recovers the paper form. Followed by a nonlinear bottleneck FFN (`LayerNorm -> Dense(256) -> LayerNorm -> ReLU -> Dense(d_e) -> L2_norm`).
 - **Self-Attentive Pooling** (`sap`) & **Attentive Statistics Pooling** (`asp`): Softmax attention-weighted frame mean and standard deviation.
 - **Mean Pooling** (`mean`), **Last-Frame Pooling** (`last`), & **Temporal Statistics Pooling** (`stats`).
 - **Cumulative Statistics Pooling** (`cumulative_stats`): Frame-wise causal running statistics for streaming inference.
-- **Parameter-Free Attentive Scoring Head** (`pfas`): Global `ATP` bottleneck value anchor + multi-head `(K, V)` residual projection with per-key L2-normalization, pooling-time unweighted concatenated value L2-normalization (`[v_1; ...; v_K]`), and trial-time attention-weighted concatenated value L2-normalization ([Pelecanos et al., Odyssey 2022, `arXiv:2203.05642v3`](https://arxiv.org/pdf/2203.05642v3)).
+- **Parameter-Free Attentive Scoring Head** (`pfas`): Two representation heads. `attention_type: atp_ffn` is the head of [Pelecanos et al., Odyssey 2022, `arXiv:2203.05642`](https://arxiv.org/pdf/2203.05642) (ATP → affine + ReLU → linear → keys/values; `odyssey2022_pfas_config(pure_paper_mode=True)` uses 32 tied keys × (16 + 48) = 2,048-D). `attention_type: shared_nonlinear` + `use_global_anchor: true` (**PFAS-SN, a FlaxSpeaker extension used by all released `*_pfas*` checkpoints**) uses per-frame key/value projections with multi-head tanh frame attention anchored on a global ATP value summary, 4 keys × (32 + 128) = 640-D. Both apply per-key L2 normalisation and global L2 normalisation of the concatenated value form (paper Eqs. 5–7).
 
 ### 3. Nine Speaker Recognition Losses & Three Scoring Backends ([`flaxspeaker/losses.py`](flaxspeaker/losses.py), [`flaxspeaker/scoring.py`](flaxspeaker/scoring.py))
-- **Generalized End-to-End (GE2E) Loss**: `ge2e_softmax` and `ge2e_contrast` with learnable scale `w` and bias `b` ([Wan et al., ICASSP 2018](https://arxiv.org/pdf/1710.10467)).
-- **Extended-Set (Multi-Row) Softmax Loss**: `extended_set_softmax` for training with negative prototype banks, supporting both pure Eq. (3) (`pure_extended_set: true`) and a 50/50 split-batch row+column blend (`pure_extended_set: false`, default) with speaker-count scaling `-log(N)` ([Pelecanos et al., Interspeech 2021](https://arxiv.org/pdf/2104.01989)).
-- **Decision Residual Networks (Dr-Vectors)**: `scoring_type: dr_vector` — single-stage end-to-end residual feed-forward network scoring `[e_t, e_e, c]` (`num_cosine_terms: 1`, default) or 3-term non-linear cosine features `[e_t, e_e, c, c^2, sqrt(max(c, 0))]` where `c = cos(e_t, e_e)` (`num_cosine_terms: 3`, Eq. 7 of Pelecanos et al., 2021), with optional skip-concatenation of cosine features to the final hidden representation (`append_cosine_to_final_hidden: true`, Fig. 1 of [arXiv:2104.01989](https://arxiv.org/pdf/2104.01989)).
-- **Parameter-Free Attentive Scoring (PFAS)**: `scoring_type: pfas` — asymmetric cross-attention between test and enrollment `(K, V)` representations with normalized key-key attention weights `A_{ij}`, learnable temperature scaling, and seamless multi-utterance enrollment averaging ([Pelecanos et al., Odyssey 2022](https://arxiv.org/pdf/2203.05642v3)).
+- **Generalized End-to-End (GE2E) Loss**: `ge2e_softmax` (Eq. 6, exact leave-one-out centroids) and `ge2e_contrast` (Eq. 7) with learnable scale `w` and bias `b` ([Wan et al., ICASSP 2018](https://arxiv.org/pdf/1710.10467)). By default `ge2e_contrast` back-propagates Eq. 7 exactly. The released `*_ge2e_contrast` checkpoints were trained with the **hybrid contrast surrogate** (`ge2e_contrast_surrogate: true`): the value is Eq. 7 but the gradient is `0.25·Eq7 + 0.25·BCE + 0.50·GE2E-softmax-CE`, with `ge2e_init_b: -1.0` and `ge2e_contrast_b_grad_scale: 0.5` — a FlaxSpeaker objective, not Wan et al.'s contrast loss. When `scoring_type` is `pfas` or `dr_vector`, GE2E uses the even/odd split-batch test-vs-enrollment matrix instead of leave-one-out centroids.
+- **Extended-Set Softmax Loss**: `extended_set_softmax`, supporting the paper's pure form (`pure_extended_set: true`, Eq. 2 of [Pelecanos et al., Interspeech 2021](https://arxiv.org/pdf/2104.01989)) and the **Blended Extended-Set Softmax (FlaxSpeaker variant)** used by all released `*_ext_softmax` / `*_dr_vectors` / `*_pfas` checkpoints (`pure_extended_set: false`: 50/50 blend of row-softmax and extended-set softmax with a `-log(N)` logit shift).
+- **Decision Residual Networks (Dr-Vectors)**: `scoring_type: dr_vector` — single-stage end-to-end residual feed-forward scorer on `[e_t, e_e, c]`. `interspeech2021_dr_vectors_config(pure_paper_mode=True)` builds the paper's network ([arXiv:2104.01989](https://arxiv.org/pdf/2104.01989) Sec. 2/4: 256-D embedding split into `cosine_dims: 200` base dims + 56 side-information dims, 3 × Dense(256) leaky-ReLU(0.2) without normalisation, `readout: weighted_sum`, score = cosine + network output, `trainable_affine: true`, trained with pure extended-set softmax). The released `*_dr_vectors` checkpoints are a **down-scaled Dr-Vector variant** (no base/side split, hidden `(128, 64)` ReLU + LayerNorm, linear read-out, fixed `residual_weight: 0.25`, blended extended-set softmax). The 3-term cosine expansion `[c, c^2, sqrt(max(c, 0))]` (`num_cosine_terms: 3`) is a FlaxSpeaker extension that does **not** appear in the paper (which has only two numbered equations).
+- **Parameter-Free Attentive Scoring (PFAS)**: `scoring_type: pfas` — cross-attention between test and enrollment `(K, V)` representations with per-trial softmax key–key attention weights `A_{ij}`, per-key and global L2 normalisation (Eqs. 5–7 of [Pelecanos et al., Odyssey 2022](https://arxiv.org/pdf/2203.05642)), a trainable scale, and key stacking (`N = M × E`) for multi-utterance enrollment.
 - **Angular Margin Classification Losses**:
   - **ArcFace / AAM-Softmax** (`arcface`): `cos(theta + m)`
   - **CosFace / AM-Softmax** (`cosface`): `cos(theta) - m`
   - **SphereFace / A-Softmax** (`sphereface`): `(-1)^k * cos(m * theta) - 2k`
-  - **Standard Softmax** (`softmax`), **Pairwise Loss** (`pairwise`), and **Triplet Loss** (`triplet`).
-- **Adaptive Symmetric Score Normalization (AS-Norm)**: Top-`K` imposter cohort calibration (`use_as_norm: true`).
+  - **Standard Softmax** (`softmax`), **Pairwise Loss** (`pairwise`), and **Triplet Loss** (`triplet`). (`softmax` and `pairwise` are implemented and unit-tested but **no released checkpoint uses them**.)
+- **Adaptive Symmetric Score Normalization (AS-Norm)**: Top-`K` impostor-cohort z-normalisation (`use_as_norm: true`). The cohort must be passed explicitly (`cohort_embeddings=`, e.g. training-speaker embeddings) and must be disjoint from the trial utterances; `evaluate_verification_trials` raises otherwise. No reported number uses AS-Norm.
 
 ### 4. End-to-End Audio Pipeline, Mutually Exclusive Augmentation, Variable-Length Training & Universal Multi-Domain Batching
-- **Post-STFT Voice Activity Detection (VAD) & AGC** ([`flaxspeaker/vad.py`](flaxspeaker/vad.py)): Frame-level energy/spectral/hybrid VAD with Automatic Gain Control (`apply_agc = True`, target peak `1.0`), 3-term dynamic thresholding `max(-42.0 dB, P_95(E) - 26.0 dB, P_10(E) + 4.5 dB)`, spectral flatness `<= 0.65` and speech-band (`300-3400 Hz`) energy ratio `>= 0.25`, hangover smoothing (`min_speech_frames = 3`, `hangover_frames = 8`), and top-8 frame fallback enabled identically for both training and evaluation.
-- **Acoustic Frontends & Variable-Length Training** ([`flaxspeaker/feature_extraction.py`](flaxspeaker/feature_extraction.py)): `log_mel`, `whisper_mel`, `hf_compat` (100% compatible with HuggingFace `WhisperFeatureExtractor` / `SeamlessM4TFeatureExtractor`), `mfcc`, Cepstral Mean and Variance Normalization (CMVN), per-utterance variable sequence length sampling (`[min_seq_len, max_seq_len]`) with exact binary padding masks `(B, T)`, and two-tier RAM + `.npy` disk caching (`FeatureCache`).
-- **Mutually Exclusive SpecAugment & Multi-Style Training (MTR)** ([`flaxspeaker/specaug.py`](flaxspeaker/specaug.py)): Feature-domain multi-style noise perturbation (`SNR in [12, 20] dB`) and time/frequency masking (`SpecAugment`, up to 2 frequency masks `<= 8` mel bins and 2 time masks `<= 12` frames), strictly mutually exclusive via `augment_features_mutually_exclusive` (`35%` feature-domain MTR noise only, `32.5%` SpecAugment only, `32.5%` clean unaugmented features), plus standalone waveform-domain RIR/noise augmentation (`apply_waveform_augmentation`).
+- **Frame-level energy VAD & AGC** ([`flaxspeaker/vad.py`](flaxspeaker/vad.py)): Frame energies are computed on the peak-normalised waveform (`apply_agc = True`, target peak `1.0`) and the resulting mask is applied to the log-Mel frames; 3-term dynamic thresholding `max(-42.0 dB, P_95(E) - 26.0 dB, P_10(E) + 4.5 dB)`, optional spectral flatness `<= 0.65` and speech-band (`300-3400 Hz`) energy ratio `>= 0.25` gates, hangover smoothing (`min_speech_frames = 3`, `hangover_frames = 8`), and a top-8-frame fallback. **One VAD constant (26 dB, the `VadConfig()` default) is used for data preparation, training, in-domain evaluation and the VoxCeleb1-O-subset evaluation.**
+- **Acoustic Frontends & Variable-Length Training** ([`flaxspeaker/feature_extraction.py`](flaxspeaker/feature_extraction.py)): `log_mel` (used by every released checkpoint: natural-log Mel + energy VAD + CMVN; **not** reproducible with a Hugging Face `AutoFeatureExtractor`, which is why no `preprocessor_config.json` is shipped), optional `whisper_mel` / `hf_compat` / `mfcc` frontends, per-utterance variable sequence length sampling (`U(90, 180)` frames in all benchmark YAMLs) with exact binary padding masks `(B, T)`, evaluation centre-cropping to `max_eval_seq_len = 500` frames (5 s), and two-tier RAM + `.npy` disk caching (`FeatureCache`).
+- **Mutually Exclusive SpecAugment & feature-domain noise augmentation** ([`flaxspeaker/specaug.py`](flaxspeaker/specaug.py)): The training-path "MTR" is **synthetic log-Mel-domain** augmentation — frequency-shaped Gaussian noise at `SNR ~ U(12, 20) dB` gated towards low-energy bins, plus a one-tap temporal smoothing with probability 0.4 — **not** waveform-domain multi-style training with recorded noise/RIR corpora. It is strictly mutually exclusive with `SpecAugment` (up to 2 frequency masks `<= 8` mel bins and 2 time masks `<= 12` frames): `35%` noise only, `32.5%` SpecAugment only, `32.5%` clean. A standalone waveform helper (`apply_waveform_augmentation`) exists but is not on the training path.
 - **Universal Multi-Domain Stratified Batching** ([`flaxspeaker/feature_extraction.py`](flaxspeaker/feature_extraction.py)): Combines multiple heterogeneous datasets (`LibriSpeech`, `CN-Celeb2`, `VoxCeleb1`) using `75%` within-domain hard-negative batches and `25%` cross-domain score-calibration batches with temperature-balanced domain sampling `p_d proportional to |S_d|^0.35`.
-- **Production Model Export** ([`flaxspeaker/export.py`](flaxspeaker/export.py), [`flaxspeaker/hf_compat.py`](flaxspeaker/hf_compat.py)): Export via `jax2tf` to **TFLite (FP32, dynamic-range INT8, full INT8)**, **TF SavedModel**, **SafeTensors**, and **HuggingFace Hub** directories (`config.json`, `model.safetensors`, `preprocessor_config.json`, auto-generated model card).
+- **Model Export** ([`flaxspeaker/export.py`](flaxspeaker/export.py), [`flaxspeaker/hf_compat.py`](flaxspeaker/hf_compat.py)): Export via `jax2tf` to **TFLite (FP32, dynamic-range INT8)** and **TF SavedModel** with a **fixed, unmasked input window** (`export.sequence_length`; `0` = `model.seq_len`; the 12 released `.tflite` files use **180 frames = 1.8 s**, encoder only, no scoring heads), and to **SafeTensors** / **Hugging Face Hub** directories (`config.json`, `model.safetensors`, `eval_results.json`, auto-generated model card). No TFLite EER is reported; the `≥ 0.9999` cosine fidelity was measured on 180-frame inputs.
 
 ---
 
@@ -104,8 +106,8 @@ python scripts/train.py \
   --output_dir ./checkpoints/univ_conformer_small_ge2e
 ```
 
-### 3. Evaluate 1-Utt, 3-Utt, and Official `VoxCeleb1-O` (`veri_test2.txt`) Trials (`scripts/evaluate.py` / `scripts/eval_voxceleb1_official.py`)
-Compute 1-utterance and 3-utterance EER (%), `minDCF@0.01`, `minDCF@0.05`, `minDCF@0.10`, ROC-AUC, and 95% bootstrap confidence intervals using any [Hugging Face Hub model ID (`wq2012/<model_id>`)](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) or local checkpoint directory, as well as the speaker-disjoint official `VoxCeleb1-O` (`veri_test2.txt`) trial list:
+### 3. Evaluate 1-Utt, 3-Utt, and VoxCeleb1-O-subset Trials (`scripts/evaluate.py` / `scripts/eval_vox1_o_subset.py`)
+Compute 1-utterance and 3-utterance EER (%), `minDCF@0.01`, `minDCF@0.05`, `minDCF@0.10`, ROC-AUC, and 95% bootstrap confidence intervals using any [Hugging Face Hub model ID (`wq2012/<model_id>`)](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) or local checkpoint directory, as well as the **VoxCeleb1-O 10-speaker subset** (official `veri_test2.txt` filtered to trials whose two speakers are both among the 10 held-out evaluation speakers, 2,500 trials, ≈72 % target; **not comparable to published VoxCeleb1-O numbers** — the other 30 of the 40 official test speakers are training data for `vox_*` and `univ_*` models):
 
 ```bash
 python scripts/evaluate.py \
@@ -114,11 +116,8 @@ python scripts/evaluate.py \
   --multi_trials_file ./data/speaker_datasets/splits/universal/multi_enroll_trials.tsv \
   --output_json eval_summary.json
 
-# Evaluate all 44 models on the speaker-disjoint official VoxCeleb1-O (veri_test2.txt) protocol
-python scripts/eval_voxceleb1_official.py \
-  --data-root ./data/speaker_datasets \
-  --pretrained-dir ./pretrained_models \
-  --output-json ./pretrained_models/voxceleb1_o_official_results.json
+# Evaluate all 44 models on the VoxCeleb1-O 10-speaker subset (writes pretrained_models/vox1_o_10spk_subset_results.json)
+python scripts/eval_vox1_o_subset.py --data_root ./data/speaker_datasets --models_dir ./pretrained_models
 ```
 
 ### 4. Run End-to-End Speaker Verification Inference (`scripts/inference.py`)
@@ -146,13 +145,17 @@ python scripts/export_model.py \
 python scripts/run_benchmark_suite.py --data-root ./data/speaker_datasets
 
 # Reproduce the 5 controlled ablation studies (pretrained_models/ablation_results.json)
-python scripts/run_r1_ablations.py --data-root ./data/speaker_datasets
+python scripts/run_r1_ablations.py --data_root ./data/speaker_datasets
+
+# Seed-noise floor (3 seeds x 2 models), honest 800-step horizon point, matched-data control
+# (pretrained_models/r2_seed_and_control_results.json)
+python scripts/run_r2_controls.py --data_root ./data/speaker_datasets
 
 # Regenerate all 6 paper figures from the JSON benchmark & ablation artifacts
 python scripts/generate_figures.py \
   --benchmark-json pretrained_models/benchmark_results.json \
   --ablation-json pretrained_models/ablation_results.json \
-  --vox1o-json pretrained_models/voxceleb1_o_official_results.json \
+  --vox1o-json pretrained_models/vox1_o_10spk_subset_results.json \
   --output-dir ./figures
 ```
 
@@ -192,9 +195,10 @@ cfg = universal_multi_domain_config(
 ## Interactive Gradio Demo (`hf_space/`)
 
 An interactive [Gradio 5.50.0](https://gradio.app) web application is included in [`hf_space/`](hf_space/) featuring:
-- Model selector across all 44 Universal Multi-Domain (`univ_*`) and Single-Domain (`ls_*`, `cn_*`, `vox_*`) checkpoints from [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (`Cosine`, `PFAS`, and `Dr-Vectors` scoring).
-- 1-utterance and 3-utterance speaker enrollment with real speech samples from **LibriSpeech**, **CN-Celeb2**, and **VoxCeleb1**.
-- Visual log-Mel spectrogram, Post-STFT VAD frame mask, and 192-D speaker embedding bar plots.
+- Real inference only (no precomputed outputs) with a model selector across all 44 Universal Multi-Domain (`univ_*`) and Single-Domain (`ls_*`, `cn_*`, `vox_*`) checkpoints from [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (`Cosine`, `PFAS`, and `Dr-Vectors` scoring).
+- The decision threshold defaults to the selected model's **own pooled 1-utt EER operating point** from `eval_results.json` (slider range adapts to the scoring back-end); latency is reported as steady-state model inference after a JIT warm-up.
+- 1-utterance and 3-utterance speaker enrollment with real speech samples from **LibriSpeech**, **CN-Celeb2**, and **VoxCeleb1**; waveform + VAD gate, post-VAD log-Mel spectrogram, and embedding-profile plots.
+- AS-Norm is deliberately not offered (a web demo has no disjoint impostor cohort). `hf_space/` is self-contained (`requirements.txt` installs `flaxspeaker`).
 
 ```bash
 python hf_space/app.py
@@ -204,20 +208,21 @@ python hf_space/app.py
 
 ## 44-Model Benchmark Summary & Pretrained Model Zoo
 
-We trained and evaluated **44 models** (`19` Universal Multi-Domain models trained jointly on `LibriSpeech + CN-Celeb2 + VoxCeleb1` = `381` speakers / `9,447` utterances, plus `25` Single-Domain baseline models) across **all three speaker-disjoint evaluation domains** (`8,000` 1-utterance trials + `3,000` 3-utterance trials + `2,500` speaker-disjoint official `VoxCeleb1-O` `veri_test2.txt` trials per model = `594,000` total trial evaluations).
+We trained and evaluated **44 models** (`19` Universal Multi-Domain models trained jointly on `LibriSpeech + CN-Celeb2 + VoxCeleb1` = `381` speakers / `9,447` utterances, plus `25` Single-Domain baseline models) across **all three speaker-disjoint evaluation domains** (`8,000` 1-utterance trials + `3,000` 3-utterance trials + `2,500` VoxCeleb1-O-subset trials per model = `594,000` total trial evaluations). **Every model: 400 steps × 32 utterances, seed 42, single run** — see the seed-noise floor below before reading any sub-1 % difference as a ranking.
 
 - **Hugging Face Collection (44 Pretrained Models)**: **[`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595)**
 - Full technical report, ablations & mathematical analysis: **[RESEARCH_REPORT.md](RESEARCH_REPORT.md)**
 - Complete verified evaluation metrics JSON (`44` models + `12` TFLite exports): **[`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json)**
 - Controlled ablation study metrics JSON (`5` studies): **[`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json)**
-- Official speaker-disjoint `VoxCeleb1-O` (`veri_test2.txt`) evaluation JSON (`44` models): **[`pretrained_models/voxceleb1_o_official_results.json`](pretrained_models/voxceleb1_o_official_results.json)**
+- VoxCeleb1-O **10-speaker subset** evaluation JSON (`44` models, 26 dB VAD matched to training): **[`pretrained_models/vox1_o_10spk_subset_results.json`](pretrained_models/vox1_o_10spk_subset_results.json)**
+- Round-2 controls (seed-noise floor over seeds {0, 1, 2}, honest 800-step horizon point, matched-data control): **[`pretrained_models/r2_seed_and_control_results.json`](pretrained_models/r2_seed_and_control_results.json)**
 - Local Pretrained HuggingFace + SafeTensors + TFLite checkpoints: **[`pretrained_models/`](pretrained_models/)**
 
 ### 1. Original Published Paper Reference Results (Internal Proprietary Datasets)
 
 | Paper & Venue | Architecture & Loss / Scoring | Original Training Corpus | Original Evaluation Benchmark | Reported Metric in Original Paper |
 | :--- | :--- | :--- | :--- | :--- |
-| **GE2E** ([Wan et al., ICASSP 2018](https://arxiv.org/pdf/1710.10467)) | 3-layer LSTM (`768` hidden, `256` proj) + `GE2E-Softmax` | Internal Proprietary Vendor + Voice Search (~`18K` spk) | Internal TD-SV ("OK Google") & TI-SV | `2.18%` EER (TD-SV) / `7.61%` EER (TI-SV) |
+| **GE2E** ([Wan et al., ICASSP 2018](https://arxiv.org/pdf/1710.10467)) | 3-layer LSTM (`768` hidden, `256` proj) + `GE2E-Softmax` | ~36 M utterances from ~`18K` speakers (anonymised logs) | Internal TI-SV: 1,000 speakers, ≈6.3 enrollment / 7.2 test utterances per speaker | `3.55%` EER (GE2E) vs. `4.06%` (softmax) and `4.13%` (TE2E), Table 3 — multi-utterance enrollment, not comparable to our 1-utt numbers |
 | **Dr-Vectors** ([Pelecanos et al., Interspeech 2021](https://arxiv.org/pdf/2104.01989)) | LSTM + `Extended-Set Softmax` + `Dr-Vectors` Residual Scorer | Internal Proprietary Multi-Condition Corpus | Internal Multi-Condition Speaker Verification | `~11%` relative EER reduction over Cosine + GE2E |
 | **Conformer + ATP** ([Wang et al., Odyssey 2022](https://arxiv.org/pdf/2202.12163)) | Conformer Encoder + Multi-Head `Attentive Temporal Pooling (ATP)` | Internal Multi-Language Speech Corpus (`65` languages) | Internal Streaming & Long-Form Identification | Significant EER & latency improvement over Mean/Last pooling |
 | **PFAS** ([Pelecanos et al., Odyssey 2022](https://arxiv.org/pdf/2203.05642v3)) | Conformer + Multi-Head `(K, V)` `Parameter-Free Attentive Scoring` | Internal Proprietary Multi-Vendor Corpus | Internal 1-Utt & Multi-Utt Speaker Verification | `~8–14%` relative EER reduction over Cosine baseline |
@@ -248,7 +253,9 @@ All 19 `univ_*` models below are trained simultaneously on **LibriSpeech (`232` 
 | [`wq2012/univ_conformer_small_sphereface`](https://huggingface.co/wq2012/univ_conformer_small_sphereface) | `conformer` (`small`) | `atp` / `sphereface` / `cosine` | `2,029,892` | 22.27% / 18.10% | 25.67% / 23.40% | 25.15% / 20.40% | 24.36% / 20.63% | 25.84% / 22.07% | `0.9858` / `0.9347` |
 | [`wq2012/univ_resnet_small_ge2e`](https://huggingface.co/wq2012/univ_resnet_small_ge2e) | `resnet` (`small`) | `asp` / `ge2e_softmax` / `cosine` | `2,239,922` | 24.53% / 21.40% | 29.33% / 26.40% | 28.25% / 25.80% | 27.37% / 24.53% | 27.89% / 25.47% | `0.9987` / `0.9847` |
 
-### 3. Why Universal Multi-Domain Training Outperforms Single-Domain Models
+### 3. Universal Multi-Domain vs. Single-Domain Training (matched Conformer-Small / GE2E)
+
+Universal training lowers *pooled* and *macro* EER for metric-learning objectives on Conformer and Mamba backbones, but **not** in-domain (the LibriSpeech specialist is 9.67 % vs. 12.50 % on LibriSpeech; the VoxCeleb1 specialist 20.80 % vs. 24.80 % on VoxCeleb1), and not for ArcFace/CosFace/SphereFace/Triplet, ResNet-18 or ECAPA-TDNN-small/tiny (universal is worse on macro 1-utt EER in 8 of the 19 matched `univ_*` vs. `ls_*` pairs). The comparison also confounds domain diversity with 1.6× more training data (9,447 vs. 5,788 utterances); see the matched-data control in `r2_seed_and_control_results.json`.
 
 | Model Paradigm | Representative Checkpoint | LS 1-Utt / 3-Utt EER (%) | CN 1-Utt / 3-Utt EER (%) | VOX 1-Utt / 3-Utt EER (%) | Universal Macro-Avg 1-Utt / 3-Utt EER (%) | Universal Pooled 1-Utt / 3-Utt EER (%) |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -290,9 +297,29 @@ All 19 `univ_*` models below are trained simultaneously on **LibriSpeech (`232` 
 
 ---
 
+## Deviations from the Source Papers
+
+The released checkpoints implement **FlaxSpeaker variants** of the cited algorithms. The paper-faithful configurations are available as presets (`icassp2018_ge2e_config`, `interspeech2021_dr_vectors_config`, `odyssey2022_conformer_atp_config`, `odyssey2022_pfas_config` with `pure_paper_mode=True`; every field they set is consumed by the built module and covered by `tests.py`), but **no paper-faithful preset has been trained or released**, so the table below describes what was actually run.
+
+| Component | Source paper | Released FlaxSpeaker checkpoints | Paper-faithful preset |
+| :--- | :--- | :--- | :--- |
+| Training budget / data | GE2E: ~36 M utts, 18 K spk, N=64×M=10; Dr-Vectors/PFAS: 16 spk × 8 utts, 500 k steps | 400 steps × (8 spk × 4 utts); ≤ 25 utts/spk; 381 (universal) / 232 / 119 / 30 speakers; single seed | not available (single CPU workstation) |
+| GE2E encoder | 3 × LSTM-768 + 256-D projection, linear output | `ls_lstm_*` / `univ_lstm_*`: 3 × LSTM-256, no projection, per-layer LayerNorm + residual, ASP pooling, nonlinear bottleneck FFN | `icassp2018_ge2e_config(pure_paper_mode=True)` |
+| GE2E contrast loss | Eq. 7 | `*_ge2e_contrast`: **hybrid contrast surrogate** (value = Eq. 7; gradient = 0.25 Eq. 7 + 0.25 BCE + 0.50 softmax-CE), `ge2e_init_b = −1`, `b` gradient scale 0.5 | `ge2e_contrast_surrogate: false` (default) |
+| Extended-set softmax | Eq. 2 (pure) | `*_ext_softmax`, `*_dr_vectors`, `*_pfas`: **blended** 0.5 row-softmax + 0.5 extended-set with `−log N` shift | `pure_extended_set: true` |
+| Dr-Vector scorer | 200 base + 56 side dims; 3 × 256 leaky-ReLU(0.2); weighted sum; trainable affine | `*_dr_vectors`: cosine over all 192 dims, hidden (128, 64) ReLU + LayerNorm, linear read-out, fixed 0.25 residual weight. The 3-term `[c, c², √max(c,0)]` expansion is a FlaxSpeaker extension (ablation only) | `interspeech2021_dr_vectors_config(pure_paper_mode=True)` |
+| ATP pooling | single head, linear-sigmoid weights, full-D mean/std | `attention_dim: 128` tanh bottleneck, 4 channel-subspace heads (`subspace_heads: true`); source paper is a language-ID paper | `attention_dim: 0, num_heads: 1` |
+| PFAS head | ATP → affine + ReLU(512) → linear; 32 tied keys (2,048-D) | `*_pfas*`: **PFAS-SN** — per-frame key/value projections, multi-head tanh frame attention + global ATP anchor, 4 keys × (32 + 128) | `odyssey2022_pfas_config(pure_paper_mode=True)` (32 × (16 + 48); dims inferred from the paper's totals) |
+| Conformer | 12 × 512, 4–8 heads, kernel 32, relative PE, dropout, stack-by-2 | 2–4 blocks × 128–256, 4–8 heads, kernel 15, no PE, GroupNorm(2) instead of BatchNorm, conv stem + MFA, no dropout | `odyssey2022_conformer_atp_config(pure_paper_mode=True)` (conv-before-MHSA, sinusoidal PE, stack-by-2 after block 3) |
+| ECAPA-TDNN / SphereFace | BatchNorm / integer `m = 4` | LayerNorm / real-valued `m = 1.35` with λ-annealing | — |
+| Augmentation | waveform MTR with recorded noise + room simulator | synthetic log-Mel noise (SNR 12–20 dB) + one-tap smoothing | — |
+| Evaluation | VoxCeleb1-O 37,720 trials over 40 speakers after VoxCeleb1-dev / VoxCeleb2 training | 10-speaker subset of `veri_test2.txt` (2,500 trials, 72 % target); 30/40 official test speakers used for training | — |
+
+---
+
 ## Testing, Linting & Documentation
 
-Run the unit test suite (`47` tests covering all backbones, exact padding mask invariance including `PFAS` `maxpool`, losses including Wan et al. Eq. 7 and non-saturating `ge2e_contrast` as well as pure/blended `extended_set_softmax`, pooling heads including all 5 `ATP` `pooling_stats` modes and `PFAS`, VAD + AGC, mutually exclusive `SpecAugment`/`MTR`, `Dr-Vectors` 1-term, 3-term, and `append_cosine_to_final_hidden` scoring, paper config presets, portable dataset path resolution, HF compatibility & Hub resolution, TFLite export, and legacy config compatibility):
+Run the unit test suite (covering all backbones, exact padding-mask invariance on all seven backbone variants including bidirectional LSTM, losses including pure-vs-surrogate `ge2e_contrast` gradients and pure/blended `extended_set_softmax`, pooling heads, VAD + AGC, mutually exclusive augmentation, Dr-Vectors paper options, every `pure_paper_mode` preset field reaching the built module, strict config-key validation, AS-Norm cohort disjointness, export-window resolution, HF compatibility, and TFLite export):
 
 ```bash
 pytest -v tests.py
