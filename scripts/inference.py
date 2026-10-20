@@ -36,7 +36,7 @@ from flaxspeaker import export  # noqa: E402
 from flaxspeaker import hf_compat  # noqa: E402
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run speaker embedding extraction or speaker verification on audio files."
     )
@@ -83,6 +83,46 @@ def main() -> None:
             "the checkpoint ships no metrics)."
         ),
     )
+    parser.add_argument(
+        "--apply_vad",
+        dest="apply_vad",
+        action="store_true",
+        default=None,
+        help="Explicitly enable frame-level energy VAD (default: use checkpoint config).",
+    )
+    parser.add_argument(
+        "--no_vad",
+        dest="apply_vad",
+        action="store_false",
+        help="Disable frame-level energy VAD during feature extraction.",
+    )
+    parser.add_argument(
+        "--vad_top_db",
+        type=float,
+        default=None,
+        help="Override VAD dynamic-range threshold in dB (default: checkpoint's 26.0 dB).",
+    )
+    parser.add_argument(
+        "--full_sequence",
+        dest="full_sequence",
+        action="store_true",
+        default=None,
+        help=(
+            "Use single-pass masked full-sequence inference (<= max_eval_seq_len frames; "
+            "default for released checkpoints)."
+        ),
+    )
+    parser.add_argument(
+        "--sliding_window",
+        dest="full_sequence",
+        action="store_false",
+        help="Use sliding-window / multi-window inference instead of full-sequence inference.",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     model = hf_compat.FlaxSpeakerModel.from_pretrained(args.model_dir)
@@ -90,9 +130,17 @@ def main() -> None:
 
     def _extract_one(audio_path: str) -> np.ndarray:
         if tfl_runner is not None:
-            feats = model.frontend.extract_from_file(audio_path)
+            fe = model._resolve_frontend(
+                apply_vad=args.apply_vad, vad_top_db=args.vad_top_db
+            )
+            feats = fe.extract_from_file(audio_path)
             return tfl_runner(feats)
-        return model.extract_embedding(audio_path)
+        return model.extract_embedding(
+            audio_path,
+            full_sequence=args.full_sequence,
+            apply_vad=args.apply_vad,
+            vad_top_db=args.vad_top_db,
+        )
 
     short_id = os.path.basename(os.path.normpath(args.model_dir))
     output: dict[str, Any] = {
@@ -137,6 +185,9 @@ def main() -> None:
             score = model.verify(
                 enroll_paths[0] if len(enroll_paths) == 1 else enroll_paths,
                 args.test_audio,
+                full_sequence=args.full_sequence,
+                apply_vad=args.apply_vad,
+                vad_top_db=args.vad_top_db,
             )
         else:
             e_embs = [_extract_one(p) for p in enroll_paths]

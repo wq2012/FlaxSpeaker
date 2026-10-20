@@ -242,6 +242,31 @@ class FlaxSpeakerModel:
         """Forward pass on batched features `(B, T, F) -> (B, D)`."""
         return self._jit_apply(self.state.params, features)
 
+    def _resolve_frontend(
+        self,
+        apply_vad: Optional[bool] = None,
+        vad_top_db: Optional[float] = None,
+    ) -> feature_extraction.AudioFrontend:
+        """Resolve an AudioFrontend with optional VAD overrides."""
+        if apply_vad is None and vad_top_db is None:
+            return self.frontend
+        vad_cfg = dataclasses.replace(
+            self.exp_config.vad,
+            enabled=(
+                bool(apply_vad)
+                if apply_vad is not None
+                else self.exp_config.vad.enabled
+            ),
+            energy_db_threshold=(
+                float(vad_top_db)
+                if vad_top_db is not None
+                else self.exp_config.vad.energy_db_threshold
+            ),
+        )
+        return feature_extraction.AudioFrontend(
+            self.exp_config.frontend, vad_cfg
+        )
+
     def extract_embedding(
         self,
         audio_or_path: Union[str, np.ndarray],
@@ -259,26 +284,9 @@ class FlaxSpeakerModel:
         `full_sequence=False` (or `exp_config.eval.full_sequence_inference = False`)
         uses the sliding-window path in `evaluation.run_inference`.
         """
-        if apply_vad is None and vad_top_db is None:
-            active_frontend = self.frontend
-        else:
-            vad_cfg = dataclasses.replace(
-                self.exp_config.vad,
-                enabled=(
-                    bool(apply_vad)
-                    if apply_vad is not None
-                    else self.exp_config.vad.enabled
-                ),
-                energy_db_threshold=(
-                    float(vad_top_db)
-                    if vad_top_db is not None
-                    else self.exp_config.vad.energy_db_threshold
-                ),
-            )
-            active_frontend = feature_extraction.AudioFrontend(
-                self.exp_config.frontend, vad_cfg
-            )
-
+        active_frontend = self._resolve_frontend(
+            apply_vad=apply_vad, vad_top_db=vad_top_db
+        )
         if isinstance(audio_or_path, str):
             feats = active_frontend.extract_from_file(audio_or_path)
         else:

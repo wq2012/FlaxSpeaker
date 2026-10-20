@@ -215,11 +215,11 @@ def draw_architecture_diagram(
         "4. Pooling (x8) & Bottleneck",
         "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS-SN: 640-D)",
         [
-            "ATP ($N_h{=}4$ sigmoid subspace heads)",
-            "ASP / SAP / Stats / Mean / Last",
-            "Cumulative stats (streaming)",
-            "PFAS-SN head: $K{=}4$ keys + values",
-            "LN → FC(256) → LN → ReLU → $L_2$",
+            "7 heads: ATP ($N_h{=}4$ subspace), ASP,",
+            "  SAP, Stats, Mean, Last, CumStats",
+            "  → LN → FC(256) → LN → ReLU → $L_2$",
+            "PFAS-SN (bypasses FC(256)): $K{=}4$ keys",
+            "  (32-D) + values (128-D) = 640-D",
         ],
         "#FAF5FF",
         "#A855F7",
@@ -238,11 +238,11 @@ def draw_architecture_diagram(
         y_bot,
         6.60,
         h_bot,
-        "5. Nine Training Losses & Three Verification Scoring Backends",
+        "5. Nine Losses (7 Benchmarked + 2 Reference) & Three Scorers",
         "Batch ($N{=}8$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
         [
             "Losses: GE2E softmax / contrast (+ hybrid surrogate) | extended-set softmax (pure Eq. 2 or blended)",
-            "  + ArcFace, CosFace, SphereFace, Softmax, Pairwise, Triplet (softmax & pairwise not benchmarked)",
+            "  + ArcFace, CosFace, SphereFace, Triplet (benchmarked) + Softmax, Pairwise (tested only)",
             (
                 "Scoring: cosine | Dr-Vector decision net "
                 "($\\lambda_{res}{=}0.25$ variant / paper preset) | PFAS (global $L_2$)"
@@ -300,12 +300,16 @@ def draw_architecture_diagram(
 def draw_benchmark_charts(
     repo_root: str = REPO_ROOT,
     paper_fig_dir: str = PAPER_FIG_DIR,
+    benchmark_json: str | None = None,
 ) -> None:
     """Draws Figure 2: 4-Panel Empirical Benchmark Summary from benchmark_results.json."""
     os.makedirs(paper_fig_dir, exist_ok=True)
     os.makedirs(os.path.join(repo_root, "resources"), exist_ok=True)
+    bench_path = benchmark_json or os.path.join(
+        repo_root, "pretrained_models", "benchmark_results.json"
+    )
     with open(
-        os.path.join(repo_root, "pretrained_models", "benchmark_results.json"),
+        bench_path,
         "r",
         encoding="utf-8",
     ) as f:
@@ -440,16 +444,16 @@ def draw_benchmark_charts(
     # Panel (b): Universal Losses & Scoring (Conformer-Small)
     ax = axes[0, 1]
     losses = [
-        ("GE2E\ncos", "univ_conformer_small_ge2e"),
-        ("GE2E-C$^*$\ncos", "univ_conformer_small_ge2e_contrast"),
-        ("BXS$^*$\nDr-Vec$^*$", "univ_conformer_small_dr_vectors"),
-        ("GE2E\nPFAS$^*$", "univ_conformer_small_pfas_ge2e"),
-        ("BXS$^*$\nPFAS$^*$", "univ_conformer_small_pfas"),
-        ("BXS$^*$\ncos", "univ_conformer_small_ext_softmax"),
-        ("Triplet\ncos", "univ_conformer_small_triplet"),
-        ("ArcFace\ncos", "univ_conformer_small_arcface"),
-        ("CosFace\ncos", "univ_conformer_small_cosface"),
-        ("SphereF.\ncos", "univ_conformer_small_sphereface"),
+        ("GE2E\nATP+cos", "univ_conformer_small_ge2e"),
+        ("GE2E-C$^*$\nATP+cos", "univ_conformer_small_ge2e_contrast"),
+        ("BXS$^*$\nATP+DrV$^*$", "univ_conformer_small_dr_vectors"),
+        ("GE2E\nPFAS-SN$^*$", "univ_conformer_small_pfas_ge2e"),
+        ("BXS$^*$\nPFAS-SN$^*$", "univ_conformer_small_pfas"),
+        ("BXS$^*$\nATP+cos", "univ_conformer_small_ext_softmax"),
+        ("Triplet\nATP+cos", "univ_conformer_small_triplet"),
+        ("ArcFace\nATP+cos", "univ_conformer_small_arcface"),
+        ("CosFace\nATP+cos", "univ_conformer_small_cosface"),
+        ("SphereF.\nATP+cos", "univ_conformer_small_sphereface"),
     ]
     x2 = np.arange(len(losses))
     w2 = 0.35
@@ -538,10 +542,10 @@ def draw_benchmark_charts(
             fontweight="bold",
         )
     ax.set_xticks(x2)
-    ax.set_xticklabels([item[0] for item in losses], fontsize=7.2)
+    ax.set_xticklabels([item[0] for item in losses], fontsize=6.9)
     ax.set_ylabel("Universal Pooled EER (%)", fontsize=9.2)
     ax.set_title(
-        "(b) Objective × scorer (Conformer-Small); $^*$ = FlaxSpeaker variant",
+        "(b) Objective × pool+scorer (Conformer-Small); $^*$ = FlaxSpeaker variant",
         fontsize=10.0,
         fontweight="bold",
     )
@@ -628,7 +632,7 @@ def draw_benchmark_charts(
         ax.text(
             b.get_x() + b.get_width() / 2,
             b.get_height() + 0.45,
-            f"{b.get_height():.1f}%",
+            f"{b.get_height():.1f}",
             ha="center",
             va="bottom",
             rotation=90,
@@ -648,7 +652,7 @@ def draw_benchmark_charts(
     ax.legend(fontsize=7.8, ncol=2, loc="upper right", framealpha=0.92)
     ax.grid(axis="y", alpha=0.25)
 
-    # Panel (d): TFLite FP32 vs INT8 Size (decimal MB = 10^6 bytes) & Cosine Fidelity
+    # Panel (d): TFLite FP32 vs INT8 Size (decimal MB = 10^6 bytes), Latency & Cosine Fidelity
     ax = axes[1, 1]
     tflite_models = [
         ("Univ Conformer-S", "univ_conformer_small_ge2e"),
@@ -667,7 +671,18 @@ def draw_benchmark_charts(
         for _, k in tflite_models
     ]
     int8_cos = [
-        t_by_name[f"{k}_int8"]["cosine_fidelity_vs_flax"]
+        by_name[k].get("tflite_eval", {}).get(
+            "cos_fp32_int8_mean",
+            t_by_name[f"{k}_int8"]["cosine_fidelity_vs_flax"],
+        )
+        for _, k in tflite_models
+    ]
+    fp32_lat = [
+        by_name[k].get("tflite_eval", {}).get("latency_ms_fp32_mean_50runs", 0.0)
+        for _, k in tflite_models
+    ]
+    int8_lat = [
+        by_name[k].get("tflite_eval", {}).get("latency_ms_int8_mean_50runs", 0.0)
         for _, k in tflite_models
     ]
 
@@ -681,36 +696,39 @@ def draw_benchmark_charts(
         label="TFLite INT8 (MB, 3.44–3.62× smaller)",
         color="#0891B2",
     )
-    for b in bf:
+    for idx, b in enumerate(bf):
+        lat_str = f"\n({fp32_lat[idx]:.1f} ms)" if fp32_lat[idx] > 0 else ""
         ax.text(
             b.get_x() + b.get_width() / 2,
-            b.get_height() + 0.18,
-            f"{b.get_height():.2f} MB",
+            b.get_height() + 0.16,
+            f"{b.get_height():.2f} MB{lat_str}",
             ha="center",
             va="bottom",
-            fontsize=7.4,
+            fontsize=6.9,
+            color="#334155",
         )
     for idx, b in enumerate(bi):
+        lat_str = f" ({int8_lat[idx]:.1f} ms)" if int8_lat[idx] > 0 else ""
         ax.text(
-            b.get_x() + 0.02,
-            b.get_height() + 0.18,
-            f"{b.get_height():.2f} MB\ncos={int8_cos[idx]:.5f}",
+            b.get_x() + 0.01,
+            b.get_height() + 0.16,
+            f"{b.get_height():.2f} MB{lat_str}\ncos={int8_cos[idx]:.5f}",
             ha="left",
             va="bottom",
-            fontsize=6.9,
+            fontsize=6.6,
             fontweight="bold",
             color="#0E7490",
         )
     ax.set_xticks(x4)
     ax.set_xticklabels([m[0] for m in tflite_models], fontsize=8.8)
-    ax.set_xlim(-0.55, 2.75)
+    ax.set_xlim(-0.55, 2.82)
     ax.set_ylabel("Model File Size (MB, $10^6$ bytes)", fontsize=9.2)
     ax.set_title(
         "(d) TFLite export (x86 CPU, fixed 1.8 s window): FP32 vs. INT8",
         fontsize=10.0,
         fontweight="bold",
     )
-    ax.set_ylim(0, 10.6)
+    ax.set_ylim(0, 10.9)
     ax.legend(fontsize=8.0, loc="upper right", framealpha=0.92)
     ax.grid(axis="y", alpha=0.25)
 
@@ -728,7 +746,12 @@ def draw_benchmark_charts(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate the 2 FlaxSpeaker paper figures (fig1_architecture.pdf and "
+            "fig2_benchmarks.pdf) and repository PNGs."
+        )
+    )
     parser.add_argument(
         "--repo_root", "--repo-root", type=str, default=REPO_ROOT
     )
@@ -746,5 +769,7 @@ if __name__ == "__main__":
     parser.add_argument("--vox1o-json", type=str, default=None)
     args = parser.parse_args()
     draw_architecture_diagram(args.repo_root, args.paper_fig_dir)
-    draw_benchmark_charts(args.repo_root, args.paper_fig_dir)
+    draw_benchmark_charts(
+        args.repo_root, args.paper_fig_dir, benchmark_json=args.benchmark_json
+    )
     print("Generated fig1_architecture.pdf and fig2_benchmarks.pdf")

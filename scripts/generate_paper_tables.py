@@ -141,6 +141,8 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def(prefix + "ParamsM", f"{int(e['num_parameters']) / 1e6:.2f}"))
         nums.append(macro_def(prefix + "InitLoss", f"{float(e['initial_loss']):.2f}"))
         nums.append(macro_def(prefix + "FinalLoss", f"{float(e['final_loss']):.2f}"))
+        nums.append(macro_def(prefix + "InitLossFour", f"{float(e['initial_loss']):.4f}"))
+        nums.append(macro_def(prefix + "FinalLossFour", f"{float(e['final_loss']):.4f}"))
 
     for prefix, mid in [
         ("univSmall", "univ_conformer_small_ge2e"), ("univTiny", "univ_conformer_tiny_ge2e"),
@@ -337,8 +339,9 @@ def main(paper_dir: str) -> None:
             nums.append(macro_def(tag + "PooledOne", f2(sm["pooled_1utt_eer"])))
             nums.append(macro_def(tag + "MacroOne", f2(sm["macro_1utt_eer"])))
             nums.append(macro_def(tag + "PooledThree", f2(sm["pooled_3utt_eer"])))
-            nums.append(macro_def(tag + "InitLoss", f"{float(rec['initial_loss']):.2f}"))
-            nums.append(macro_def(tag + "FinalLoss", f"{float(rec['final_loss']):.2f}"))
+            nums.append(macro_def(tag + "MacroThree", f2(sm["macro_3utt_eer"])))
+            nums.append(macro_def(tag + "InitLoss", f"{float(rec['initial_loss']):.4f}"))
+            nums.append(macro_def(tag + "FinalLoss", f"{float(rec['final_loss']):.4f}"))
     h800 = r2.get("training_horizon_800_own_schedule", {}).get("steps_800_own_schedule")
     nums.append(macro_def("horizonEightOwnAvailable", "1" if h800 else "0"))
     if h800:

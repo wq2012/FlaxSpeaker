@@ -121,28 +121,32 @@ python scripts/eval_vox1_o_subset.py --data_root ./data/speaker_datasets --model
 ```
 
 ### 4. Run End-to-End Speaker Verification Inference (`scripts/inference.py`)
-Verify whether two (or more) audio files belong to the same speaker and optionally save their L2-normalized speaker embeddings:
+Verify whether two (or more) audio files belong to the same speaker and optionally override VAD or full-sequence inference settings:
 
 ```bash
 python scripts/inference.py \
   --model_dir wq2012/univ_conformer_small_ge2e \
   --enroll_audio hf_space/examples/librispeech_spk1_utt1.flac \
-  --test_audio hf_space/examples/librispeech_spk1_utt2.flac
+  --test_audio hf_space/examples/librispeech_spk1_utt2.flac \
+  --apply_vad --vad_top_db 26.0 --full_sequence
 ```
 
-### 5. Export to HuggingFace Hub & TFLite (`scripts/export_model.py` / `scripts/publish_hf.py`)
+### 5. Export to HuggingFace Hub & TFLite (`scripts/export_model.py` / `scripts/publish_to_hf.py` / `scripts/update_hf_model_cards.py`)
 ```bash
 python scripts/export_model.py \
   --model_dir wq2012/univ_conformer_small_ge2e \
   --output_dir ./exported_models/univ_conformer_small_ge2e \
   --export_tflite \
   --quantize_int8
+
+# Evaluate exported FP32 and INT8 TFLite models on the 1-utterance trial lists
+python scripts/eval_tflite_models.py --data_root ./data/speaker_datasets --models_dir ./pretrained_models
 ```
 
-### 6. Reproduce Full 44-Model Benchmark Suite, Controlled Ablations & Paper Figures (`scripts/run_benchmark_suite.py`, `scripts/run_r1_ablations.py`, `scripts/generate_figures.py`, `scripts/generate_demo_examples.py`)
+### 6. Reproduce Full 44-Model Benchmark Suite, Controlled Ablations & Paper Figures (`scripts/run_research_benchmarks.py`, `scripts/run_r1_ablations.py`, `scripts/generate_figures.py`, `scripts/prepare_hf_demo_audio.py`)
 ```bash
 # Run the complete 44-model benchmark matrix across all domains
-python scripts/run_benchmark_suite.py --data-root ./data/speaker_datasets
+python scripts/run_research_benchmarks.py --data_root ./data/speaker_datasets
 
 # Reproduce the 5 controlled ablation studies (pretrained_models/ablation_results.json)
 python scripts/run_r1_ablations.py --data_root ./data/speaker_datasets
@@ -151,11 +155,9 @@ python scripts/run_r1_ablations.py --data_root ./data/speaker_datasets
 # (pretrained_models/r2_seed_and_control_results.json)
 python scripts/run_r2_controls.py --data_root ./data/speaker_datasets
 
-# Regenerate all 6 paper figures from the JSON benchmark & ablation artifacts
+# Regenerate the 2 paper figures (fig1_architecture.pdf and fig2_benchmarks.pdf) and README PNGs
 python scripts/generate_figures.py \
   --benchmark-json pretrained_models/benchmark_results.json \
-  --ablation-json pretrained_models/ablation_results.json \
-  --vox1o-json pretrained_models/vox1_o_10spk_subset_results.json \
   --output-dir ./figures
 ```
 

@@ -974,18 +974,17 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
                 np.allclose(ref, got, atol=1e-4),
                 msg=f"n_frames={n_frames}: max diff {np.max(np.abs(ref - got))}",
             )
-        # Utterances shorter than 32 frames are tiled. The benchmark path (and hence
-        # `encode_features`) keeps the whole tiled block (10 -> 40 valid frames), whereas
-        # `run_inference` truncates the tiling to exactly 32 frames; the two therefore
-        # differ slightly on such inputs. `encode_features` intentionally follows the
-        # benchmark semantics so demo scores match the archived evaluation.
+        # Utterances shorter than 32 frames are tiled and truncated to 32 valid frames
+        # in both `prepare_eval_input` / `encode_features` and `run_inference`.
         short = np.asarray(jax.random.normal(jax.random.fold_in(rng, 10), (10, 80)))
         padded, mask = evaluation.prepare_eval_input(short, cfg)
-        self.assertEqual(int(mask.sum()), 40)
+        self.assertEqual(int(mask.sum()), 32)
         self.assertTrue(np.allclose(padded[:10], short) and np.allclose(padded[10:20], short))
         got = evaluation.encode_features(short, state, cfg)
+        ref_short = np.asarray(evaluation.run_inference(short, state, cfg))
         self.assertEqual(got.shape, (cfg.model.output_embedding_dim,))
         self.assertTrue(np.all(np.isfinite(got)))
+        self.assertTrue(np.allclose(ref_short, got, atol=1e-4))
         # Checkpoint EER operating point: absent -> None; present -> the archived value.
         hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(cfg)
         model = hf_compat.FlaxSpeakerModel(config=hf_cfg, params=state.params)
@@ -1461,6 +1460,33 @@ class TestRound2NumericReferences(unittest.TestCase):
                     os.environ.pop("FLAXSPEAKER_PRETRAINED_ROOT", None)
                 else:
                     os.environ["FLAXSPEAKER_PRETRAINED_ROOT"] = old_env
+
+        from scripts import inference as inference_cli  # pytype: disable=import-error
+
+        cli_parser = inference_cli.build_parser()
+        parsed_1 = cli_parser.parse_args(
+            [
+                "--model_dir",
+                "wq2012/univ_conformer_tiny_ge2e",
+                "--apply_vad",
+                "--vad_top_db",
+                "22.5",
+                "--full_sequence",
+            ]
+        )
+        self.assertTrue(parsed_1.apply_vad)
+        self.assertAlmostEqual(parsed_1.vad_top_db, 22.5)
+        self.assertTrue(parsed_1.full_sequence)
+        parsed_2 = cli_parser.parse_args(
+            [
+                "--model_dir",
+                "wq2012/univ_conformer_tiny_ge2e",
+                "--no_vad",
+                "--sliding_window",
+            ]
+        )
+        self.assertFalse(parsed_2.apply_vad)
+        self.assertFalse(parsed_2.full_sequence)
 
     def test_seeded_triplet_determinism_and_degenerate_eval_labels(self):
         import random

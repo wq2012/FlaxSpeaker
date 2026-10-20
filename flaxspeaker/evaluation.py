@@ -312,7 +312,7 @@ def prepare_eval_input(
     raw = np.asarray(raw, dtype=np.float32)
     if raw.shape[0] < min_valid_len:
         reps = (min_valid_len // max(1, raw.shape[0])) + 1
-        raw = np.tile(raw, (reps, 1))
+        raw = np.tile(raw, (reps, 1))[:min_valid_len, :]
     if full_seq:
         if raw.shape[0] >= target_pad_len:
             offset = (raw.shape[0] - target_pad_len) // 2
