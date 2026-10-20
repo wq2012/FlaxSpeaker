@@ -18,7 +18,7 @@ Features:
   SavedModel, SafeTensors, and HuggingFace `PretrainedConfig` / `save_pretrained` /
   `from_pretrained` (`flaxspeaker.export`, `flaxspeaker.hf_compat`)
 - 44 Pretrained Models on Hugging Face Hub (`wq2012/<model_id>`):
-  https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595
+  https://huggingface.co/collections/wq2012/flaxspeaker
 """
 
 from flaxspeaker import backbones

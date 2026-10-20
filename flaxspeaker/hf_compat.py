@@ -3,7 +3,7 @@
 All 44 pretrained models are hosted on the Hugging Face Hub at
 `https://huggingface.co/wq2012/<model_id>` and grouped in the FlaxSpeaker
 collection:
-https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595
+https://huggingface.co/collections/wq2012/flaxspeaker
 
 Provides:
 - `FlaxSpeakerConfig(PretrainedConfig)`: HuggingFace-compatible configuration class
@@ -38,7 +38,7 @@ from flaxspeaker import scoring
 HF_DEFAULT_NAMESPACE = "wq2012"
 HF_COLLECTION_URL = (
     "https://huggingface.co/collections/"
-    "wq2012/flaxspeaker-6ad02d999a4180c794870595"
+    "wq2012/flaxspeaker"
 )
 
 PRETRAINED_MODEL_IDS: tuple[str, ...] = (

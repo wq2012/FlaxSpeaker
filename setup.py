@@ -22,7 +22,7 @@ setuptools.setup(
     project_urls={
         "Repository": "https://github.com/wq2012/FlaxSpeaker",
         "Hugging Face Models Collection": (
-            "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595"
+            "https://huggingface.co/collections/wq2012/flaxspeaker"
         ),
         "Bug Tracker": "https://github.com/wq2012/FlaxSpeaker/issues",
     },

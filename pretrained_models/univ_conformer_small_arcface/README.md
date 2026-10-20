@@ -51,7 +51,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 | :--- | :--- |
 | **Model ID** | `univ_conformer_small_arcface` |
 | **Hugging Face Repository** | [`wq2012/univ_conformer_small_arcface`](https://huggingface.co/wq2012/univ_conformer_small_arcface) |
-| **Hugging Face Collection** | [FlaxSpeaker Collection](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) |
+| **Hugging Face Collection** | [FlaxSpeaker Collection](https://huggingface.co/collections/wq2012/flaxspeaker) |
 | **GitHub Repository** | [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker) |
 | **PyPI Package** | [`flaxspeaker`](https://pypi.org/project/flaxspeaker/) |
 | **Backbone Architecture** | `conformer` (`small`) |

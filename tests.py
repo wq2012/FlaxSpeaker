@@ -647,7 +647,7 @@ class TestExportAndHuggingFaceCompat(TestBase):
         self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 44)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
-            "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595",
+            "https://huggingface.co/collections/wq2012/flaxspeaker",
         )
         local_pm = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),

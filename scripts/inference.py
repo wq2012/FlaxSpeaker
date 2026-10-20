@@ -2,7 +2,7 @@
 """Run end-to-end speaker embedding extraction or speaker verification inference.
 
 All 44 pretrained models are available in the Hugging Face FlaxSpeaker Collection:
-https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595
+https://huggingface.co/collections/wq2012/flaxspeaker
 
 Usage:
     # Verify two audio files using a pretrained Hugging Face model ID or local directory:

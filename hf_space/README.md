@@ -39,7 +39,7 @@ All 44 selectable checkpoints were trained for **400 gradient steps × 32 uttera
 
 ## Links & Pretrained Models
 
-- **Hugging Face Collection (44 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595)
+- **Hugging Face Collection (44 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)
 - **GitHub Repository**: [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker)
 - **PyPI Package**: [`flaxspeaker`](https://pypi.org/project/flaxspeaker/)
 

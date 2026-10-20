@@ -2,7 +2,7 @@
 """Evaluate a pretrained FlaxSpeaker model on 1-utt or multi-enrollment verification trials.
 
 All 44 pretrained models are available in the Hugging Face FlaxSpeaker Collection:
-https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595
+https://huggingface.co/collections/wq2012/flaxspeaker
 
 Usage:
     # Evaluate on a single trials TSV (using Hugging Face Hub ID or local directory):

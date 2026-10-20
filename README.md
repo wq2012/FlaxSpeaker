@@ -1,6 +1,6 @@
 # FlaxSpeaker
 
-[![Python application](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml/badge.svg)](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml) [![HuggingFace Models](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-44%20Pretrained%20Models-blue)](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) [![PyPI Version](https://img.shields.io/pypi/v/flaxspeaker.svg)](https://pypi.python.org/pypi/flaxspeaker) [![Python Versions](https://img.shields.io/pypi/pyversions/flaxspeaker.svg)](https://pypi.org/project/flaxspeaker) [![Downloads](https://static.pepy.tech/badge/flaxspeaker)](https://pepy.tech/project/flaxspeaker) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python application](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml/badge.svg)](https://github.com/wq2012/FlaxSpeaker/actions/workflows/python-app.yml) [![HuggingFace Models](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-44%20Pretrained%20Models-blue)](https://huggingface.co/collections/wq2012/flaxspeaker) [![PyPI Version](https://img.shields.io/pypi/v/flaxspeaker.svg)](https://pypi.python.org/pypi/flaxspeaker) [![Python Versions](https://img.shields.io/pypi/pyversions/flaxspeaker.svg)](https://pypi.org/project/flaxspeaker) [![Downloads](https://static.pepy.tech/badge/flaxspeaker)](https://pepy.tech/project/flaxspeaker) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **FlaxSpeaker** is an end-to-end open-source speaker verification library built on [JAX](https://jax.readthedocs.io) and [Flax](https://flax.readthedocs.io). Designed for education and academic research, it unifies dataset preparation, frame-level energy Voice Activity Detection (VAD) with peak Automatic Gain Control (AGC), an 80-D log-Mel frontend with CMVN, six neural sequence backbones, eight temporal pooling heads, nine metric-learning and angular-margin training objectives (seven of which are benchmarked), three scoring paradigms, universal multi-domain stratified training, and one-command export to **TFLite (FP32 / dynamic-range INT8)**, **TensorFlow SavedModel**, **SafeTensors**, and the **Hugging Face Hub**.
 
@@ -107,7 +107,7 @@ python scripts/train.py \
 ```
 
 ### 3. Evaluate 1-Utt, 3-Utt, and VoxCeleb1-O-subset Trials (`scripts/evaluate.py` / `scripts/eval_vox1_o_subset.py`)
-Compute 1-utterance and 3-utterance EER (%), `minDCF@0.01`, `minDCF@0.05`, `minDCF@0.10`, ROC-AUC, and 95% bootstrap confidence intervals using any [Hugging Face Hub model ID (`wq2012/<model_id>`)](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) or local checkpoint directory, as well as the **VoxCeleb1-O 10-speaker subset** (official `veri_test2.txt` filtered to trials whose two speakers are both among the 10 held-out evaluation speakers, 2,500 trials, ≈72 % target; **not comparable to published VoxCeleb1-O numbers** — the other 30 of the 40 official test speakers are training data for `vox_*` and `univ_*` models):
+Compute 1-utterance and 3-utterance EER (%), `minDCF@0.01`, `minDCF@0.05`, `minDCF@0.10`, ROC-AUC, and 95% bootstrap confidence intervals using any [Hugging Face Hub model ID (`wq2012/<model_id>`)](https://huggingface.co/collections/wq2012/flaxspeaker) or local checkpoint directory, as well as the **VoxCeleb1-O 10-speaker subset** (official `veri_test2.txt` filtered to trials whose two speakers are both among the 10 held-out evaluation speakers, 2,500 trials, ≈72 % target; **not comparable to published VoxCeleb1-O numbers** — the other 30 of the 40 official test speakers are training data for `vox_*` and `univ_*` models):
 
 ```bash
 python scripts/evaluate.py \
@@ -163,7 +163,7 @@ python scripts/generate_figures.py \
 
 ## Python & HuggingFace API
 
-Load any exported model directory or Hugging Face Hub repository ID ([`wq2012/<model_id>`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595)) with `load_pretrained` or `FlaxSpeakerModel.from_pretrained`:
+Load any exported model directory or Hugging Face Hub repository ID ([`wq2012/<model_id>`](https://huggingface.co/collections/wq2012/flaxspeaker)) with `load_pretrained` or `FlaxSpeakerModel.from_pretrained`:
 
 ```python
 import flaxspeaker
@@ -195,7 +195,7 @@ cfg = universal_multi_domain_config(
 ## Interactive Gradio Demo (`hf_space/`)
 
 An interactive [Gradio 5.50.0](https://gradio.app) web application is included in [`hf_space/`](hf_space/). **It is not hosted on the Hugging Face Hub**: creating a Gradio Space under `wq2012` currently returns HTTP 402 (free CPU Spaces require a PRO subscription), so run it locally (`python hf_space/app.py`) or deploy it yourself with `python scripts/deploy_hf_space.py --repo_id <your-namespace>/FlaxSpeaker`. Features:
-- Real inference only (no precomputed outputs) with a model selector across all 44 Universal Multi-Domain (`univ_*`) and Single-Domain (`ls_*`, `cn_*`, `vox_*`) checkpoints from [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (`Cosine`, `PFAS`, and `Dr-Vectors` scoring).
+- Real inference only (no precomputed outputs) with a model selector across all 44 Universal Multi-Domain (`univ_*`) and Single-Domain (`ls_*`, `cn_*`, `vox_*`) checkpoints from [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker) (`Cosine`, `PFAS`, and `Dr-Vectors` scoring).
 - The decision threshold defaults to the selected model's **own pooled 1-utt EER operating point** from `eval_results.json` (slider range adapts to the scoring back-end); latency is reported as steady-state model inference after a JIT warm-up.
 - 1-utterance and 3-utterance speaker enrollment with real speech samples from **LibriSpeech**, **CN-Celeb2**, and **VoxCeleb1**; waveform + VAD gate, post-VAD log-Mel spectrogram, and embedding-profile plots.
 - AS-Norm is deliberately not offered (a web demo has no disjoint impostor cohort). `hf_space/` is self-contained (`requirements.txt` installs `flaxspeaker`).
@@ -210,7 +210,7 @@ python hf_space/app.py
 
 We trained and evaluated **44 models** (`19` Universal Multi-Domain models trained jointly on `LibriSpeech + CN-Celeb2 + VoxCeleb1` = `381` speakers / `9,447` utterances, plus `25` Single-Domain baseline models) across **all three speaker-disjoint evaluation domains** (`8,000` 1-utterance trials + `3,000` 3-utterance trials + `2,500` VoxCeleb1-O-subset trials per model = `594,000` total trial evaluations). **Every model: 400 steps × 32 utterances, seed 42, single run** — see the seed-noise floor below before reading any sub-1 % difference as a ranking.
 
-- **Hugging Face Collection (44 Pretrained Models)**: **[`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595)**
+- **Hugging Face Collection (44 Pretrained Models)**: **[`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)**
 - Full technical report, ablations & mathematical analysis: **[RESEARCH_REPORT.md](RESEARCH_REPORT.md)**
 - Complete verified evaluation metrics JSON (`44` models + `12` TFLite exports): **[`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json)**
 - Controlled ablation study metrics JSON (`5` studies): **[`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json)**

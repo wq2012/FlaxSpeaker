@@ -1,7 +1,7 @@
 """Command-line interface for FlaxSpeaker.
 
 All 44 pretrained models are hosted on the Hugging Face Hub (`wq2012/<model_id>`):
-https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595
+https://huggingface.co/collections/wq2012/flaxspeaker
 """
 
 import argparse

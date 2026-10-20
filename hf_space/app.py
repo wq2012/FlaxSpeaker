@@ -407,7 +407,7 @@ def build_demo() -> Any:
             "threshold is the model's own pooled 1-utt EER operating point from `eval_results.json`.\n\n"
             "**Links**: "
             "[Hugging Face Collection (44 Pretrained Models)]"
-            "(https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) | "
+            "(https://huggingface.co/collections/wq2012/flaxspeaker) | "
             "[GitHub Repository (`wq2012/FlaxSpeaker`)](https://github.com/wq2012/FlaxSpeaker) | "
             "[PyPI (`flaxspeaker`)](https://pypi.org/project/flaxspeaker/)"
         )

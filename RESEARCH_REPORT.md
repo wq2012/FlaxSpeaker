@@ -20,7 +20,7 @@
 
 This report documents a 44-model empirical investigation of **Universal Multi-Domain Speaker Recognition** versus **Single-Domain Speaker Recognition** in `FlaxSpeaker v0.2.0` across 6 neural backbones (`Conformer`, `Transformer`, `Mamba`, `LSTM`, `ECAPA-TDNN`, `ResNet`), 9 training objectives (`GE2E-Softmax`, `GE2E-Contrast`, `Extended-Set Softmax`, `Dr-Vectors`, `PFAS + Extended-Set Softmax`, `PFAS + GE2E-Softmax`, `ArcFace`, `CosFace`, `SphereFace`, `Triplet`), and 3 parameter scales (`tiny`, `small`, `base`, all under 5M parameters), supplemented by 5 controlled ablation studies on multi-domain batching, objective formulations, variable-length training, training horizon scaling (`400` to `1,200` steps), and bidirectional Mamba.
 
-- **Hugging Face Pretrained Model Collection (44 Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (with individual repositories at `https://huggingface.co/wq2012/<model_id>`)
+- **Hugging Face Pretrained Model Collection (44 Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker) (with individual repositories at `https://huggingface.co/wq2012/<model_id>`)
 - **Machine-Readable Metrics Artifact**: [`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json) (and per-model [`pretrained_models/<model_id>/eval_results.json`](pretrained_models/))
 - **Controlled Ablation Artifact**: [`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json)
 - **Dataset Splits Manifest**: `./data/speaker_datasets/splits/dataset_summary.json`
@@ -357,7 +357,7 @@ Initial / final training loss, released (earlier code) vs. seed-42 re-run (curre
 
 ## 11. Production Export: Hugging Face Hub & TensorFlow Lite (`FP32` and `INT8`)
 
-Every trained model (`44/44`) is published on the Hugging Face Hub in the [**`wq2012/FlaxSpeaker` Collection**](https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595) (`https://huggingface.co/wq2012/<experiment_name>`) and exported locally under [`pretrained_models/<experiment_name>/`](pretrained_models/) containing:
+Every trained model (`44/44`) is published on the Hugging Face Hub in the [**`wq2012/FlaxSpeaker` Collection**](https://huggingface.co/collections/wq2012/flaxspeaker) (`https://huggingface.co/wq2012/<experiment_name>`) and exported locally under [`pretrained_models/<experiment_name>/`](pretrained_models/) containing:
 - `config.json` (`FlaxSpeakerConfig`; the frontend is **not** expressible as a Hugging Face `AutoFeatureExtractor`, so no `preprocessor_config.json` is shipped — use `flaxspeaker.AudioFrontend`)
 - `model.safetensors` (`safetensors` serialized weights)
 - `flax_model.msgpack` (native Flax msgpack checkpoint)

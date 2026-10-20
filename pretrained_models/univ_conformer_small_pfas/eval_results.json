@@ -218,7 +218,7 @@
   "hf_pretrained_dir": "pretrained_models/univ_conformer_small_pfas",
   "hf_repo_id": "wq2012/univ_conformer_small_pfas",
   "hf_url": "https://huggingface.co/wq2012/univ_conformer_small_pfas",
-  "hf_collection_url": "https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595",
+  "hf_collection_url": "https://huggingface.co/collections/wq2012/flaxspeaker",
   "vox1_o_10spk_subset_eer_percent": 26.3422,
   "vox1_o_10spk_subset_min_dcf_001": 0.9866,
   "vox1_o_10spk_subset_roc_auc": 0.8369

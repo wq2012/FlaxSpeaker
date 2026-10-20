@@ -2,7 +2,7 @@
 """Export a FlaxSpeaker model to HuggingFace SafeTensors and TensorFlow Lite (FP32 / INT8).
 
 All 44 pretrained models are available in the Hugging Face FlaxSpeaker Collection:
-https://huggingface.co/collections/wq2012/flaxspeaker-6ad02d999a4180c794870595
+https://huggingface.co/collections/wq2012/flaxspeaker
 
 Usage:
     python scripts/export_model.py --model_dir wq2012/univ_conformer_small_ge2e \\
