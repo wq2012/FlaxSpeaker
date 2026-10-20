@@ -15,6 +15,7 @@ Provides:
 """
 
 from collections.abc import Sequence
+import dataclasses
 import json
 import os
 from typing import Any, Optional, Union
@@ -242,15 +243,71 @@ class FlaxSpeakerModel:
         return self._jit_apply(self.state.params, features)
 
     def extract_embedding(
-        self, audio_or_path: Union[str, np.ndarray]
+        self,
+        audio_or_path: Union[str, np.ndarray],
+        *,
+        full_sequence: Optional[bool] = None,
+        apply_vad: Optional[bool] = None,
+        vad_top_db: Optional[float] = None,
     ) -> np.ndarray:
-        """Extract speaker embedding from an audio file path or 1D waveform."""
-        if isinstance(audio_or_path, str):
-            feats = self.frontend.extract_from_file(audio_or_path)
+        """Extract speaker embedding from an audio file path or 1D waveform.
+
+        By default (`full_sequence=None`, with `eval.full_sequence_inference=True`),
+        routes through `evaluation.encode_features` (fixed-window masked `@jax.jit`
+        forward pass up to `max_eval_seq_len` frames), matching the benchmark and
+        Gradio demo evaluation path without per-length XLA recompilation. Setting
+        `full_sequence=False` (or `exp_config.eval.full_sequence_inference = False`)
+        uses the sliding-window path in `evaluation.run_inference`.
+        """
+        if apply_vad is None and vad_top_db is None:
+            active_frontend = self.frontend
         else:
-            feats = self.frontend.extract_from_waveform(audio_or_path)
+            vad_cfg = dataclasses.replace(
+                self.exp_config.vad,
+                enabled=(
+                    bool(apply_vad)
+                    if apply_vad is not None
+                    else self.exp_config.vad.enabled
+                ),
+                energy_db_threshold=(
+                    float(vad_top_db)
+                    if vad_top_db is not None
+                    else self.exp_config.vad.energy_db_threshold
+                ),
+            )
+            active_frontend = feature_extraction.AudioFrontend(
+                self.exp_config.frontend, vad_cfg
+            )
+
+        if isinstance(audio_or_path, str):
+            feats = active_frontend.extract_from_file(audio_or_path)
+        else:
+            feats = active_frontend.extract_from_waveform(audio_or_path)
+
+        use_full_seq = (
+            bool(full_sequence)
+            if full_sequence is not None
+            else bool(
+                self.exp_config.eval.full_sequence_inference
+                and self.exp_config.model.full_sequence_inference
+            )
+        )
+        if use_full_seq:
+            return evaluation.encode_features(
+                feats, self.state, self.exp_config
+            )
+
+        slide_cfg = dataclasses.replace(
+            self.exp_config,
+            model=dataclasses.replace(
+                self.exp_config.model, full_sequence_inference=False
+            ),
+            eval=dataclasses.replace(
+                self.exp_config.eval, full_sequence_inference=False
+            ),
+        )
         emb = evaluation.run_inference(
-            jnp.asarray(feats, dtype=jnp.float32), self.state, self.exp_config
+            jnp.asarray(feats, dtype=jnp.float32), self.state, slide_cfg
         )
         return np.asarray(emb, dtype=np.float32)
 
@@ -351,24 +408,8 @@ class FlaxSpeakerModel:
             )
 
         if scoring_type == "dr_vector" and "_aux_dr_net" in self.state.params:
-            dr_cfg = self.exp_config.model.dr_vector
-            dr_net = scoring.DecisionResidualNetwork(
-                hidden_dims=tuple(dr_cfg.hidden_dims),
-                activation=dr_cfg.activation,
-                use_layer_norm=dr_cfg.use_layer_norm,
-                include_cosine_in_input=dr_cfg.include_cosine_in_input,
-                num_cosine_terms=getattr(dr_cfg, "num_cosine_terms", 1),
-                append_cosine_as_feature_to_network_input=getattr(
-                    dr_cfg, "append_cosine_as_feature_to_network_input", True
-                ),
-                append_cosine_to_final_hidden=bool(
-                    getattr(dr_cfg, "append_cosine_to_final_hidden", False)
-                ),
-                add_cosine_to_network_output=getattr(
-                    dr_cfg, "add_cosine_to_network_output", True
-                ),
-                symmetric_input=getattr(dr_cfg, "symmetric_input", False),
-                residual_weight=dr_cfg.residual_weight,
+            dr_net = scoring.build_decision_residual_network(
+                self.exp_config.model.dr_vector
             )
             score = dr_net.apply(
                 {"params": self.state.params["_aux_dr_net"]},
@@ -386,17 +427,39 @@ class FlaxSpeakerModel:
             str, np.ndarray, Sequence[Union[str, np.ndarray]]
         ],
         test_audio: Union[str, np.ndarray],
+        *,
+        full_sequence: Optional[bool] = None,
+        apply_vad: Optional[bool] = None,
+        vad_top_db: Optional[float] = None,
     ) -> float:
         """Compute verification similarity score between enrollment and test audio.
 
         `enroll_audio` may be a single audio file path / 1D waveform or a sequence
         of multiple enrollment audio file paths / waveforms.
         """
-        t_emb = self.extract_embedding(test_audio)
+        t_emb = self.extract_embedding(
+            test_audio,
+            full_sequence=full_sequence,
+            apply_vad=apply_vad,
+            vad_top_db=vad_top_db,
+        )
         if isinstance(enroll_audio, (list, tuple)):
-            e_embs = [self.extract_embedding(item) for item in enroll_audio]
+            e_embs = [
+                self.extract_embedding(
+                    item,
+                    full_sequence=full_sequence,
+                    apply_vad=apply_vad,
+                    vad_top_db=vad_top_db,
+                )
+                for item in enroll_audio
+            ]
             return self.score_embeddings(e_embs, t_emb)
-        e_emb = self.extract_embedding(enroll_audio)
+        e_emb = self.extract_embedding(
+            enroll_audio,
+            full_sequence=full_sequence,
+            apply_vad=apply_vad,
+            vad_top_db=vad_top_db,
+        )
         return self.score_embeddings(e_emb, t_emb)
 
     def save_pretrained(
@@ -526,9 +589,15 @@ class FlaxSpeakerModel:
                 repo_root = os.path.dirname(
                     os.path.dirname(os.path.abspath(__file__))
                 )
-                local_candidates = (
-                    os.path.join("pretrained_models", short_id),
-                    os.path.join(repo_root, "pretrained_models", short_id),
+                env_pm = os.environ.get("FLAXSPEAKER_PRETRAINED_ROOT")
+                local_candidates: list[str] = []
+                if env_pm:
+                    local_candidates.append(os.path.join(env_pm, short_id))
+                local_candidates.extend(
+                    [
+                        os.path.join("pretrained_models", short_id),
+                        os.path.join(repo_root, "pretrained_models", short_id),
+                    ]
                 )
                 resolved_dir = next(
                     (

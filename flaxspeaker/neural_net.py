@@ -12,6 +12,7 @@ Supports both:
 from functools import partial
 import multiprocessing
 import os
+import random
 import sys
 import time
 from typing import Any, Optional
@@ -822,13 +823,16 @@ def train_network(
     )
     min_seq_len = int(getattr(exp_cfg.model, "min_seq_len", max_seq_len // 2))
     var_len = bool(getattr(exp_cfg.model, "variable_length_training", True))
+    triplet_rng = random.Random(int(exp_cfg.train.seed))
 
     for step in range(exp_cfg.train.num_steps):
         if loss_type == "triplet":
             batch_list = []
             mask_list = []
             for _ in range(exp_cfg.train.batch_size):
-                anchor_u, pos_u, neg_u = dataset.get_triplet(spk_to_utts)
+                anchor_u, pos_u, neg_u = dataset.get_triplet(
+                    spk_to_utts, rng=triplet_rng
+                )
                 for u in (anchor_u, pos_u, neg_u):
                     feat = (
                         feature_cache.get(u)

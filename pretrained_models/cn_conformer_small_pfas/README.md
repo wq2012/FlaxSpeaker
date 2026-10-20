@@ -59,7 +59,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 | **Training Objective** | Blended Extended-Set Softmax (FlaxSpeaker variant: 0.50 row-softmax + 0.50 extended-set with a -log N logit shift; not the paper's Eq. 2) (`extended_set_softmax`) |
 | **Verification Scorer** | PFAS-SN (FlaxSpeaker extension of PFAS: `shared_nonlinear` frame attention + global ATP anchor; 4 keys x (32 + 128); paper scoring Eqs. 5-7) (`pfas`) |
 | **Output Representation Dim** | `640` |
-| **Total Parameters (encoder + loss/scoring heads)** | `2,162,187` |
+| **Inference Parameters (encoder + scoring head; excludes training-only classifier weights)** | `2,162,187` |
 | **Training Data** | CN-Celeb2 only (119 speakers) |
 | **Training Steps / Batch** | `400` steps x 32 utterances, seed 42 |
 | **Audio Frontend** | `80`-dim natural-log Mel @ `16000` Hz + frame-level energy VAD + CMVN (`flaxspeaker.AudioFrontend`; **not** a Hugging Face `AutoFeatureExtractor`) |

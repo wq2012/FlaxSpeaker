@@ -158,14 +158,32 @@ def compute_scores(
     return (labels, scores)
 
 
+def _validate_binary_labels(
+    labels: Sequence[int], scores: Sequence[float]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Validates that `labels` and `scores` have equal length and contain both classes."""
+    if len(labels) != len(scores):
+        raise ValueError("Length of labels and scores must match")
+    if len(labels) == 0:
+        raise ValueError("Trial labels and scores must be non-empty")
+    y_true = np.asarray(labels, dtype=np.int32)
+    y_score = np.asarray(scores, dtype=np.float64)
+    n_pos = int(np.sum(y_true == 1))
+    n_neg = int(np.sum(y_true == 0))
+    if n_pos == 0 or n_neg == 0:
+        raise ValueError(
+            "Trial labels must contain both positive (1) and negative (0) examples."
+        )
+    return y_true, y_score
+
+
 def compute_eer(
     labels: Sequence[int],
     scores: Sequence[float],
     eval_threshold_step: float = 0.001,
 ) -> tuple[Optional[float], Optional[float]]:
     """Compute the Equal Error Rate (EER) via threshold sweep."""
-    if len(labels) != len(scores):
-        raise ValueError("Length of labels and scored must match")
+    _validate_binary_labels(labels, scores)
     eer_threshold = None
     eer = None
     min_delta = 1.0
@@ -191,8 +209,7 @@ def compute_eer_exact(
     scores: Sequence[float],
 ) -> tuple[float, float]:
     """Compute exact Equal Error Rate (EER) and threshold using ROC curve."""
-    y_true = np.asarray(labels, dtype=np.int32)
-    y_score = np.asarray(scores, dtype=np.float64)
+    y_true, y_score = _validate_binary_labels(labels, scores)
     fpr, tpr, thresholds = sk_metrics.roc_curve(y_true, y_score, pos_label=1)
     fnr = 1.0 - tpr
     idx = int(np.nanargmin(np.abs(fnr - fpr)))
@@ -213,8 +230,7 @@ def compute_min_dcf(
     `DCF(t) = C_miss * P_miss(t) * P_target + C_fa * P_fa(t) * (1 - P_target)`
     normalized by `min(C_miss * P_target, C_fa * (1 - P_target))`.
     """
-    y_true = np.asarray(labels, dtype=np.int32)
-    y_score = np.asarray(scores, dtype=np.float64)
+    y_true, y_score = _validate_binary_labels(labels, scores)
     fpr, tpr, _ = sk_metrics.roc_curve(y_true, y_score, pos_label=1)
     fnr = 1.0 - tpr
     c_det = c_miss * fnr * p_target + c_fa * fpr * (1.0 - p_target)
@@ -227,7 +243,8 @@ def compute_roc_auc(
     scores: Sequence[float],
 ) -> float:
     """Compute Area Under the ROC Curve (ROC-AUC)."""
-    return float(sk_metrics.roc_auc_score(np.asarray(labels), np.asarray(scores)))
+    y_true, y_score = _validate_binary_labels(labels, scores)
+    return float(sk_metrics.roc_auc_score(y_true, y_score))
 
 
 def compute_bootstrap_eer_ci(
@@ -238,10 +255,9 @@ def compute_bootstrap_eer_ci(
     seed: int = 42,
 ) -> tuple[float, float]:
     """Computes non-parametric bootstrap confidence interval for EER."""
-    y_true = np.asarray(labels, dtype=np.int32)
-    y_score = np.asarray(scores, dtype=np.float64)
+    y_true, y_score = _validate_binary_labels(labels, scores)
     n = len(y_true)
-    if n < 10 or np.all(y_true == y_true[0]):
+    if n < 10:
         eer, _ = compute_eer_exact(labels, scores)
         return eer, eer
     rng = np.random.default_rng(seed)

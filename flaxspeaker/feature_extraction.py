@@ -309,9 +309,10 @@ def get_triplet_features(
     spk_to_utts: dataset.SpkToUtts,
     n_mfcc: int,
     frontend: Optional[AudioFrontend] = None,
+    rng: Optional[random.Random] = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Get a triplet of anchor/pos/neg features."""
-    anchor_utt, pos_utt, neg_utt = dataset.get_triplet(spk_to_utts)
+    anchor_utt, pos_utt, neg_utt = dataset.get_triplet(spk_to_utts, rng=rng)
     return (
         extract_features(anchor_utt, n_mfcc, frontend=frontend),
         extract_features(pos_utt, n_mfcc, frontend=frontend),
@@ -621,6 +622,9 @@ def _sample_speakers_domain_balanced(
 ) -> list[str]:
     """Samples `n_spk` speakers with domain-balanced stratified + cross-domain mixing."""
     if len(eligible_spks) < n_spk:
+        if rng is not None:
+            idxs = rng.choice(len(eligible_spks), size=n_spk, replace=True)
+            return [eligible_spks[int(i)] for i in idxs]
         return [random.choice(eligible_spks) for _ in range(n_spk)]
 
     domain_groups = _group_speakers_by_domain(eligible_spks)
@@ -719,6 +723,9 @@ def get_batched_nm_input(
                 chosen_utts = [utts[int(i)] for i in u_idxs]
             else:
                 chosen_utts = random.sample(utts, n_utt)
+        elif rng is not None:
+            u_idxs = rng.choice(len(utts), size=n_utt, replace=True)
+            chosen_utts = [utts[int(i)] for i in u_idxs]
         else:
             chosen_utts = [random.choice(utts) for _ in range(n_utt)]
         for utt in chosen_utts:

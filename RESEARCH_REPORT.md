@@ -304,6 +304,7 @@ Protocol: `veri_test2_10spk_subset_2500trials` — 2,500 trials (1,789 target / 
 
 | Variant | LS 1/3-utt | CN 1/3-utt | VOX 1/3-utt | Macro 1/3-utt | Pooled 1-utt [95% CI] / 3-utt |
 | :--- | :---: | :---: | :---: | :---: | :---: |
+| 0. Same-revision 400-step baseline (`HEAD`, `seed=42`, `initial_loss=2.0525`) | 14.93 / 11.10 | 25.10 / 20.80 | 23.85 / 19.40 | 21.29 / 17.10 | 20.94 [20.02, 21.71] / 17.57 |
 | 1. `within_domain_prob = 0.0` (pure cross-domain) | 14.47 / 11.20 | 24.33 / 18.60 | 22.80 / 18.20 | 20.53 / 16.00 | 21.31 [20.49, 22.26] / 17.03 |
 | 1. `within_domain_prob = 0.75` (default) § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
 | 1. `within_domain_prob = 1.0` (pure within-domain) | 15.23 / 11.10 | 24.30 / 19.20 | 24.90 / 21.20 | 21.48 / 17.17 | 21.34 [20.52, 22.24] / 17.03 |
@@ -315,7 +316,8 @@ Protocol: `veri_test2_10spk_subset_2500trials` — 2,500 trials (1,789 target / 
 | 3. Fixed length 180, full-sequence eval | 13.20 / 9.00 | 22.20 / 19.00 | 22.75 / 16.40 | 19.38 / 14.80 | 18.99 [18.14, 19.82] / 15.50 |
 | 3. Variable length, 1.0 s (100-frame) eval § | 18.93 / 12.70 | 30.33 / 28.10 | 26.95 / 25.20 | 25.41 / 22.00 | 26.04 [25.05, 26.98] / 22.23 |
 | 3. Fixed length, 1.0 s (100-frame) eval | 19.57 / 13.60 | 28.57 / 26.30 | 25.90 / 23.60 | 24.68 / 21.17 | 24.73 [23.86, 25.77] / 21.57 |
-| 4. 400 steps (separate run) § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
+| 4. 400 steps (released checkpoint, earlier revision) § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
+| 4. 400 steps (same code revision `HEAD`, `seed=42`, `initial_loss=2.0525`) | 14.93 / 11.10 | 25.10 / 20.80 | 23.85 / 19.40 | 21.29 / 17.10 | 20.94 [20.02, 21.71] / 17.57 |
 | 4. 1,200-step run, snapshot at step 800 (LR mid-schedule; **not** an 800-step budget run) | 14.80 / 10.00 | 22.80 / 17.80 | 23.40 / 19.60 | 20.33 / 15.80 | 20.02 [19.19, 20.93] / 16.90 |
 | 4. 800 steps with its own 800-step schedule (Round 2) | 12.87 / 9.20 | 21.23 / 16.80 | 23.20 / 18.80 | 19.10 / 14.93 | 19.06 [18.32, 19.99] / 14.87 |
 | 4. 1,200 steps | 12.73 / 8.00 | 20.47 / 16.60 | 22.30 / 17.90 | 18.50 / 14.17 | 18.48 [17.61, 19.30] / 14.47 |
@@ -347,7 +349,7 @@ Initial / final training loss, released (earlier code) vs. seed-42 re-run (curre
 ### Interpretation (what the controls change)
 
 - **Study 4 was mis-described in earlier revisions.** The former "800 steps" row was a snapshot of the single 1,200-step run taken at step 800 with the learning rate still mid-schedule; it is kept above only for transparency. The honest 800-step run (own schedule) makes the horizon trend monotone. Wall-clock minutes previously printed for this study did not correspond to any archived value and have been removed; the archived `train_time_sec` values are not comparable across rows because the 400-step row was trained in a different session.
-- **Baseline rows marked § were copied from the main benchmark**, so each re-trained variant starts from a different RNG stream (`initial_loss` 2.0525 vs 1.918).
+- **Baseline rows marked § were copied from the main benchmark**, which was trained by an earlier code revision (`initial_loss` 1.9180), whereas the non-§ ablation variants (`p_within in {0.0, 1.0}`, fixed length 180, 800 steps, 1,200 steps) were trained at `HEAD` (`initial_loss` 2.0525). To provide an exact same-revision (`HEAD`, `seed=42`, `initial_loss=2.0525`) 400-step reference, Row 0 (`20.94% [20.02, 21.71] / 17.57%`) is included directly in the ablation table above alongside the 3-seed `HEAD` mean (`20.64% ± 0.73%`).
 - **Mamba directionality**: the minDCF values quoted in earlier revisions (0.9947 / 0.9481 / 0.9760) did not exist in the archive; the archived values are listed above, and the archive also shows VoxCeleb1 moving the other way (bidirectional 0.9570 vs unidirectional 0.8780).
 - **Seed floor and training reproducibility**: the standard deviation of pooled 1-utt EER across seeds {0, 1, 2} at the current code revision is about 0.7–0.8% absolute for both models. The released seed-42 checkpoints (19.40% / 20.12%) lie *below* both seed ranges, and **re-training seed 42 with the current code does not reproduce them**: it gives 20.94% / 21.40% pooled 1-utt EER, and the first-step loss already differs (2.0525 vs 1.9180 archived; 2.1204 vs 2.0965), i.e. the released weights were produced by earlier revisions of the training code (`model.safetensors` mtimes 2026-10-05 and 2026-10-15; the frontend, augmentation, pooling and backbone modules changed afterwards). Re-*evaluating* these two released checkpoints with the current code reproduces their archived per-domain EERs exactly (`released_checkpoint_reeval_current_code` in the JSON), so the archived numbers describe the released weights, but `scripts/train.py` at this revision will not regenerate them from the shipped YAMLs. The earlier claim that the released checkpoints were merely a lucky draw from the same distribution is withdrawn: they are draws from a different (earlier) pipeline. Differences between two single-seed models smaller than ~1.5% absolute should not be read as rankings; this covers all backbone comparisons except ResNet-18 and all objective/scorer comparisons in Sections 5–7.
 - **Matched data**: trained on a 5,788-utterance subsample of the universal corpus (the LibriSpeech training-set size) at the current code revision, the universal model reaches 21.09% pooled 1-utt EER — close to the current-code seed-42 full-corpus universal run (20.94%) and better than the current-code seed-42 specialist (21.40%); against the seed means it sits between the universal (20.64%) and specialist (21.97%) distributions. At matched data quantity the universal-vs-specialist difference is within the seed floor; a substantial part of the pooled-EER advantage in Section 8 comes from the 1.6× larger corpus.
@@ -363,22 +365,19 @@ Every trained model (`44/44`) is published on the Hugging Face Hub in the [**`wq
 - `flax_model.msgpack` (native Flax msgpack checkpoint)
 - `eval_results.json` & `README.md` (complete Hugging Face Model Card with multi-domain tables, 95% bootstrap CIs, disclaimer, and BibTeX)
 
-In addition, 6 representative models (3 Universal + 3 Single-Domain across Conformer-ATP, ECAPA-TDNN, and LSTM) were exported to **TensorFlow Lite (`.tflite`)** in both **FP32** and **dynamic-range INT8 quantized** formats via `jax2tf`. **Caveats**: the exports are encoder-only with a **fixed, unmasked 180-frame (1.8 s) input window** (`export.sequence_length = 180`), all EERs in this report come from full-sequence masked JAX inference (≤ 500 frames), no TFLite EER has been measured, cosine fidelity was measured on 180-frame inputs only, and the latencies below are **single-shot** measurements on one x86 CPU (not averaged over runs; differences between rows are within timing noise):
+In addition, 6 representative models (3 Universal + 3 Single-Domain across Conformer-ATP, ECAPA-TDNN, and LSTM) were exported to **TensorFlow Lite (`.tflite`)** in both **FP32** and **dynamic-range INT8 quantized** formats via `jax2tf`. The exports are encoder-only with a **fixed, unmasked 180-frame (1.8 s) input window** (`export.sequence_length = 180`). Using `scripts/eval_tflite_models.py`, all 12 `.tflite` files were evaluated on the full verification trial lists (`universal_pooled` 8,000 trials for `univ_*` and `librispeech` 3,000 trials for `ls_*`), measuring 180-frame FP32 and INT8 verification EERs, utterance-level cosine similarity `cos(FP32, INT8)` across all 1,988 unique evaluation utterances, and 50-run averaged x86 CPU latency (after 5 warm-up calls):
 
-| Exported TFLite Model | Precision | File Size (KB) | Compression Ratio | Single-shot latency (ms, 180-frame input, x86 CPU, not averaged) | Cosine Fidelity vs. Flax (180-frame input) |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| [`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) | `FP32` | 8,052.27 KB | `1.00×` | 28.57 ms | `0.999999` |
-| [`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) | `INT8` | **2,267.91 KB** | **`3.55×`** | 33.55 ms | **`0.999948`** |
-| [`wq2012/univ_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e) | `FP32` | 6,683.24 KB | `1.00×` | 30.63 ms | `0.999999` |
-| [`wq2012/univ_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e) | `INT8` | **1,845.59 KB** | **`3.62×`** | **15.33 ms** | **`0.999966`** |
-| [`wq2012/univ_lstm_small_ge2e`](https://huggingface.co/wq2012/univ_lstm_small_ge2e) | `FP32` | 6,926.32 KB | `1.00×` | 52.06 ms | `0.999999` |
-| [`wq2012/univ_lstm_small_ge2e`](https://huggingface.co/wq2012/univ_lstm_small_ge2e) | `INT8` | **2,016.31 KB** | **`3.44×`** | 85.99 ms | **`0.999950`** |
-| [`wq2012/ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) | `FP32` | 8,052.27 KB | `1.00×` | 20.35 ms | `0.999999` |
-| [`wq2012/ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) | `INT8` | **2,267.91 KB** | **`3.55×`** | 29.48 ms | **`0.999961`** |
-| [`wq2012/ls_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_small_ge2e) | `FP32` | 6,683.24 KB | `1.00×` | 27.94 ms | `0.999999` |
-| [`wq2012/ls_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_small_ge2e) | `INT8` | **1,845.59 KB** | **`3.62×`** | 21.65 ms | **`0.999970`** |
-| [`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e) | `FP32` | 6,926.32 KB | `1.00×` | 61.68 ms | `0.999999` |
-| [`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e) | `INT8` | **2,016.31 KB** | **`3.44×`** | 37.21 ms | **`0.999946`** |
+| Exported TFLite Model | FP32 / INT8 Size (MB, $10^6$ B) | Ratio | Primary Eval Set | TFLite FP32 180f EER (%) | TFLite INT8 180f EER (%) | JAX Full-Seq ($\le 500$f) EER (%) | `cos(FP32, INT8)` Mean (Min, 1,988 utts) | CPU Latency FP32 / INT8 (ms, 50-run mean) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| [`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) | 8.25 / **2.32** | **`3.55×`** | `universal_pooled` (8,000) | 23.14% | **23.08%** | 19.40% | **`0.999951`** (`0.999829`) | 9.24 / 9.59 ms |
+| [`wq2012/univ_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e) | 6.84 / **1.89** | **`3.62×`** | `universal_pooled` (8,000) | 25.39% | **25.35%** | 23.16% | **`0.999971`** (`0.999905`) | 7.55 / **7.32 ms** |
+| [`wq2012/univ_lstm_small_ge2e`](https://huggingface.co/wq2012/univ_lstm_small_ge2e) | 7.09 / **2.06** | **`3.44×`** | `universal_pooled` (8,000) | 23.96% | **23.81%** | 21.31% | **`0.999944`** (`0.999740`) | 29.56 / **15.73 ms** |
+| [`wq2012/ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) | 8.25 / **2.32** | **`3.55×`** | `librispeech` (3,000) | 12.50% | **12.37%** | 9.67% | **`0.999939`** (`0.999782`) | 9.47 / 9.67 ms |
+| [`wq2012/ls_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_small_ge2e) | 6.84 / **1.89** | **`3.62×`** | `librispeech` (3,000) | 16.30% | **16.23%** | 13.83% | **`0.999970`** (`0.999915`) | 7.46 / 7.47 ms |
+| [`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e) | 7.09 / **2.06** | **`3.44×`** | `librispeech` (3,000) | 15.43% | **15.40%** | 12.77% | **`0.999919`** (`0.999677`) | 30.18 / **15.05 ms** |
+
+- **Quantization impact (`FP32` vs. `INT8`)**: Dynamic-range INT8 quantization reduces model size by **`3.44–3.62×`** while changing 180-frame verification EER by at most **`0.03–0.15` percentage points** relative to FP32 TFLite (`cos(FP32, INT8)` mean `0.999919–0.999971` over all 1,988 evaluation utterances) and accelerating sequential LSTM CPU inference by **`~1.9×`** (`29.56–30.18 ms` $\to$ `15.05–15.73 ms`).
+- **Fixed-window truncation cost (`180` frames vs. full sequence $\le 500$ frames)**: Comparing FP32 TFLite (`180` unmasked frames, 1.8 s) against full-sequence masked JAX inference ($\le 500$ frames, 5.0 s) isolates the acoustic context-truncation cost to **`+2.23` to `+3.74` percentage points EER**.
 
 ---
 

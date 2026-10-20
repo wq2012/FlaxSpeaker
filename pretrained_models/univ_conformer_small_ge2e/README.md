@@ -59,7 +59,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 | **Training Objective** | GE2E softmax (Wan et al. 2018, Eq. 6; exact leave-one-out centroids) (`ge2e_softmax`) |
 | **Verification Scorer** | Cosine similarity (`cosine`) |
 | **Output Representation Dim** | `192` |
-| **Total Parameters (encoder + loss/scoring heads)** | `2,029,894` |
+| **Inference Parameters (encoder + scoring head; excludes training-only classifier weights)** | `2,029,894` |
 | **Training Data** | LibriSpeech + CN-Celeb2 + VoxCeleb1 (universal multi-domain, 381 speakers) |
 | **Training Steps / Batch** | `400` steps x 32 utterances, seed 42 |
 | **Audio Frontend** | `80`-dim natural-log Mel @ `16000` Hz + frame-level energy VAD + CMVN (`flaxspeaker.AudioFrontend`; **not** a Hugging Face `AutoFeatureExtractor`) |
@@ -70,8 +70,8 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 - `flax_model.msgpack`: native Flax Msgpack serialized parameters
 - `config.json`: `FlaxSpeakerConfig` (full `ExperimentConfig`, incl. the frontend/VAD settings)
 - `eval_results.json`: multi-domain evaluation metrics (1-utt & 3-utt EER, minDCF, ROC-AUC, 95% bootstrap CIs, VoxCeleb1-O 10-speaker subset)
-- `model_fp32.tflite` / `model_int8.tflite`: `jax2tf` exports of the **encoder only** with a **fixed, unmasked 180-frame (1.8 s) input window** `[1, 180, 80]` -> `[1, 192]`. All EERs in this card come from full-sequence masked JAX inference (up to 500 frames); the TFLite models see a centre crop and the reported cosine fidelity (>= 0.9999 vs. JAX) was measured on 180-frame inputs only.
-  - No TFLite EER has been measured for this repository.
+- `model_fp32.tflite` / `model_int8.tflite`: `jax2tf` exports of the **encoder only** with a **fixed, unmasked 180-frame (1.8 s) input window** `[1, 180, 80]` -> `[1, 192]`. All EERs in the main tables below come from full-sequence masked JAX inference (up to 500 frames); the TFLite models see a centre crop and the reported cosine fidelity (>= 0.9999 vs. JAX) was measured on 180-frame inputs.
+  - Measured 180-frame TFLite 1-utt EER (universal_pooled 8,000 1-utt trials (fixed 180-frame unmasked window)): FP32 **23.14%**, INT8 **23.08%**, mean `cos(FP32, INT8)` = `0.999951` (vs. full-sequence <=500-frame masked JAX: `19.40%`)
 
 ## Quickstart Usage
 

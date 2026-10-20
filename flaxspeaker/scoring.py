@@ -356,6 +356,10 @@ class DecisionResidualNetwork(nn.Module):
         t_norm = test_embs / (jnp.linalg.norm(test_embs, axis=-1, keepdims=True) + self.eps)
         e_norm = enroll_embs / (jnp.linalg.norm(enroll_embs, axis=-1, keepdims=True) + self.eps)
         d_cos = int(self.cosine_dims)
+        if d_cos > test_embs.shape[-1]:
+            raise ValueError(
+                f"cosine_dims ({d_cos}) cannot exceed embedding dimension ({test_embs.shape[-1]})."
+            )
         if d_cos > 0 and d_cos < test_embs.shape[-1]:
             # Paper: cosine over the `d` base dimensions only (re-normalised).
             t_base = test_embs[..., :d_cos]

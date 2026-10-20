@@ -40,7 +40,10 @@ except ImportError:  # local development from the repository checkout
     from flaxspeaker import vad  # noqa: E402
 
 
-PRETRAINED_ROOT = os.path.join(REPO_ROOT, "pretrained_models")
+PRETRAINED_ROOT = os.environ.get(
+    "FLAXSPEAKER_PRETRAINED_ROOT",
+    os.path.join(REPO_ROOT, "pretrained_models"),
+)
 EXAMPLES_DIR = os.path.join(THIS_DIR, "examples")
 DEFAULT_MODEL = "univ_conformer_tiny_ge2e"
 _MODEL_CACHE: dict[str, hf_compat.FlaxSpeakerModel] = {}

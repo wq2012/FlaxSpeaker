@@ -83,7 +83,22 @@ def main() -> None:
     out.append(row("3. Variable length, 1.0 s (100-frame) eval §", vl["variable_length_true"]["short_1s_eval"]))
     out.append(row("3. Fixed length, 1.0 s (100-frame) eval", vl["variable_length_false"]["short_1s_eval"]))
     h = abl["training_horizon_ablation"]
-    out.append(row("4. 400 steps (separate run) §", h["steps_400"]["multi_domain_eval"]))
+    rerun = r2.get("seed42_rerun_current_code", {}).get("models", {})
+    if "univ_conformer_small_ge2e" in rerun:
+        out.append(
+            row(
+                "0. Same-revision 400-step baseline (`HEAD`, `seed=42`, `initial_loss=2.0525`)",
+                rerun["univ_conformer_small_ge2e"]["multi_domain_eval"],
+            )
+        )
+    out.append(row("4. 400 steps (released checkpoint, earlier revision) §", h["steps_400"]["multi_domain_eval"]))
+    if "univ_conformer_small_ge2e" in rerun:
+        out.append(
+            row(
+                "4. 400 steps (same code revision `HEAD`, `seed=42`, `initial_loss=2.0525`)",
+                rerun["univ_conformer_small_ge2e"]["multi_domain_eval"],
+            )
+        )
     out.append(row("4. 1,200-step run, snapshot at step 800 (LR mid-schedule; **not** an 800-step budget run)", h["steps_800"]["multi_domain_eval"]))
     h800 = r2["training_horizon_800_own_schedule"]["steps_800_own_schedule"]
     out.append(row("4. 800 steps with its own 800-step schedule (Round 2)", h800["multi_domain_eval"]))
@@ -104,7 +119,6 @@ def main() -> None:
     )
 
     # Seed floor
-    rerun = r2.get("seed42_rerun_current_code", {}).get("models", {})
     out.append("### Seed-noise floor (`r2_seed_and_control_results.json`)\n")
     out.append("| Model | Seeds | Pooled 1-utt EER per seed (%) | Pooled 1-utt mean ± sd | Macro 1-utt mean ± sd | Pooled 3-utt mean ± sd | Released seed-42 pooled / macro 1-utt (earlier code) | Seed 42 re-trained, current code: pooled / macro 1-utt |")
     out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
@@ -164,6 +178,30 @@ def main() -> None:
     if "univ_conformer_small_ge2e" in rerun:
         out.append(mrow("`univ_conformer_small_ge2e` (seed 42 re-trained; current code)", 381, 9447, rerun["univ_conformer_small_ge2e"]["summary"]))
     out.append(mrow("`univ_conformer_small_ge2e` (released; earlier code)", 381, 9447, summary_of(e_u)))
+    out.append("")
+
+    # TFLite 180-frame verification EER & latency table
+    out.append("### TFLite 180-frame (1.8 s) verification EER & latency (`benchmark_results.json`)\n")
+    out.append("| Model | FP32 / INT8 size (MB) | Ratio | Primary eval set | TFLite FP32 EER (%) | TFLite INT8 EER (%) | JAX full-seq (<=500f) EER (%) | `cos(FP32, INT8)` mean (min) | CPU latency FP32 / INT8 (ms, 50-run mean) |")
+    out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+    tfl_ex = bench.get("tflite_exports", {})
+    for mid in (
+        "univ_conformer_small_ge2e",
+        "univ_ecapa_tdnn_small_ge2e",
+        "univ_lstm_small_ge2e",
+        "ls_conformer_small_ge2e",
+        "ls_ecapa_tdnn_small_ge2e",
+        "ls_lstm_small_ge2e",
+    ):
+        te = ex[mid].get("tflite_eval", {})
+        fp_b = tfl_ex[f"{mid}_fp32"]["size_bytes"]
+        in_b = tfl_ex[f"{mid}_int8"]["size_bytes"]
+        out.append(
+            f"| `{mid}` | {fp_b / 1e6:.2f} / {in_b / 1e6:.2f} | {fp_b / in_b:.2f}× | "
+            f"`{te['primary_domain']}` | {f2(te['eer_percent'])} | {f2(te['eer_percent_int8'])} | "
+            f"{f2(te['jax_full_seq_eer_percent'])} | {te['cos_fp32_int8_mean']:.6f} ({te['cos_fp32_int8_min']:.6f}) | "
+            f"{f2(te['latency_ms_fp32_mean_50runs'])} / {f2(te['latency_ms_int8_mean_50runs'])} |"
+        )
     out.append("")
     sys.stdout.write("\n".join(out))
 

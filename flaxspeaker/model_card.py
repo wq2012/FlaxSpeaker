@@ -331,7 +331,10 @@ def build_model_card(
         f"| **Training Objective** | {objective_label(exp_cfg)} (`{loss_type}`) |",
         f"| **Verification Scorer** | {scorer_label(exp_cfg)} (`{scoring_type}`) |",
         f"| **Output Representation Dim** | `{m_cfg.output_embedding_dim}` |",
-        f"| **Total Parameters (encoder + loss/scoring heads)** | `{num_parameters:,}` |",
+        (
+            "| **Inference Parameters (encoder + scoring head; "
+            f"excludes training-only classifier weights)** | `{num_parameters:,}` |"
+        ),
         f"| **Training Data** | {train_domain_desc} |",
         f"| **Training Steps / Batch** | `{num_steps:,}` steps x 32 utterances, seed 42 |",
         (
@@ -356,17 +359,34 @@ def build_model_card(
                 f"- `model_fp32.tflite` / `model_int8.tflite`: `jax2tf` exports of the **encoder only** "
                 f"with a **fixed, unmasked {export_window}-frame ({export_window / 100:.1f} s) input "
                 f"window** `[1, {export_window}, 80]` -> `[1, {m_cfg.output_embedding_dim}]`. "
-                "All EERs in this card come from full-sequence masked JAX inference (up to 500 "
+                "All EERs in the main tables below come from full-sequence masked JAX inference (up to 500 "
                 "frames); the TFLite models see a centre crop and the reported cosine fidelity "
-                f"(>= 0.9999 vs. JAX) was measured on {export_window}-frame inputs only."
+                f"(>= 0.9999 vs. JAX) was measured on {export_window}-frame inputs."
             ),
         ]
         tfl = metrics.get("tflite_eval") if isinstance(metrics, dict) else None
         if isinstance(tfl, dict) and "eer_percent" in tfl:
+            cos_part = (
+                f", mean `cos(FP32, INT8)` = `{tfl['cos_fp32_int8_mean']:.6f}`"
+                if "cos_fp32_int8_mean" in tfl
+                else ""
+            )
+            jax_part = (
+                f" (vs. full-sequence <=500-frame masked JAX: `{tfl['jax_full_seq_eer_percent']:.2f}%`)"
+                if "jax_full_seq_eer_percent" in tfl
+                else ""
+            )
+            proto_str = tfl.get("protocol", "see eval_results.json")
             lines.append(
-                f"  - Measured TFLite EER ({tfl.get('protocol', 'see eval_results.json')}): "
-                f"FP32 {tfl['eer_percent']:.2f}%"
-                + (f", INT8 {tfl['eer_percent_int8']:.2f}%" if "eer_percent_int8" in tfl else "")
+                f"  - Measured {export_window}-frame TFLite 1-utt EER ({proto_str}): "
+                f"FP32 **{tfl['eer_percent']:.2f}%**"
+                + (
+                    f", INT8 **{tfl['eer_percent_int8']:.2f}%**"
+                    if "eer_percent_int8" in tfl
+                    else ""
+                )
+                + cos_part
+                + jax_part
             )
         else:
             lines.append("  - No TFLite EER has been measured for this repository.")

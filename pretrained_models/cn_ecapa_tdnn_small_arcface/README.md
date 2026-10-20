@@ -59,7 +59,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 | **Training Objective** | arcface (`arcface`) |
 | **Verification Scorer** | Cosine similarity (`cosine`) |
 | **Output Representation Dim** | `192` |
-| **Total Parameters (encoder + loss/scoring heads)** | `1,684,416` |
+| **Inference Parameters (encoder + scoring head; excludes training-only classifier weights)** | `1,684,416` |
 | **Training Data** | CN-Celeb2 only (119 speakers) |
 | **Training Steps / Batch** | `400` steps x 32 utterances, seed 42 |
 | **Audio Frontend** | `80`-dim natural-log Mel @ `16000` Hz + frame-level energy VAD + CMVN (`flaxspeaker.AudioFrontend`; **not** a Hugging Face `AutoFeatureExtractor`) |

@@ -24,6 +24,7 @@ import argparse
 import datetime
 import json
 import os
+import random
 import sys
 import time
 from typing import Any, Optional
@@ -485,12 +486,15 @@ def run_all_benchmarks(
         var_len = bool(getattr(exp_cfg.model, "variable_length_training", True))
         within_prob = float(getattr(exp_cfg.data, "within_domain_prob", 0.75))
         temp_alpha = float(getattr(exp_cfg.data, "domain_temp_alpha", 0.35))
+        triplet_rng = random.Random(int(exp_cfg.train.seed))
         for step in range(exp_cfg.train.num_steps):
             if loss_type == "triplet":
                 batch_list = []
                 mask_list = []
                 for _ in range(exp_cfg.train.batch_size):
-                    a_u, p_u, n_u = dataset.get_triplet(spk_train)
+                    a_u, p_u, n_u = dataset.get_triplet(
+                        spk_train, rng=triplet_rng
+                    )
                     for u in (a_u, p_u, n_u):
                         feat = train_cache.get(u)
                         crop_aug, mask, _ = (

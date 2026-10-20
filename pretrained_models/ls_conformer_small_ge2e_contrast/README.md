@@ -59,7 +59,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 | **Training Objective** | GE2E hybrid contrast surrogate (FlaxSpeaker; value = Wan et al. Eq. 7, gradient = 0.25 Eq. 7 + 0.25 BCE + 0.50 GE2E-softmax CE; `ge2e_init_b = -1`) (`ge2e_contrast`) |
 | **Verification Scorer** | Cosine similarity (`cosine`) |
 | **Output Representation Dim** | `192` |
-| **Total Parameters (encoder + loss/scoring heads)** | `2,029,894` |
+| **Inference Parameters (encoder + scoring head; excludes training-only classifier weights)** | `2,029,894` |
 | **Training Data** | LibriSpeech only (232 speakers) |
 | **Training Steps / Batch** | `400` steps x 32 utterances, seed 42 |
 | **Audio Frontend** | `80`-dim natural-log Mel @ `16000` Hz + frame-level energy VAD + CMVN (`flaxspeaker.AudioFrontend`; **not** a Hugging Face `AutoFeatureExtractor`) |

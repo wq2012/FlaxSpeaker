@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import random
 import sys
 import time
 
@@ -125,6 +126,7 @@ def main() -> None:
     _, state = neural_net.get_speaker_encoder(exp_cfg, num_classes=num_classes)
     step_fn = neural_net.make_modern_train_step(exp_cfg)
     rng = np.random.default_rng(exp_cfg.train.seed)
+    triplet_rng = random.Random(int(exp_cfg.train.seed))
 
     t0 = time.time()
     losses: list[float] = []
@@ -135,7 +137,7 @@ def main() -> None:
         if loss_type == "triplet":
             batch_list, mask_list = [], []
             for _ in range(exp_cfg.train.batch_size):
-                a_u, p_u, n_u = dataset.get_triplet(spk_train)
+                a_u, p_u, n_u = dataset.get_triplet(spk_train, rng=triplet_rng)
                 for u in (a_u, p_u, n_u):
                     feat = cache.get(u)
                     crop_aug, mask, _ = feature_extraction.sample_variable_length_features(

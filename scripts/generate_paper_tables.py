@@ -185,8 +185,8 @@ def main(paper_dir: str) -> None:
         if e["scoring_type"] == "dr_vector":
             obj = "Dr-Vec$^{*}$"
         elif e["scoring_type"] == "pfas":
-            obj = "PFAS-SN$^{*}$/" + ("GE2E" if e["loss_type"] == "ge2e_softmax" else "BXS")
-        return f"{backbone}-{e['size_variant'][0].upper()}/{obj}"
+            obj = "PFAS-SN$^{*}$/\\allowbreak " + ("GE2E" if e["loss_type"] == "ge2e_softmax" else "BXS")
+        return f"{backbone}-{e['size_variant'][0].upper()}/\\allowbreak {obj}"
 
     win_pool1 = [m for m, _ in pairs if m not in worse_pool1]
     nums.append(macro_def("univWinPooledOneList", ", ".join(pair_label(m) for m in win_pool1)))
@@ -281,6 +281,31 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("tfliteCosMin", f"{min(cos):.6f}"))
     nums.append(macro_def("tfliteWindowFrames", "180"))
     nums.append(macro_def("tfliteWindowSec", "1.8"))
+
+    tfl_tags = [
+        ("tfliteUnivConf", "univ_conformer_small_ge2e"),
+        ("tfliteUnivEcapa", "univ_ecapa_tdnn_small_ge2e"),
+        ("tfliteUnivLstm", "univ_lstm_small_ge2e"),
+        ("tfliteLsConf", "ls_conformer_small_ge2e"),
+        ("tfliteLsEcapa", "ls_ecapa_tdnn_small_ge2e"),
+        ("tfliteLsLstm", "ls_lstm_small_ge2e"),
+    ]
+    tfl_cos_means, tfl_eer_deltas = [], []
+    for ttag, tmid in tfl_tags:
+        te = ex[tmid].get("tflite_eval", {})
+        if te:
+            nums.append(macro_def(ttag + "FpEer", f2(te["eer_percent"])))
+            nums.append(macro_def(ttag + "IntEer", f2(te["eer_percent_int8"])))
+            nums.append(macro_def(ttag + "JaxFullEer", f2(te["jax_full_seq_eer_percent"])))
+            nums.append(macro_def(ttag + "CosMean", f"{te['cos_fp32_int8_mean']:.6f}"))
+            nums.append(macro_def(ttag + "LatFp", f2(te["latency_ms_fp32_mean_50runs"])))
+            nums.append(macro_def(ttag + "LatInt", f2(te["latency_ms_int8_mean_50runs"])))
+            tfl_cos_means.append(te["cos_fp32_int8_mean"])
+            tfl_eer_deltas.append(abs(te["eer_percent_int8"] - te["eer_percent"]))
+    if tfl_cos_means:
+        nums.append(macro_def("tfliteCosMeanMin", f"{min(tfl_cos_means):.6f}"))
+        nums.append(macro_def("tfliteCosMeanMax", f"{max(tfl_cos_means):.6f}"))
+        nums.append(macro_def("tfliteEerDeltaMax", f2(max(tfl_eer_deltas))))
 
     # Round-2 controls.
     seed_rows = []
@@ -461,9 +486,12 @@ def main(paper_dir: str) -> None:
     lines.append(" & " + row_from_md("$T \\sim \\mathcal{U}(90,180)$, 1.0\\,s (100-frame) eval", vl["variable_length_true"]["short_1s_eval"], copied=True))
     lines.append(" & " + row_from_md("fixed $T = 180$, 1.0\\,s (100-frame) eval", vl["variable_length_false"]["short_1s_eval"]))
     lines.append("\\midrule")
-    n_h = 4 if h800 else 3
+    rr_u_abl = rerun.get("models", {}).get("univ_conformer_small_ge2e")
+    n_h = 3 + (1 if h800 else 0) + (1 if rr_u_abl else 0)
     lines.append(f"\\multirow{{{n_h}}}{{*}}{{\\textbf{{4. Training horizon}}}}")
-    lines.append(" & " + row_from_md("400 steps (separate run, default budget)", h["steps_400"]["multi_domain_eval"], copied=True))
+    lines.append(" & " + row_from_md("400 steps (released checkpoint, earlier revision)", h["steps_400"]["multi_domain_eval"], copied=True))
+    if rr_u_abl:
+        lines.append(" & " + row_from_md("400 steps, same revision as ablations (\\texttt{HEAD}, seed 42)", rr_u_abl["multi_domain_eval"]))
     lines.append(" & " + row_from_md("1,200-step run, snapshot at step 800 (LR mid-schedule)", h["steps_800"]["multi_domain_eval"]))
     if h800:
         lines.append(" & " + row_from_md("800 steps, own 800-step schedule (Round 2)", h800["multi_domain_eval"]))

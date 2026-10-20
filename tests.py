@@ -1412,6 +1412,90 @@ class TestRound2NumericReferences(unittest.TestCase):
         self.assertLess(float(jnp.max(jnp.abs(scores - jnp.sum(tb * eb, -1)))), 0.1)
         with self.assertRaises(ValueError):
             scoring.DecisionResidualNetwork(readout="bogus").init(rng, t, e)
+        with self.assertRaises(ValueError):
+            scoring.DecisionResidualNetwork(cosine_dims=300).init(rng, t, e)
+
+    def test_hf_model_score_embeddings_pure_paper_dr_vectors_and_extract_overrides(self):
+        """FlaxSpeakerModel.score_embeddings must forward all paper Dr-Vector fields."""
+        cfg = configs.interspeech2021_dr_vectors_config(pure_paper_mode=True)
+        cfg.model.apply_size_variant("tiny")
+        cfg.model.embedding_dim = 256
+        hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(cfg)
+        model = hf_compat.FlaxSpeakerModel(config=hf_cfg)
+        e1 = np.ones((256,), dtype=np.float32) / np.sqrt(256.0)
+        e2 = np.ones((256,), dtype=np.float32) / np.sqrt(256.0)
+        s = model.score_embeddings(e1, e2)
+        self.assertTrue(np.isfinite(s))
+
+        # Test extract_embedding and verify optional full_sequence / apply_vad / vad_top_db overrides
+        wav = (
+            np.sin(np.linspace(0.0, 80.0 * np.pi, 16000 * 2)).astype(np.float32)
+            * 0.3
+        )
+        emb_full = model.extract_embedding(wav, full_sequence=True)
+        emb_slide = model.extract_embedding(wav, full_sequence=False)
+        emb_novad = model.extract_embedding(
+            wav, apply_vad=False, vad_top_db=20.0
+        )
+        self.assertEqual(emb_full.shape, (256,))
+        self.assertEqual(emb_slide.shape, (256,))
+        self.assertEqual(emb_novad.shape, (256,))
+        v_score = model.verify(
+            wav, wav, full_sequence=True, apply_vad=True, vad_top_db=26.0
+        )
+        self.assertTrue(np.isfinite(v_score))
+
+        # Test FLAXSPEAKER_PRETRAINED_ROOT resolution in from_pretrained
+        with tempfile.TemporaryDirectory() as tmpdir:
+            custom_dir = os.path.join(tmpdir, "univ_conformer_tiny_ge2e")
+            model.save_pretrained(custom_dir)
+            old_env = os.environ.get("FLAXSPEAKER_PRETRAINED_ROOT")
+            os.environ["FLAXSPEAKER_PRETRAINED_ROOT"] = tmpdir
+            try:
+                loaded = hf_compat.FlaxSpeakerModel.from_pretrained(
+                    "univ_conformer_tiny_ge2e"
+                )
+                self.assertEqual(loaded.exp_config.model.embedding_dim, 256)
+            finally:
+                if old_env is None:
+                    os.environ.pop("FLAXSPEAKER_PRETRAINED_ROOT", None)
+                else:
+                    os.environ["FLAXSPEAKER_PRETRAINED_ROOT"] = old_env
+
+    def test_seeded_triplet_determinism_and_degenerate_eval_labels(self):
+        import random
+
+        spk_map = {
+            "spk1": ["u1_a", "u1_b", "u1_c"],
+            "spk2": ["u2_a", "u2_b", "u2_c"],
+            "spk3": ["u3_a", "u3_b", "u3_c"],
+        }
+        draws_1 = [
+            dataset.get_triplet(spk_map, rng=random.Random(42 + i))
+            for i in range(5)
+        ]
+        draws_2 = [
+            dataset.get_triplet(spk_map, rng=random.Random(42 + i))
+            for i in range(5)
+        ]
+        self.assertEqual(draws_1, draws_2)
+
+        # Degenerate single-class or empty trial lists must raise ValueError
+        for bad_labels, bad_scores in (
+            ([], []),
+            ([1, 1, 1, 1], [0.1, 0.2, 0.8, 0.9]),
+            ([0, 0, 0, 0], [0.1, 0.2, 0.8, 0.9]),
+        ):
+            with self.assertRaises(ValueError):
+                evaluation.compute_eer(bad_labels, bad_scores)
+            with self.assertRaises(ValueError):
+                evaluation.compute_eer_exact(bad_labels, bad_scores)
+            with self.assertRaises(ValueError):
+                evaluation.compute_min_dcf(bad_labels, bad_scores)
+            with self.assertRaises(ValueError):
+                evaluation.compute_roc_auc(bad_labels, bad_scores)
+            with self.assertRaises(ValueError):
+                evaluation.compute_bootstrap_eer_ci(bad_labels, bad_scores)
 
 
 if __name__ == "__main__":
