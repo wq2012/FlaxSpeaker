@@ -21,7 +21,6 @@ try:
     import gradio as gr  # pytype: disable=import-error
 except ImportError:  # pragma: no cover
     gr = None  # type: ignore
-import jax.numpy as jnp
 from matplotlib.figure import Figure
 import numpy as np
 
@@ -78,16 +77,21 @@ def _resolve_model_target(model_name: str) -> str:
 
 
 def get_model(model_name: str) -> hf_compat.FlaxSpeakerModel:
-    """Loads (and caches) a checkpoint and warms up the JIT so latency is steady-state."""
+    """Loads (and caches) a checkpoint and warms up the JIT so latency is steady-state.
+
+    Inference goes through `evaluation.encode_features`, the masked fixed-window
+    path of the benchmark evaluation (centre-crop / zero-pad to
+    `model.max_eval_seq_len` frames with a validity mask). Because the window is
+    fixed, one warm-up call compiles the kernel used for every subsequent input;
+    `run_inference` would instead re-trace for each distinct utterance length.
+    """
     if model_name not in _MODEL_CACHE:
         model = hf_compat.FlaxSpeakerModel.from_pretrained(_resolve_model_target(model_name))
-        # JIT warm-up on a dummy feature matrix; `run_inference` pads to a fixed
-        # bucket so this compiles the kernel used by real inputs.
-        warm = jnp.zeros(
-            (int(model.exp_config.model.max_eval_seq_len), int(model.exp_config.frontend.feature_dim)),
-            dtype=jnp.float32,
-        )
-        np.asarray(evaluation.run_inference(warm, model.state, model.exp_config))
+        warm = np.zeros((64, int(model.exp_config.frontend.feature_dim)), dtype=np.float32)
+        warm_emb = evaluation.encode_features(warm, model.state, model.exp_config)
+        # The Dr-Vector / PFAS scorers are JIT-compiled lazily; warm them as well.
+        model.score_embeddings(warm_emb, warm_emb)
+        model.score_embeddings([warm_emb, warm_emb], warm_emb)
         _MODEL_CACHE[model_name] = model
     return _MODEL_CACHE[model_name]
 
@@ -292,24 +296,10 @@ def verify_pair(
     test_feats = frontend.extract_from_file(test_audio)
     t_infer0 = time.time()
     enroll_embs = [
-        np.asarray(
-            evaluation.run_inference(
-                jnp.asarray(feats, dtype=jnp.float32),
-                model.state,
-                model.exp_config,
-            ),
-            dtype=np.float32,
-        )
+        evaluation.encode_features(feats, model.state, model.exp_config)
         for feats in enroll_feats_list
     ]
-    test_emb = np.asarray(
-        evaluation.run_inference(
-            jnp.asarray(test_feats, dtype=jnp.float32),
-            model.state,
-            model.exp_config,
-        ),
-        dtype=np.float32,
-    )
+    test_emb = evaluation.encode_features(test_feats, model.state, model.exp_config)
     raw_score = float(
         model.score_embeddings(
             enroll_embs if len(enroll_embs) > 1 else enroll_embs[0],
@@ -353,8 +343,10 @@ def verify_pair(
         "model_inference_latency_ms": round(infer_ms, 2),
         "end_to_end_latency_ms": round(elapsed_ms, 2),
         "note": (
-            "Steady-state latency (the JIT is warmed up at model load). 400-step "
-            "demonstration checkpoint: expect ~19-32% EER; see the model card."
+            "Steady-state latency: inference uses the masked fixed-window evaluation "
+            "path, whose single kernel is compiled when the model is loaded. 400-step "
+            "demonstration checkpoint: the released zoo spans 18.75-30.23% pooled 1-utt "
+            "EER (22.5-32.2% on the VoxCeleb1-O 10-speaker subset); see the model card."
         ),
     }
     fig = build_diagnostic_plot(
@@ -409,7 +401,8 @@ def build_demo() -> Any:
             "[ATP pooling (`arXiv:2202.12163`)](https://arxiv.org/abs/2202.12163), and "
             "[PFAS (`arXiv:2203.05642`)](https://arxiv.org/abs/2203.05642).\n\n"
             "> **Accuracy caveat**: all 44 checkpoints are **400-step CPU demonstration models** "
-            "(19-32% EER on the in-house trial lists; published systems reach ~1%). Every verdict "
+            "(18.75-30.23% pooled 1-utt EER on the in-house trial lists, 22.5-32.2% on a "
+            "10-speaker VoxCeleb1-O subset; published systems reach ~1%). Every verdict "
             "below is real inference of the selected checkpoint on your audio; the default decision "
             "threshold is the model's own pooled 1-utt EER operating point from `eval_results.json`.\n\n"
             "**Links**: "

@@ -12,7 +12,7 @@
 >
 > The experiments reported in those original papers were conducted using Google's internal proprietary infrastructure and internal datasets, not this open-source library. All benchmark numbers in this report are measured directly from our open-source JAX/Flax implementation on public datasets (`LibriSpeech`, `CN-Celeb2`, `VoxCeleb1`).
 >
-> **Read this first.** Every released checkpoint is a **400-step, single-seed CPU demonstration model** (32 utterances per step, ≈1.35 epochs over 9,447 utterances from 381 speakers). EERs of 19–32% are 10–30× worse than published systems; comparisons are only meaningful *between* FlaxSpeaker checkpoints under the same budget and only beyond the ~0.7–0.8% seed standard deviation measured in Section 10. The released `ge2e_contrast`, `ext_softmax`, `dr_vectors` and `pfas*` checkpoints are **FlaxSpeaker variants** of the cited algorithms (hybrid contrast surrogate, blended extended-set softmax, down-scaled Dr-Vector scorer, PFAS-SN head); the paper-faithful presets exist (`pure_paper_mode=True`) but have not been trained. See the README section *Deviations from the Source Papers*.
+> **Read this first.** Every released checkpoint is a **400-step, single-seed CPU demonstration model** (32 utterances per step, ≈1.35 epochs over 9,447 utterances from 381 speakers). pooled 1-utt EERs of 18.75–30.23% (22.5–32.2% on the VoxCeleb1-O 10-speaker subset) are 10–30× worse than published systems; comparisons are only meaningful *between* FlaxSpeaker checkpoints under the same budget and only beyond the ~0.7–0.8% seed standard deviation measured in Section 10. The released `ge2e_contrast`, `ext_softmax`, `dr_vectors` and `pfas*` checkpoints are **FlaxSpeaker variants** of the cited algorithms (hybrid contrast surrogate, blended extended-set softmax, down-scaled Dr-Vector scorer, PFAS-SN head); the paper-faithful presets exist (`pure_paper_mode=True`) but have not been trained. See the README section *Deviations from the Source Papers*.
 
 ---
 
@@ -326,18 +326,22 @@ Mamba 1-utt minDCF@0.01 (bidirectional vs unidirectional): librispeech 0.8547 vs
 
 ### Seed-noise floor (`r2_seed_and_control_results.json`)
 
-| Model | Seeds | Pooled 1-utt EER per seed (%) | Pooled 1-utt mean ± sd | Macro 1-utt mean ± sd | Pooled 3-utt mean ± sd | Released seed-42 pooled / macro 1-utt |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| `univ_conformer_small_ge2e` | 0, 1, 2 | 20.14 / 20.30 / 21.48 | 20.64 ± 0.73 | 20.60 ± 0.74 | 16.50 ± 0.61 | 19.40 / 19.88 |
-| `ls_conformer_small_ge2e` | 0, 1, 2 | 21.07 / 22.45 / 22.39 | 21.97 ± 0.78 | 21.85 ± 0.77 | 17.90 ± 0.44 | 20.12 / 20.06 |
+| Model | Seeds | Pooled 1-utt EER per seed (%) | Pooled 1-utt mean ± sd | Macro 1-utt mean ± sd | Pooled 3-utt mean ± sd | Released seed-42 pooled / macro 1-utt (earlier code) | Seed 42 re-trained, current code: pooled / macro 1-utt |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `univ_conformer_small_ge2e` | 0, 1, 2 | 20.14 / 20.30 / 21.48 | 20.64 ± 0.73 | 20.60 ± 0.74 | 16.50 ± 0.61 | 19.40 / 19.88 | 20.94 / 21.29 |
+| `ls_conformer_small_ge2e` | 0, 1, 2 | 21.07 / 22.45 / 22.39 | 21.97 ± 0.78 | 21.85 ± 0.77 | 17.90 ± 0.44 | 20.12 / 20.06 | 21.40 / 21.60 |
+
+Initial / final training loss, released (earlier code) vs. seed-42 re-run (current code): `univ_conformer_small_ge2e` 1.9180 / 0.7821 vs 2.0525 / 0.9060; `ls_conformer_small_ge2e` 2.0965 / 0.3651 vs 2.1204 / 0.5535.
 
 ### Matched-data control (`r2_seed_and_control_results.json`)
 
 | Training set | Speakers / utterances | LS | CN | VOX | Macro 1-utt | Pooled 1-utt | Macro 3-utt | Pooled 3-utt |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `ls_conformer_small_ge2e` (LibriSpeech only, seed 42) | 232 / 5,788 | 9.67 | 28.50 | 22.00 | 20.06 | 20.12 | 16.37 | 16.73 |
-| universal corpus subsampled to the LibriSpeech count (seed 42) | 381 / 5,788 | 15.00 | 25.17 | 22.00 | 20.72 | 21.09 | 16.03 | 16.83 |
-| `univ_conformer_small_ge2e` (full universal corpus, seed 42) | 381 / 9,447 | 12.50 | 22.33 | 24.80 | 19.88 | 19.40 | 16.17 | 16.03 |
+| `ls_conformer_small_ge2e` (released; earlier code) | 232 / 5,788 | 9.67 | 28.50 | 22.00 | 20.06 | 20.12 | 16.37 | 16.73 |
+| `ls_conformer_small_ge2e` (seed 42 re-trained; current code) | 232 / 5,788 | 11.80 | 28.30 | 24.70 | 21.60 | 21.40 | 17.53 | 17.67 |
+| universal corpus subsampled to the LibriSpeech count (seed 42; current code) | 381 / 5,788 | 15.00 | 25.17 | 22.00 | 20.72 | 21.09 | 16.03 | 16.83 |
+| `univ_conformer_small_ge2e` (seed 42 re-trained; current code) | 381 / 9,447 | 14.93 | 25.10 | 23.85 | 21.29 | 20.94 | 17.10 | 17.57 |
+| `univ_conformer_small_ge2e` (released; earlier code) | 381 / 9,447 | 12.50 | 22.33 | 24.80 | 19.88 | 19.40 | 16.17 | 16.03 |
 
 
 ### Interpretation (what the controls change)
@@ -345,8 +349,8 @@ Mamba 1-utt minDCF@0.01 (bidirectional vs unidirectional): librispeech 0.8547 vs
 - **Study 4 was mis-described in earlier revisions.** The former "800 steps" row was a snapshot of the single 1,200-step run taken at step 800 with the learning rate still mid-schedule; it is kept above only for transparency. The honest 800-step run (own schedule) makes the horizon trend monotone. Wall-clock minutes previously printed for this study did not correspond to any archived value and have been removed; the archived `train_time_sec` values are not comparable across rows because the 400-step row was trained in a different session.
 - **Baseline rows marked § were copied from the main benchmark**, so each re-trained variant starts from a different RNG stream (`initial_loss` 2.0525 vs 1.918).
 - **Mamba directionality**: the minDCF values quoted in earlier revisions (0.9947 / 0.9481 / 0.9760) did not exist in the archive; the archived values are listed above, and the archive also shows VoxCeleb1 moving the other way (bidirectional 0.9570 vs unidirectional 0.8780).
-- **Seed floor**: the standard deviation of pooled 1-utt EER across seeds is about 0.7–0.8% absolute for both models, and the released seed-42 checkpoints lie at the favourable end of both seed distributions. Differences between two single-seed models smaller than ~1.5% absolute should not be read as rankings; this covers all backbone comparisons except ResNet-18 and all objective/scorer comparisons in Sections 5–7.
-- **Matched data**: trained on a 5,788-utterance subsample of the universal corpus (the LibriSpeech training-set size), the universal model is worse than the full-corpus universal model and than the released LibriSpeech specialist on pooled/macro EER, but better than the specialist's seed mean. At matched data quantity the universal-vs-specialist difference is within the seed floor; a substantial part of the pooled-EER advantage in Section 8 comes from the 1.6× larger corpus.
+- **Seed floor and training reproducibility**: the standard deviation of pooled 1-utt EER across seeds {0, 1, 2} at the current code revision is about 0.7–0.8% absolute for both models. The released seed-42 checkpoints (19.40% / 20.12%) lie *below* both seed ranges, and **re-training seed 42 with the current code does not reproduce them**: it gives 20.94% / 21.40% pooled 1-utt EER, and the first-step loss already differs (2.0525 vs 1.9180 archived; 2.1204 vs 2.0965), i.e. the released weights were produced by earlier revisions of the training code (`model.safetensors` mtimes 2026-10-05 and 2026-10-15; the frontend, augmentation, pooling and backbone modules changed afterwards). Re-*evaluating* these two released checkpoints with the current code reproduces their archived per-domain EERs exactly (`released_checkpoint_reeval_current_code` in the JSON), so the archived numbers describe the released weights, but `scripts/train.py` at this revision will not regenerate them from the shipped YAMLs. The earlier claim that the released checkpoints were merely a lucky draw from the same distribution is withdrawn: they are draws from a different (earlier) pipeline. Differences between two single-seed models smaller than ~1.5% absolute should not be read as rankings; this covers all backbone comparisons except ResNet-18 and all objective/scorer comparisons in Sections 5–7.
+- **Matched data**: trained on a 5,788-utterance subsample of the universal corpus (the LibriSpeech training-set size) at the current code revision, the universal model reaches 21.09% pooled 1-utt EER — close to the current-code seed-42 full-corpus universal run (20.94%) and better than the current-code seed-42 specialist (21.40%); against the seed means it sits between the universal (20.64%) and specialist (21.97%) distributions. At matched data quantity the universal-vs-specialist difference is within the seed floor; a substantial part of the pooled-EER advantage in Section 8 comes from the 1.6× larger corpus.
 - **Protocol disagreement**: across the 44 models the Spearman rank correlation between pooled 1-utt EER and the VoxCeleb1-O-subset EER is 0.16 (p = 0.29); the in-house VoxCeleb1 EER correlates better (0.55). Model selection by pooled EER says little about this semi-external protocol.
 
 ---

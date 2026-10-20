@@ -27,14 +27,14 @@ short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS
 
 ## Accuracy caveat (read first)
 
-All 44 selectable checkpoints were trained for **400 gradient steps × 32 utterances on a CPU workstation with a single seed** (≈1.35 epochs over 9,447 utterances from 381 speakers). They reach **19–32% EER** on the project's in-house trial lists and **22–32% EER on a 10-speaker VoxCeleb1-O subset** (not comparable to published VoxCeleb1-O numbers); published systems trained on VoxCeleb2 reach about 1%. They are *demonstration* checkpoints for comparing architectures and losses under an identical budget, not production or state-of-the-art models.
+All 44 selectable checkpoints were trained for **400 gradient steps × 32 utterances on a CPU workstation with a single seed** (≈1.35 epochs over 9,447 utterances from 381 speakers). They reach **18.75–30.23% pooled 1-utt EER** on the project's in-house trial lists and **22.5–32.2% EER on a 10-speaker VoxCeleb1-O subset** (not comparable to published VoxCeleb1-O numbers); published systems trained on VoxCeleb2 reach about 1%. They are *demonstration* checkpoints for comparing architectures and losses under an identical budget, not production or state-of-the-art models.
 
 ## What the demo does
 
 - **Real inference only.** Every verdict runs the selected checkpoint on the uploaded/recorded audio (energy VAD → 80-D log-Mel → JAX encoder → cosine / Dr-Vector / PFAS scoring). Nothing is precomputed; curated examples are *not* cached.
 - **Calibrated default threshold.** When you pick a model, the decision threshold resets to that model's **own pooled 1-utt EER operating point** read from its `eval_results.json` (e.g. 0.625 for `univ_conformer_tiny_ge2e`, 0.671 for `univ_conformer_small_ge2e`); the slider range adapts to the scoring back-end (cosine vs. Dr-Vector vs. PFAS scales).
 - **Multi-utterance enrollment** (centroid for cosine / Dr-Vector, key stacking for PFAS), a VAD on/off toggle with an SNR-margin slider, and a diagnostic plot (waveform + VAD gate, post-VAD log-Mel spectrograms, embedding profile).
-- **Latency** is reported as steady-state model inference time (the JIT is warmed up when a model is loaded) separately from end-to-end time.
+- **Latency** is reported as steady-state model inference time separately from end-to-end time: embeddings go through the benchmark's masked fixed-window path (`flaxspeaker.evaluation.encode_features`, centre-crop / zero-pad to `model.max_eval_seq_len` frames with a validity mask), so a single kernel is compiled when the model is loaded and no re-compilation happens for new clip lengths.
 - AS-Norm is intentionally **not** offered in the demo: a meaningful AS-Norm needs an impostor cohort disjoint from the trial audio, which a stateless web demo does not have. The library's `evaluate_verification_trials(..., cohort_embeddings=...)` enforces this requirement.
 
 ## Links & Pretrained Models

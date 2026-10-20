@@ -274,6 +274,78 @@ def _jit_encode_eval_batch(
     return apply_fn({"params": params}, x_batch, mask=m_batch)
 
 
+def prepare_eval_input(
+    raw: np.ndarray, exp_cfg: configs.ExperimentConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    """Pads / centre-crops one feature matrix to the fixed evaluation window.
+
+    This is the exact pre-processing used by the benchmark evaluation
+    (`_extract_eval_embeddings`): with `eval.full_sequence_inference=True` the
+    utterance is centre-cropped to `model.max_eval_seq_len` frames (500 = 5 s for
+    every released checkpoint) and zero-padded to that length with a validity mask;
+    otherwise it is centre-cropped / tiled to `model.seq_len` with an all-ones mask.
+    Returns `(features[T_pad, F], mask[T_pad])` as float32 arrays.
+    """
+    seq_len = int(exp_cfg.model.seq_len)
+    max_eval_len = int(
+        getattr(exp_cfg.model, "max_eval_seq_len", max(400, seq_len * 2))
+    )
+    full_seq = bool(getattr(exp_cfg.eval, "full_sequence_inference", True))
+    target_pad_len = max_eval_len if full_seq else seq_len
+    min_valid_len = min(32, target_pad_len)
+    raw = np.asarray(raw, dtype=np.float32)
+    if raw.shape[0] < min_valid_len:
+        reps = (min_valid_len // max(1, raw.shape[0])) + 1
+        raw = np.tile(raw, (reps, 1))
+    if full_seq:
+        if raw.shape[0] >= target_pad_len:
+            offset = (raw.shape[0] - target_pad_len) // 2
+            seg = raw[offset:offset + target_pad_len]
+            valid_len = target_pad_len
+        else:
+            seg = raw
+            valid_len = raw.shape[0]
+        padded = np.zeros((target_pad_len, raw.shape[1]), dtype=np.float32)
+        padded[:valid_len, :] = seg
+        mask = np.zeros((target_pad_len,), dtype=np.float32)
+        mask[:valid_len] = 1.0
+    else:
+        if raw.shape[0] >= seq_len:
+            offset = (raw.shape[0] - seq_len) // 2
+            padded = raw[offset:offset + seq_len].astype(np.float32)
+        else:
+            reps = (seq_len // max(1, raw.shape[0])) + 1
+            padded = np.tile(raw, (reps, 1))[:seq_len].astype(np.float32)
+        mask = np.ones((seq_len,), dtype=np.float32)
+    return padded, mask
+
+
+def encode_features(
+    features: np.ndarray,
+    state: train_state.TrainState,
+    exp_cfg: configs.ExperimentConfig,
+) -> np.ndarray:
+    """Embeds one utterance through the masked fixed-window evaluation path.
+
+    Unlike `run_inference`, which traces a new XLA kernel for every distinct
+    utterance length, this pads to the fixed evaluation window with a validity mask,
+    so a single warm-up call compiles the kernel used by all subsequent inputs
+    (what an interactive demo needs for steady-state latency). Because every
+    backbone is padding-mask invariant, the embedding equals `run_inference`'s up to
+    floating-point noise for inputs of >= 32 frames (tested in `tests.py`); for
+    shorter inputs this function keeps the benchmark's tiling (whole tiled block)
+    whereas `run_inference` truncates the tiling to 32 frames.
+    """
+    padded, mask = prepare_eval_input(np.asarray(features), exp_cfg)
+    emb = _jit_encode_eval_batch(
+        state.apply_fn,
+        state.params,
+        jnp.asarray(padded[None, :, :], dtype=jnp.float32),
+        jnp.asarray(mask[None, :], dtype=jnp.float32),
+    )
+    return np.asarray(emb[0], dtype=np.float32)
+
+
 def _extract_eval_embeddings(
     unique_utts: Sequence[str],
     state: train_state.TrainState,
@@ -291,14 +363,6 @@ def _extract_eval_embeddings(
     if not missing_utts:
         return utt_to_emb, 0.0
 
-    seq_len = int(exp_cfg.model.seq_len)
-    max_eval_len = int(
-        getattr(exp_cfg.model, "max_eval_seq_len", max(400, seq_len * 2))
-    )
-    full_seq = bool(getattr(exp_cfg.eval, "full_sequence_inference", True))
-    target_pad_len = max_eval_len if full_seq else seq_len
-    min_valid_len = min(32, target_pad_len)
-
     infer_start = time.time()
     for start in range(0, len(missing_utts), batch_size):
         batch_utts = missing_utts[start:start + batch_size]
@@ -310,33 +374,7 @@ def _extract_eval_embeddings(
                 if feature_cache is not None
                 else frontend.extract_from_file(u)
             )
-            if raw.shape[0] < min_valid_len:
-                reps = (min_valid_len // max(1, raw.shape[0])) + 1
-                raw = np.tile(raw, (reps, 1))
-            if full_seq:
-                if raw.shape[0] >= target_pad_len:
-                    offset = (raw.shape[0] - target_pad_len) // 2
-                    seg = raw[offset:offset + target_pad_len]
-                    valid_len = target_pad_len
-                else:
-                    seg = raw
-                    valid_len = raw.shape[0]
-                padded = np.zeros(
-                    (target_pad_len, raw.shape[1]), dtype=np.float32
-                )
-                padded[:valid_len, :] = seg
-                mask = np.zeros((target_pad_len,), dtype=np.float32)
-                mask[:valid_len] = 1.0
-            else:
-                if raw.shape[0] >= seq_len:
-                    offset = (raw.shape[0] - seq_len) // 2
-                    padded = raw[offset:offset + seq_len].astype(np.float32)
-                else:
-                    reps = (seq_len // max(1, raw.shape[0])) + 1
-                    padded = np.tile(raw, (reps, 1))[:seq_len].astype(
-                        np.float32
-                    )
-                mask = np.ones((seq_len,), dtype=np.float32)
+            padded, mask = prepare_eval_input(raw, exp_cfg)
             feats.append(padded)
             masks.append(mask)
 

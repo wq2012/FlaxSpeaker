@@ -202,6 +202,8 @@ class FlaxSpeakerModel:
         self._jit_apply = jax.jit(
             lambda p, x: self.state.apply_fn({"params": p}, x)
         )
+        # Populated by `from_pretrained` when the checkpoint ships `eval_results.json`.
+        self.eval_results: Optional[dict[str, Any]] = None
 
     @property
     def params(self) -> dict[str, Any]:
@@ -216,6 +218,24 @@ class FlaxSpeakerModel:
             if not k.startswith("_aux_class_weights")
         }
         return neural_net.count_parameters(enc_only)
+
+    def eer_threshold(self, domain: str = "universal_pooled") -> Optional[float]:
+        """Decision threshold at the checkpoint's own 1-utt EER operating point.
+
+        Read from `eval_results.json` (`multi_domain_eval.domains_1utt[domain]
+        .eer_threshold`); `None` if the checkpoint has no such record. Scores are on
+        the model's own scale (cosine, Dr-Vector or PFAS), so this is the only
+        default that is meaningful across scorers.
+        """
+        if not self.eval_results:
+            return None
+        d1 = self.eval_results.get("multi_domain_eval", {}).get("domains_1utt", {})
+        rec = d1.get(domain)
+        if rec is None and domain == "universal_pooled":
+            rec = self.eval_results.get("in_domain_eval")
+        if isinstance(rec, dict) and "eer_threshold" in rec:
+            return float(rec["eer_threshold"])
+        return None
 
     def __call__(self, features: jax.Array) -> jax.Array:
         """Forward pass on batched features `(B, T, F) -> (B, D)`."""
@@ -546,6 +566,13 @@ class FlaxSpeakerModel:
             raise FileNotFoundError(
                 f"Neither model.safetensors nor flax_model.msgpack found in {resolved_dir}"
             )
+        metrics_path = os.path.join(resolved_dir, "eval_results.json")
+        if os.path.isfile(metrics_path):
+            try:
+                with open(metrics_path, "r", encoding="utf-8") as f:
+                    model.eval_results = json.load(f)
+            except (OSError, ValueError):
+                model.eval_results = None
         return model
 
 

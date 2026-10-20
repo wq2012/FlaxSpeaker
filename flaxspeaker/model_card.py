@@ -293,6 +293,21 @@ def build_model_card(
             "FlaxSpeaker checkpoints trained under the same budget."
         ),
         "",
+        (
+            "**Training-code provenance.** The released weights were produced by an earlier "
+            "revision of the FlaxSpeaker training code than the current `main`. Evaluating "
+            "released weights with the current code reproduces the archived numbers (verified "
+            "for `univ_conformer_small_ge2e` and `ls_conformer_small_ge2e`); re-training "
+            "the shipped `config.json` / YAML with the current code does **not** regenerate "
+            "them (for `univ_conformer_small_ge2e` and `ls_conformer_small_ge2e`, seed 42 "
+            "re-trained at the current revision gives 20.94 % / 21.40 % instead of the "
+            "archived 19.40 % / 20.12 % pooled 1-utt EER; see "
+            "`pretrained_models/r2_seed_and_control_results.json` in the GitHub repository). "
+            "The seed-to-seed standard deviation of pooled 1-utt EER at the current revision "
+            "is about 0.7-0.8 % absolute, so sub-1.5 % differences between checkpoints are "
+            "not rankings."
+        ),
+        "",
         SOTA_ANCHOR,
         "",
         "## Model Summary",

@@ -952,6 +952,58 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         self.assertNotIn("as_norm_applied", details)
         self.assertIsNotNone(fig)
 
+    def test_encode_features_matches_run_inference_and_eer_threshold(self):
+        """`encode_features` (masked fixed window; one compiled kernel) == `run_inference`."""
+        rng = jax.random.PRNGKey(909)
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.CONFORMER
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.max_eval_seq_len = 96
+        _, state = neural_net.get_speaker_encoder(cfg)
+        # Two branches where `run_inference` and the benchmark path agree: shorter than
+        # the window (zero-padded + masked) and longer than the window (centre-cropped).
+        for n_frames in (70, 150):
+            feats = jax.random.normal(jax.random.fold_in(rng, n_frames), (n_frames, 80))
+            ref = np.asarray(evaluation.run_inference(feats, state, cfg))
+            got = evaluation.encode_features(np.asarray(feats), state, cfg)
+            padded, mask = evaluation.prepare_eval_input(np.asarray(feats), cfg)
+            self.assertEqual(padded.shape, (96, 80))
+            self.assertEqual(mask.shape, (96,))
+            self.assertEqual(int(mask.sum()), min(n_frames, 96))
+            self.assertTrue(
+                np.allclose(ref, got, atol=1e-4),
+                msg=f"n_frames={n_frames}: max diff {np.max(np.abs(ref - got))}",
+            )
+        # Utterances shorter than 32 frames are tiled. The benchmark path (and hence
+        # `encode_features`) keeps the whole tiled block (10 -> 40 valid frames), whereas
+        # `run_inference` truncates the tiling to exactly 32 frames; the two therefore
+        # differ slightly on such inputs. `encode_features` intentionally follows the
+        # benchmark semantics so demo scores match the archived evaluation.
+        short = np.asarray(jax.random.normal(jax.random.fold_in(rng, 10), (10, 80)))
+        padded, mask = evaluation.prepare_eval_input(short, cfg)
+        self.assertEqual(int(mask.sum()), 40)
+        self.assertTrue(np.allclose(padded[:10], short) and np.allclose(padded[10:20], short))
+        got = evaluation.encode_features(short, state, cfg)
+        self.assertEqual(got.shape, (cfg.model.output_embedding_dim,))
+        self.assertTrue(np.all(np.isfinite(got)))
+        # Checkpoint EER operating point: absent -> None; present -> the archived value.
+        hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(cfg)
+        model = hf_compat.FlaxSpeakerModel(config=hf_cfg, params=state.params)
+        self.assertIsNone(model.eer_threshold())
+        model.eval_results = {
+            "multi_domain_eval": {"domains_1utt": {"universal_pooled": {"eer_threshold": 0.625}}}
+        }
+        self.assertAlmostEqual(model.eer_threshold(), 0.625)
+        self.assertIsNone(model.eer_threshold("librispeech"))
+        released = hf_compat.FlaxSpeakerModel.from_pretrained(
+            "pretrained_models/univ_conformer_tiny_ge2e"
+        )
+        self.assertIsNotNone(released.eval_results)
+        thr = released.eer_threshold()
+        self.assertIsNotNone(thr)
+        self.assertGreater(thr, 0.0)
+        self.assertLess(thr, 1.0)
+
     def test_ge2e_contrast_loss_wan2018_eq7(self):
         rng = jax.random.PRNGKey(303)
         n_spk, n_utt, dim = 4, 3, 16

@@ -139,6 +139,8 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def(prefix + "PooledAucThree", f4(d3(e, "universal_pooled")["roc_auc"])))
         nums.append(macro_def(prefix + "VoxSubset", f2(e["cross_dataset_eval"]["vox1_o_10spk_subset"]["eer_percent"])))
         nums.append(macro_def(prefix + "ParamsM", f"{int(e['num_parameters']) / 1e6:.2f}"))
+        nums.append(macro_def(prefix + "InitLoss", f"{float(e['initial_loss']):.2f}"))
+        nums.append(macro_def(prefix + "FinalLoss", f"{float(e['final_loss']):.2f}"))
 
     for prefix, mid in [
         ("univSmall", "univ_conformer_small_ge2e"), ("univTiny", "univ_conformer_tiny_ge2e"),
@@ -167,6 +169,28 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("univWorsePooledOne", str(len(worse_pool1))))
     nums.append(macro_def("univWorsePooledThree", str(len(worse_pool3))))
     nums.append(macro_def("univWinsPooledOne", str(len(pairs) - len(worse_pool1))))
+
+    def pair_label(mid: str) -> str:
+        """Human-readable label for a `univ_*` model: '<backbone>-<size>/<objective>'."""
+        e = ex[mid]
+        backbone = {
+            "conformer": "Conformer", "transformer": "Transformer", "mamba": "Mamba",
+            "lstm": "LSTM", "ecapa_tdnn": "ECAPA-TDNN", "resnet": "ResNet-18",
+        }.get(e["backbone"], e["backbone"])
+        obj = {
+            "ge2e_softmax": "GE2E", "ge2e_contrast": "GE2E-C$^{*}$",
+            "extended_set_softmax": "BXS$^{*}$", "arcface": "ArcFace", "cosface": "CosFace",
+            "sphereface": "SphereFace", "triplet": "triplet",
+        }.get(e["loss_type"], e["loss_type"])
+        if e["scoring_type"] == "dr_vector":
+            obj = "Dr-Vec$^{*}$"
+        elif e["scoring_type"] == "pfas":
+            obj = "PFAS-SN$^{*}$/" + ("GE2E" if e["loss_type"] == "ge2e_softmax" else "BXS")
+        return f"{backbone}-{e['size_variant'][0].upper()}/{obj}"
+
+    win_pool1 = [m for m, _ in pairs if m not in worse_pool1]
+    nums.append(macro_def("univWinPooledOneList", ", ".join(pair_label(m) for m in win_pool1)))
+    nums.append(macro_def("univLosePooledOneList", ", ".join(pair_label(m) for m in worse_pool1)))
 
     # VoxCeleb1-O subset summary + Spearman vs pooled.
     vox_eers = {k: v["eer_percent"] for k, v in vox["models"].items()}
@@ -275,6 +299,21 @@ def main(paper_dir: str) -> None:
                 nums.append(macro_def(tag + ktag + "Max", f2(ms[key]["max"])))
             seed_rows.append((mid, entry))
     nums.append(macro_def("seedFloorAvailable", "1" if seed_rows else "0"))
+    # Seed-42 re-run under the current code (Round-3 reviewer check): the released
+    # checkpoints were trained by earlier code revisions, so this measures whether
+    # HEAD reproduces them.
+    rerun = r2.get("seed42_rerun_current_code", {})
+    nums.append(macro_def("seedFortyTwoRerunAvailable", "1" if rerun.get("models") else "0"))
+    if rerun.get("models"):
+        nums.append(macro_def("seedFortyTwoRerunCommit", tex_escape(str(rerun.get("code_commit", "")))))
+        for mid, rec in rerun["models"].items():
+            tag = "univSeedRerun" if mid.startswith("univ") else "lsSeedRerun"
+            sm = rec["summary"]
+            nums.append(macro_def(tag + "PooledOne", f2(sm["pooled_1utt_eer"])))
+            nums.append(macro_def(tag + "MacroOne", f2(sm["macro_1utt_eer"])))
+            nums.append(macro_def(tag + "PooledThree", f2(sm["pooled_3utt_eer"])))
+            nums.append(macro_def(tag + "InitLoss", f"{float(rec['initial_loss']):.2f}"))
+            nums.append(macro_def(tag + "FinalLoss", f"{float(rec['final_loss']):.2f}"))
     h800 = r2.get("training_horizon_800_own_schedule", {}).get("steps_800_own_schedule")
     nums.append(macro_def("horizonEightOwnAvailable", "1" if h800 else "0"))
     if h800:
@@ -448,19 +487,25 @@ def main(paper_dir: str) -> None:
             seeds = sorted(per.keys(), key=int)
             vals = " / ".join(f2(per[s]["summary"]["pooled_1utt_eer"]) for s in seeds)
             main_e = ex[mid]
+            rr_rec = rerun.get("models", {}).get(mid)
+            rr_cell = (
+                f"{f2(rr_rec['summary']['pooled_1utt_eer'])} / {f2(rr_rec['summary']['macro_1utt_eer'])}"
+                if rr_rec else "---"
+            )
             lines.append(
                 f"\\texttt{{{tex_escape(mid)}}} & {', '.join(seeds)} & {vals} & "
                 f"{f2(ms['pooled_1utt_eer']['mean'])} $\\pm$ {f2(ms['pooled_1utt_eer']['std'])} & "
                 f"{f2(ms['macro_1utt_eer']['mean'])} $\\pm$ {f2(ms['macro_1utt_eer']['std'])} & "
                 f"{f2(ms['pooled_3utt_eer']['mean'])} $\\pm$ {f2(ms['pooled_3utt_eer']['std'])} & "
                 f"{f2(ms['macro_3utt_eer']['mean'])} $\\pm$ {f2(ms['macro_3utt_eer']['std'])} & "
-                f"{f2(d1(main_e, 'universal_pooled')['eer_percent'])} / {f2(macro(main_e, 1)['eer_percent'])} \\\\"
+                f"{f2(d1(main_e, 'universal_pooled')['eer_percent'])} / {f2(macro(main_e, 1)['eer_percent'])} & "
+                f"{rr_cell} \\\\"
             )
-        tbl = ("\\begin{tabular}{@{}llcccccc@{}}\n\\toprule\n"
+        tbl = ("\\begin{tabular}{@{}llccccccc@{}}\n\\toprule\n"
                "\\textbf{Model} & \\textbf{Seeds} & \\textbf{Pooled 1-utt EER per seed} & \\textbf{Pooled 1-utt} & "
                "\\textbf{Macro 1-utt} & \\textbf{Pooled 3-utt} & \\textbf{Macro 3-utt} & "
-               "\\textbf{Seed 42 (released)} \\\\\n"
-               " & & & \\multicolumn{4}{c}{mean $\\pm$ sd over seeds} & pooled / macro 1-utt \\\\\n\\midrule\n" + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
+               "\\textbf{Seed 42 (released)} & \\textbf{Seed 42 (re-trained)} \\\\\n"
+               " & & & \\multicolumn{4}{c}{mean $\\pm$ sd over seeds} & pooled / macro 1-utt & pooled / macro 1-utt \\\\\n\\midrule\n" + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
         emit(os.path.join(out_dir, "table_seed_floor.tex"), tbl)
 
     # ---------------------------------------------------- Table: matched-data control
@@ -472,10 +517,18 @@ def main(paper_dir: str) -> None:
             return f"{label} & {n_spk} / {n_utt:,} & {f2(ls)} & {f2(cn)} & {f2(vx)} & {f2(mac)} & {f2(pool)} & {f2(m3)} & {f2(p3)} \\\\"
 
         lines = [
-            rr("\\texttt{ls\\_conformer\\_small\\_ge2e} (LibriSpeech only)", d1(e_l, "librispeech")["eer_percent"], d1(e_l, "cnceleb2")["eer_percent"], d1(e_l, "voxceleb1")["eer_percent"], macro(e_l, 1)["eer_percent"], d1(e_l, "universal_pooled")["eer_percent"], macro(e_l, 3)["eer_percent"], d3(e_l, "universal_pooled")["eer_percent"], 5788, 232),
-            rr("universal, subsampled to the LibriSpeech count (Round 2)", smd["ls_1utt_eer"], smd["cn_1utt_eer"], smd["vox_1utt_eer"], smd["macro_1utt_eer"], smd["pooled_1utt_eer"], smd["macro_3utt_eer"], smd["pooled_3utt_eer"], md["num_train_utterances"], md["num_train_speakers"]),
-            rr("\\texttt{univ\\_conformer\\_small\\_ge2e} (full universal corpus)", d1(e_u, "librispeech")["eer_percent"], d1(e_u, "cnceleb2")["eer_percent"], d1(e_u, "voxceleb1")["eer_percent"], macro(e_u, 1)["eer_percent"], d1(e_u, "universal_pooled")["eer_percent"], macro(e_u, 3)["eer_percent"], d3(e_u, "universal_pooled")["eer_percent"], 9447, 381),
+            rr("\\texttt{ls\\_conformer\\_small\\_ge2e} (released; earlier code)", d1(e_l, "librispeech")["eer_percent"], d1(e_l, "cnceleb2")["eer_percent"], d1(e_l, "voxceleb1")["eer_percent"], macro(e_l, 1)["eer_percent"], d1(e_l, "universal_pooled")["eer_percent"], macro(e_l, 3)["eer_percent"], d3(e_l, "universal_pooled")["eer_percent"], 5788, 232),
         ]
+        rr_ls = rerun.get("models", {}).get("ls_conformer_small_ge2e")
+        if rr_ls:
+            s = rr_ls["summary"]
+            lines.append(rr("\\texttt{ls\\_conformer\\_small\\_ge2e} (seed 42 re-trained; current code)", s["ls_1utt_eer"], s["cn_1utt_eer"], s["vox_1utt_eer"], s["macro_1utt_eer"], s["pooled_1utt_eer"], s["macro_3utt_eer"], s["pooled_3utt_eer"], 5788, 232))
+        lines.append(rr("universal, subsampled to the LibriSpeech count (seed 42; current code)", smd["ls_1utt_eer"], smd["cn_1utt_eer"], smd["vox_1utt_eer"], smd["macro_1utt_eer"], smd["pooled_1utt_eer"], smd["macro_3utt_eer"], smd["pooled_3utt_eer"], md["num_train_utterances"], md["num_train_speakers"]))
+        rr_u = rerun.get("models", {}).get("univ_conformer_small_ge2e")
+        if rr_u:
+            s = rr_u["summary"]
+            lines.append(rr("\\texttt{univ\\_conformer\\_small\\_ge2e} (seed 42 re-trained; current code)", s["ls_1utt_eer"], s["cn_1utt_eer"], s["vox_1utt_eer"], s["macro_1utt_eer"], s["pooled_1utt_eer"], s["macro_3utt_eer"], s["pooled_3utt_eer"], 9447, 381))
+        lines.append(rr("\\texttt{univ\\_conformer\\_small\\_ge2e} (released; earlier code)", d1(e_u, "librispeech")["eer_percent"], d1(e_u, "cnceleb2")["eer_percent"], d1(e_u, "voxceleb1")["eer_percent"], macro(e_u, 1)["eer_percent"], d1(e_u, "universal_pooled")["eer_percent"], macro(e_u, 3)["eer_percent"], d3(e_u, "universal_pooled")["eer_percent"], 9447, 381))
         tbl = ("\\begin{tabular}{@{}lccccccc c@{}}\n\\toprule\n"
                "\\textbf{Training set} & \\textbf{Spk / utts} & \\textbf{LS} & \\textbf{CN} & \\textbf{VOX} & \\textbf{Macro 1} & \\textbf{Pooled 1} & \\textbf{Macro 3} & \\textbf{Pooled 3} \\\\\n\\midrule\n"
                + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")

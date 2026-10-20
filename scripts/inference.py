@@ -76,8 +76,12 @@ def main() -> None:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.55,
-        help="Verification decision threshold.",
+        default=None,
+        help=(
+            "Verification decision threshold. Default: the checkpoint's own pooled "
+            "1-utt EER operating point from eval_results.json (falls back to 0.5 if "
+            "the checkpoint ships no metrics)."
+        ),
     )
     args = parser.parse_args()
 
@@ -116,6 +120,17 @@ def main() -> None:
         output["inference_time_ms"] = round(elapsed_ms, 2)
 
     if args.enroll_audio and args.test_audio:
+        if args.threshold is not None:
+            threshold = float(args.threshold)
+            threshold_source = "--threshold"
+        else:
+            eer_thr = model.eer_threshold()
+            threshold = eer_thr if eer_thr is not None else 0.5
+            threshold_source = (
+                "eval_results.json pooled 1-utt EER operating point"
+                if eer_thr is not None
+                else "fallback 0.5 (no eval_results.json)"
+            )
         t0 = time.time()
         enroll_paths = [p.strip() for p in args.enroll_audio.split(",") if p.strip()]
         if tfl_runner is None:
@@ -132,8 +147,9 @@ def main() -> None:
         output["test_audio"] = args.test_audio
         output["num_enrollment_utterances"] = len(enroll_paths)
         output["similarity_score"] = round(float(score), 4)
-        output["threshold"] = args.threshold
-        output["same_speaker_decision"] = bool(score >= args.threshold)
+        output["threshold"] = round(float(threshold), 4)
+        output["threshold_source"] = threshold_source
+        output["same_speaker_decision"] = bool(score >= threshold)
         output["inference_time_ms"] = round(elapsed_ms, 2)
 
     print(json.dumps(output, indent=2))

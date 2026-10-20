@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased (Round 3 reviewer verification of the Round 2 revision)
+
+### Findings
+- **Released checkpoints are not re-trainable from the current code.** Re-training seed 42 through `scripts/run_r2_controls.py --seeds 42` gives 20.94 % / 21.40 % pooled 1-utt EER for `univ_` / `ls_conformer_small_ge2e` (archived released values: 19.40 % / 20.12 %); the first-step loss already differs (2.0525 vs 1.9180; 2.1204 vs 2.0965). The released weights date from 2026-10-05 / 2026-10-15 and were trained by earlier code revisions. Re-*evaluating* the released weights with the current code (`scripts/evaluate.py --data_root ...`) reproduces their archived per-domain EERs exactly. Both checks are archived under `seed42_rerun_current_code` and `released_checkpoint_reeval_current_code` in `pretrained_models/r2_seed_and_control_results.json`; the Round-2 claim that the released checkpoints were a lucky draw from the *same* seed distribution is withdrawn in the README, `RESEARCH_REPORT.md` and the paper.
+- End-to-end CLI check (not run in Round 2): `scripts/train.py` from a regenerated YAML and from all five `--preset`s (incl. the Conformer `subsample_factor=2` ATP preset and the PFAS `atp_ffn` preset), `scripts/evaluate.py`, `scripts/export_model.py --export_tflite` and `scripts/inference.py` all run on a 10-speaker smoke set.
+
+### Fixes
+- **Demo latency claim**: `hf_space/app.py` embedded utterances with `evaluation.run_inference`, which re-traces an XLA kernel for every distinct utterance length, so the "steady-state latency" telemetry was wrong for every new clip length (1.4-2.7 s first-call latencies measured). The demo now uses the new `evaluation.encode_features` (the benchmark's masked fixed-window path, `prepare_eval_input`), so one warm-up compiles the kernel used for all inputs; a test asserts `encode_features == run_inference` to 1e-4 on all three length branches.
+- `scripts/inference.py` used a hard-coded 0.55 threshold for every model and scorer; it now defaults to the checkpoint's own pooled 1-utt EER operating point via the new `FlaxSpeakerModel.eer_threshold()` (`eval_results.json` is loaded by `from_pretrained`), and reports `threshold_source`.
+- Documentation: the universal-vs-specialist win/loss lists in README and the paper were hand-typed and wrong (omitted the LSTM loss and the Transformer / ECAPA-base / contrast wins); they are now generated from the archive. "19-32 % EER" is replaced by the archive's 18.75-30.23 % pooled 1-utt range (22.5-32.2 % on the Vox1-O subset). The paper's "ArcFace loss 9.9 vs ~11.9 at chance" (a number in no archive) is replaced by the archived initial/final losses.
+
 ## Unreleased (Round 2 review revisions, after v0.2.0)
 
 ### Correctness fixes
