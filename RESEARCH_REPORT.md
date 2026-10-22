@@ -18,7 +18,7 @@
 
 ## 1. Executive Summary & Verification Provenance
 
-This report documents a 44-model empirical investigation of **Universal Multi-Domain Speaker Recognition** versus **Single-Domain Speaker Recognition** in `FlaxSpeaker v0.2.0` across 6 neural backbones (`Conformer`, `Transformer`, `Mamba`, `LSTM`, `ECAPA-TDNN`, `ResNet`), 9 training objectives (`GE2E-Softmax`, `GE2E-Contrast`, `Extended-Set Softmax`, `Dr-Vectors`, `PFAS + Extended-Set Softmax`, `PFAS + GE2E-Softmax`, `ArcFace`, `CosFace`, `SphereFace`, `Triplet`), and 3 parameter scales (`tiny`, `small`, `base`, all under 5M parameters), supplemented by 5 controlled ablation studies on multi-domain batching, objective formulations, variable-length training, training horizon scaling (`400` to `1,200` steps), and bidirectional Mamba.
+This report documents a 44-model empirical investigation of **Universal Multi-Domain Speaker Recognition** versus **Single-Domain Speaker Recognition** in `FlaxSpeaker v0.2.0` across 6 neural backbones (`Conformer`, `Transformer`, `Mamba`, `LSTM`, `ECAPA-TDNN`, `ResNet`), 9 training objectives (`GE2E-Softmax`, `GE2E-Contrast`, `Extended-Set Softmax`, `Dr-Vectors`, `PFAS + Extended-Set Softmax`, `PFAS + GE2E-Softmax`, `ArcFace`, `CosFace`, `SphereFace`, `Triplet`), and 3 parameter scales (`tiny`, `small`, `base`, all under 5M parameters), supplemented by 5 controlled ablation studies on multi-domain batching, objective formulations, fixed vs. variable-length training crops, training horizon scaling (`400` to `1,200` steps), and bidirectional Mamba, plus seed-floor, matched-data and fixed-crop controls and a step-0 loss fingerprint of every released checkpoint (§10).
 
 - **Hugging Face Pretrained Model Collection (44 Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker) (with individual repositories at `https://huggingface.co/wq2012/<model_id>`)
 - **Machine-Readable Metrics Artifact**: [`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json) (and per-model [`pretrained_models/<model_id>/eval_results.json`](pretrained_models/))
@@ -113,8 +113,9 @@ All datasets are stored under `./data/speaker_datasets` (or `$FLAXSPEAKER_DATA_R
   - `32.5%` clean unaugmented features
   - Never applies SpecAugment and multi-style noise simultaneously.
 
-### 4.5 Variable-Length Masked Training & Full-Sequence Inference
-- Training utterances are sampled with variable duration `T ~ Uniform(90, 180)` frames (`0.9 s` to `1.8 s`; identical in all 44 benchmark YAML configs) with an explicit binary frame mask `(B, T)` propagated through every Conformer/Transformer/ECAPA-TDNN/ResNet/Mamba/LSTM layer and temporal pooling head so padded frames receive zero weight.
+### 4.5 Masked Training Crops & Full-Sequence Inference
+- The training pipeline supports variable-duration crops `T ~ Uniform(min_seq_len, seq_len)` = `U(90, 180)` frames (`0.9 s` to `1.8 s`), with an explicit binary frame mask `(B, T)` propagated through every Conformer/Transformer/ECAPA-TDNN/ResNet/Mamba/LSTM layer and temporal pooling head so padded frames receive zero weight. This is the pipeline default since commit `9accf95`.
+- **Training-crop provenance of the released zoo.** The 44 released checkpoints, except the two `*_ge2e_contrast` models, were trained with **fixed 180-frame crops and all-ones masks**: in the working tree that produced them (before `1cb90c7`), `get_batched_nm_input` / `get_batched_classification_input` defaulted to `variable_length=False` and `run_research_benchmarks.py` did not pass the flag, although the serialized config said `variable_length_training: true`. This is established per checkpoint by a step-0 loss fingerprint (`scripts/fingerprint_released_checkpoints.py` → `pretrained_models/step0_fingerprints.json`; table in §10): with the released YAML, seed and one optimizer step at `HEAD`, the archived `initial_loss` is reproduced to 4 decimals only under fixed crops for 34 checkpoints, within 7e-4 for the 5 `*_pfas*` checkpoints (post-release PFAS scorer numerics), and under variable-length crops for `ls_conformer_small_ge2e_contrast`; 2 checkpoints are not discriminable at 4 decimals (`univ_conformer_small_ge2e_contrast`, loss ≈ 1.0 at init; `univ_ecapa_tdnn_tiny_ge2e`, 2.0697 under both) and are assigned from the git history (contrast retrained at `9accf95` → variable; ECAPA-tiny before → fixed); the two `*_triplet` checkpoints drew triplets from the unseeded global `random` module and cannot be fingerprinted. The two `*_sphereface` checkpoints additionally match only with the constant annealing factor λ = 5 used before `9accf95` (the current schedule starts at λ = 1000). The shipped `configs/*.yml` and `config.json` now carry `variable_length_training: false` for the 40 fixed-crop checkpoints and a `training_provenance` block for all 44 (`scripts/write_training_provenance.py`).
 - At evaluation time (`full_sequence_inference = True`), utterances up to `max_eval_seq_len = 500` frames (`5.0 s`) are encoded in a single masked forward pass.
 
 ---
@@ -245,7 +246,7 @@ Every single-domain baseline model (`25` models) was also evaluated across all 3
 
 ---
 
-## 10. Controlled Ablations, VoxCeleb1-O 10-Speaker Subset, and Round-2 Controls
+## 10. Controlled Ablations, VoxCeleb1-O 10-Speaker Subset, Seed-Floor and Fixed-Crop Controls, and Checkpoint Provenance
 
 All tables in this section are generated from the JSON archives by `scripts/generate_report_tables.py` (nothing below is typed by hand). **Every run is a single seed**; see the seed-noise floor before interpreting sub-1% differences.
 
@@ -300,26 +301,30 @@ Protocol: `veri_test2_10spk_subset_2500trials` — 2,500 trials (1,789 target / 
 | `univ_resnet_small_ge2e` | 31.60 [29.46, 33.75] | 0.9950 | 0.7607 | 27.89 |
 | `cn_ecapa_tdnn_small_arcface` | 32.20 [30.20, 33.95] | 0.9704 | 0.7442 | 30.23 |
 
-### Controlled ablations (`ablation_results.json`; § = copied from the main benchmark, not re-trained)
+### Controlled ablations (`ablation_results.json`, `r2_seed_and_control_results.json`, `r3_fixed_crop_controls.json`; § = the released checkpoint, copied from the main benchmark — trained by an earlier code revision with **fixed 180-frame crops**)
 
 | Variant | LS 1/3-utt | CN 1/3-utt | VOX 1/3-utt | Macro 1/3-utt | Pooled 1-utt [95% CI] / 3-utt |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| 0. Same-revision 400-step baseline (`HEAD`, `seed=42`, `initial_loss=2.0525`) | 14.93 / 11.10 | 25.10 / 20.80 | 23.85 / 19.40 | 21.29 / 17.10 | 20.94 [20.02, 21.71] / 17.57 |
-| 1. `within_domain_prob = 0.0` (pure cross-domain) | 14.47 / 11.20 | 24.33 / 18.60 | 22.80 / 18.20 | 20.53 / 16.00 | 21.31 [20.49, 22.26] / 17.03 |
-| 1. `within_domain_prob = 0.75` (default) § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
-| 1. `within_domain_prob = 1.0` (pure within-domain) | 15.23 / 11.10 | 24.30 / 19.20 | 24.90 / 21.20 | 21.48 / 17.17 | 21.34 [20.52, 22.24] / 17.03 |
+| 1. `within_domain_prob = 0.75`, fixed T = 180 (released checkpoint, earlier revision) § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
+| 1. `within_domain_prob = 0.0`, fixed T = 180 (`HEAD`, seed 42) | 14.50 / 10.00 | 23.73 / 18.40 | 24.30 / 20.30 | 20.84 / 16.23 | 20.55 [19.73, 21.48] / 16.43 |
+| 1. `within_domain_prob = 0.75`, fixed T = 180 (`HEAD`, seed 42) | 13.20 / 9.00 | 22.20 / 19.00 | 22.75 / 16.40 | 19.38 / 14.80 | 18.99 [18.14, 19.82] / 15.50 |
+| 1. `within_domain_prob = 1.0`, fixed T = 180 (`HEAD`, seed 42) | 13.50 / 9.70 | 23.57 / 19.10 | 22.25 / 17.00 | 19.77 / 15.27 | 19.84 [18.97, 20.63] / 15.97 |
+| 1. `within_domain_prob = 0.0`, T ~ U(90,180) (`HEAD`, seed 42) | 14.47 / 11.20 | 24.33 / 18.60 | 22.80 / 18.20 | 20.53 / 16.00 | 21.31 [20.49, 22.26] / 17.03 |
+| 1. `within_domain_prob = 0.75`, T ~ U(90,180) (`HEAD`, seed 42) | 14.93 / 11.10 | 25.10 / 20.80 | 23.85 / 19.40 | 21.29 / 17.10 | 20.94 [20.02, 21.71] / 17.57 |
+| 1. `within_domain_prob = 1.0`, T ~ U(90,180) (`HEAD`, seed 42) | 15.23 / 11.10 | 24.30 / 19.20 | 24.90 / 21.20 | 21.48 / 17.17 | 21.34 [20.52, 22.24] / 17.03 |
 | 2. Pure extended-set softmax (paper Eq. 2), cosine | 22.20 / 17.80 | 25.00 / 20.50 | 26.35 / 23.20 | 24.52 / 20.50 | 24.52 [23.67, 25.55] / 20.77 |
 | 2. Blended extended-set softmax (FlaxSpeaker variant), cosine § | 14.83 / 9.80 | 22.40 / 18.80 | 23.30 / 19.90 | 20.18 / 16.17 | 20.50 [19.64, 21.26] / 16.17 |
 | 2. 3-term Dr-Vector variant (FlaxSpeaker extension) + pure extended-set | 17.03 / 12.20 | 24.80 / 21.20 | 22.90 / 19.40 | 21.58 / 17.60 | 21.91 [20.99, 22.82] / 18.17 |
 | 2. 1-term down-scaled Dr-Vector variant + blended extended-set § | 15.20 / 9.90 | 22.33 / 18.20 | 22.75 / 17.50 | 20.09 / 15.20 | 20.10 [19.31, 20.96] / 15.40 |
-| 3. Variable length U(90,180), full-sequence eval § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
-| 3. Fixed length 180, full-sequence eval | 13.20 / 9.00 | 22.20 / 19.00 | 22.75 / 16.40 | 19.38 / 14.80 | 18.99 [18.14, 19.82] / 15.50 |
-| 3. Variable length, 1.0 s (100-frame) eval § | 18.93 / 12.70 | 30.33 / 28.10 | 26.95 / 25.20 | 25.41 / 22.00 | 26.04 [25.05, 26.98] / 22.23 |
-| 3. Fixed length, 1.0 s (100-frame) eval | 19.57 / 13.60 | 28.57 / 26.30 | 25.90 / 23.60 | 24.68 / 21.17 | 24.73 [23.86, 25.77] / 21.57 |
+| 3. Fixed T = 180 (released checkpoint, earlier revision), full-sequence eval § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
+| 3. Fixed T = 180 (`HEAD`, seed 42), full-sequence eval | 13.20 / 9.00 | 22.20 / 19.00 | 22.75 / 16.40 | 19.38 / 14.80 | 18.99 [18.14, 19.82] / 15.50 |
+| 3. T ~ U(90,180) (`HEAD`, seed 42), full-sequence eval | 14.93 / 11.10 | 25.10 / 20.80 | 23.85 / 19.40 | 21.29 / 17.10 | 20.94 [20.02, 21.71] / 17.57 |
+| 3. Fixed T = 180 (released checkpoint, earlier revision), 1.0 s (100-frame) eval § | 18.93 / 12.70 | 30.33 / 28.10 | 26.95 / 25.20 | 25.41 / 22.00 | 26.04 [25.05, 26.98] / 22.23 |
+| 3. Fixed T = 180 (`HEAD`, seed 42), 1.0 s (100-frame) eval | 19.57 / 13.60 | 28.57 / 26.30 | 25.90 / 23.60 | 24.68 / 21.17 | 24.73 [23.86, 25.77] / 21.57 |
 | 4. 400 steps (released checkpoint, earlier revision) § | 12.50 / 8.80 | 22.33 / 20.00 | 24.80 / 19.70 | 19.88 / 16.17 | 19.40 [18.61, 20.26] / 16.03 |
 | 4. 400 steps (same code revision `HEAD`, `seed=42`, `initial_loss=2.0525`) | 14.93 / 11.10 | 25.10 / 20.80 | 23.85 / 19.40 | 21.29 / 17.10 | 20.94 [20.02, 21.71] / 17.57 |
 | 4. 1,200-step run, snapshot at step 800 (LR mid-schedule; **not** an 800-step budget run) | 14.80 / 10.00 | 22.80 / 17.80 | 23.40 / 19.60 | 20.33 / 15.80 | 20.02 [19.19, 20.93] / 16.90 |
-| 4. 800 steps with its own 800-step schedule (Round 2) | 12.87 / 9.20 | 21.23 / 16.80 | 23.20 / 18.80 | 19.10 / 14.93 | 19.06 [18.32, 19.99] / 14.87 |
+| 4. 800 steps with its own 800-step schedule (`HEAD`, seed 42) | 12.87 / 9.20 | 21.23 / 16.80 | 23.20 / 18.80 | 19.10 / 14.93 | 19.06 [18.32, 19.99] / 14.87 |
 | 4. 1,200 steps | 12.73 / 8.00 | 20.47 / 16.60 | 22.30 / 17.90 | 18.50 / 14.17 | 18.48 [17.61, 19.30] / 14.47 |
 | 5. Mamba unidirectional § | 12.17 / 7.90 | 29.13 / 23.30 | 21.05 / 16.10 | 20.78 / 15.77 | 21.30 [20.40, 22.10] / 17.10 |
 | 5. Mamba bidirectional | 13.53 / 10.80 | 29.83 / 25.30 | 21.75 / 17.30 | 21.71 / 17.80 | 22.07 [21.20, 22.96] / 17.73 |
@@ -335,6 +340,70 @@ Mamba 1-utt minDCF@0.01 (bidirectional vs unidirectional): librispeech 0.8547 vs
 
 Initial / final training loss, released (earlier code) vs. seed-42 re-run (current code): `univ_conformer_small_ge2e` 1.9180 / 0.7821 vs 2.0525 / 0.9060; `ls_conformer_small_ge2e` 2.0965 / 0.3651 vs 2.1204 / 0.5535.
 
+### Fixed-crop (T = 180) same-code controls (`r3_fixed_crop_controls.json`, code `ea7ebcc+dirty`)
+
+| Run | Seeds | Pooled 1-utt EER per seed (%) | Pooled 1-utt mean ± sd | Macro 1-utt mean ± sd | Pooled 3-utt mean ± sd | Initial → final loss per seed |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `univ_conformer_small_ge2e`, fixed T = 180 | 0, 1, 2 | 18.73 / 19.85 / 20.16 | 19.58 ± 0.76 | 19.70 ± 0.57 | 15.26 ± 0.87 | 1.9698→0.7477 / 2.0641→0.6974 / 2.0242→0.9523 |
+| `univ_conformer_small_ge2e`, T ~ U(90,180) | 0, 1, 2 | 20.14 / 20.30 / 21.48 | 20.64 ± 0.73 | 20.60 ± 0.74 | 16.50 ± 0.61 | 2.1364→0.9122 / 2.0851→0.9161 / 2.1526→0.9080 |
+
+| `ls_conformer_small_ge2e`, seed 42 | Crop regime | Code | Initial / final loss | LS 1-utt | Pooled 1-utt [95% CI] | Pooled 3-utt |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| released checkpoint | fixed T = 180 | earlier revision | 2.0965 / 0.3651 | 9.67 | 20.12 [19.30, 21.04] | 16.73 |
+| re-trained | fixed T = 180 | `HEAD` | 2.0965 / 0.3904 | 10.43 | 21.15 [20.41, 22.12] | 17.70 |
+| re-trained | T ~ U(90,180) | `HEAD` | 2.1204 / 0.5535 | 11.80 | 21.40 [20.54, 22.29] | 17.67 |
+
+### Step-0 loss fingerprint of all 44 released checkpoints (`step0_fingerprints.json`, code `ea7ebcc+dirty`; tolerance 5e-05)
+
+Histogram: `both` = 2, `fixed` = 34, `fixed_approx` = 5, `neither` = 2, `variable` = 1.
+
+| Checkpoint | Loss | Released `initial_loss` | `HEAD`, fixed T = 180 | `HEAD`, T ~ U(90,180) | Match |
+| :--- | :--- | :---: | :---: | :---: | :--- |
+| `univ_conformer_small_ge2e_contrast` | `ge2e_contrast` | 1.0001 | 1.0001 | 1.0001 | `both` |
+| `univ_ecapa_tdnn_tiny_ge2e` | `ge2e_softmax` | 2.0697 | 2.0697 | 2.0697 | `both` |
+| `cn_conformer_small_dr_vectors` | `extended_set_softmax` | 1.9661 | 1.9661 | 2.1125 | `fixed` |
+| `cn_conformer_small_ge2e` | `ge2e_softmax` | 1.9294 | 1.9294 | 2.0926 | `fixed` |
+| `cn_ecapa_tdnn_small_arcface` | `arcface` | 13.4474 | 13.4474 | 12.7214 | `fixed` |
+| `ls_conformer_base_ge2e` | `ge2e_softmax` | 2.0807 | 2.0807 | 2.1163 | `fixed` |
+| `ls_conformer_small_arcface` | `arcface` | 13.2163 | 13.2163 | 13.8209 | `fixed` |
+| `ls_conformer_small_cosface` | `cosface` | 13.2738 | 13.2738 | 13.8907 | `fixed` |
+| `ls_conformer_small_dr_vectors` | `extended_set_softmax` | 2.0240 | 2.0240 | 2.0849 | `fixed` |
+| `ls_conformer_small_ext_softmax` | `extended_set_softmax` | 2.0232 | 2.0232 | 2.0882 | `fixed` |
+| `ls_conformer_small_ge2e` | `ge2e_softmax` | 2.0965 | 2.0965 | 2.1204 | `fixed` |
+| `ls_conformer_small_sphereface` | `sphereface` | 9.8746 | 9.8746 | 10.5045 | `fixed` (constant SphereFace λ = 5, pre-`9accf95` behaviour) |
+| `ls_conformer_tiny_ge2e` | `ge2e_softmax` | 2.0900 | 2.0900 | 2.1332 | `fixed` |
+| `ls_ecapa_tdnn_base_ge2e` | `ge2e_softmax` | 2.0638 | 2.0638 | 2.0906 | `fixed` |
+| `ls_ecapa_tdnn_small_ge2e` | `ge2e_softmax` | 2.0730 | 2.0730 | 2.0840 | `fixed` |
+| `ls_ecapa_tdnn_tiny_ge2e` | `ge2e_softmax` | 2.0736 | 2.0736 | 2.0713 | `fixed` |
+| `ls_lstm_small_ge2e` | `ge2e_softmax` | 2.0370 | 2.0370 | 2.0686 | `fixed` |
+| `ls_mamba_small_ge2e` | `ge2e_softmax` | 2.0599 | 2.0599 | 2.0537 | `fixed` |
+| `ls_resnet_small_ge2e` | `ge2e_softmax` | 2.0740 | 2.0740 | 2.0695 | `fixed` |
+| `ls_transformer_small_ge2e` | `ge2e_softmax` | 2.0829 | 2.0829 | 2.1206 | `fixed` |
+| `univ_conformer_base_ge2e` | `ge2e_softmax` | 1.9922 | 1.9922 | 2.0638 | `fixed` |
+| `univ_conformer_small_arcface` | `arcface` | 14.4317 | 14.4317 | 14.8459 | `fixed` |
+| `univ_conformer_small_cosface` | `cosface` | 14.4805 | 14.4805 | 14.9096 | `fixed` |
+| `univ_conformer_small_dr_vectors` | `extended_set_softmax` | 2.0420 | 2.0420 | 2.1347 | `fixed` |
+| `univ_conformer_small_ext_softmax` | `extended_set_softmax` | 2.0379 | 2.0379 | 2.1339 | `fixed` |
+| `univ_conformer_small_ge2e` | `ge2e_softmax` | 1.9180 | 1.9180 | 2.0525 | `fixed` |
+| `univ_conformer_small_sphereface` | `sphereface` | 11.0875 | 11.0875 | 11.5231 | `fixed` (constant SphereFace λ = 5, pre-`9accf95` behaviour) |
+| `univ_conformer_tiny_ge2e` | `ge2e_softmax` | 1.9935 | 1.9935 | 2.0288 | `fixed` |
+| `univ_ecapa_tdnn_base_ge2e` | `ge2e_softmax` | 2.0546 | 2.0546 | 2.0573 | `fixed` |
+| `univ_ecapa_tdnn_small_ge2e` | `ge2e_softmax` | 2.0660 | 2.0660 | 2.0650 | `fixed` |
+| `univ_lstm_small_ge2e` | `ge2e_softmax` | 2.0203 | 2.0203 | 2.0644 | `fixed` |
+| `univ_mamba_small_ge2e` | `ge2e_softmax` | 1.9903 | 1.9903 | 2.0539 | `fixed` |
+| `univ_resnet_small_ge2e` | `ge2e_softmax` | 2.0825 | 2.0825 | 2.0738 | `fixed` |
+| `univ_transformer_small_ge2e` | `ge2e_softmax` | 2.0160 | 2.0160 | 2.0179 | `fixed` |
+| `vox_conformer_small_ge2e` | `ge2e_softmax` | 2.0441 | 2.0441 | 2.2154 | `fixed` |
+| `vox_ecapa_tdnn_small_ext_softmax` | `extended_set_softmax` | 2.0428 | 2.0428 | 2.0999 | `fixed` |
+| `cn_conformer_small_pfas` | `extended_set_softmax` | 1.9820 | 1.9827 | 2.0599 | `fixed_approx` |
+| `ls_conformer_small_pfas` | `extended_set_softmax` | 2.0491 | 2.0493 | 2.0415 | `fixed_approx` |
+| `ls_conformer_small_pfas_ge2e` | `ge2e_softmax` | 2.0451 | 2.0452 | 2.0093 | `fixed_approx` |
+| `univ_conformer_small_pfas` | `extended_set_softmax` | 1.9818 | 1.9822 | 2.1081 | `fixed_approx` |
+| `univ_conformer_small_pfas_ge2e` | `ge2e_softmax` | 1.9700 | 1.9704 | 2.0883 | `fixed_approx` |
+| `ls_conformer_small_triplet` | `triplet` | 0.0945 | 0.0935 | 0.1044 | `neither` |
+| `univ_conformer_small_triplet` | `triplet` | 0.1091 | 0.1020 | 0.0875 | `neither` |
+| `ls_conformer_small_ge2e_contrast` | `ge2e_contrast` | 1.0005 | 1.0000 | 1.0005 | `variable` |
+
 ### Matched-data control (`r2_seed_and_control_results.json`)
 
 | Training set | Speakers / utterances | LS | CN | VOX | Macro 1-utt | Pooled 1-utt | Macro 3-utt | Pooled 3-utt |
@@ -345,13 +414,12 @@ Initial / final training loss, released (earlier code) vs. seed-42 re-run (curre
 | `univ_conformer_small_ge2e` (seed 42 re-trained; current code) | 381 / 9,447 | 14.93 | 25.10 | 23.85 | 21.29 | 20.94 | 17.10 | 17.57 |
 | `univ_conformer_small_ge2e` (released; earlier code) | 381 / 9,447 | 12.50 | 22.33 | 24.80 | 19.88 | 19.40 | 16.17 | 16.03 |
 
-
 ### Interpretation (what the controls change)
 
 - **Study 4 was mis-described in earlier revisions.** The former "800 steps" row was a snapshot of the single 1,200-step run taken at step 800 with the learning rate still mid-schedule; it is kept above only for transparency. Under the same `HEAD` code revision (`seed=42`, `initial_loss=2.0525`), the honest 800-step run (own cosine schedule) makes the 400 $\to$ 800 $\to$ 1,200 step progression strictly monotone across all four aggregate metrics: pooled 1-utt (`20.94% -> 19.06% -> 18.48%`), pooled 3-utt (`17.57% -> 14.87% -> 14.47%`), macro 1-utt (`21.29% -> 19.10% -> 18.50%`), and macro 3-utt (`17.10% -> 14.93% -> 14.17%`). Wall-clock minutes previously printed for this study did not correspond to any archived value and have been removed; the archived `train_time_sec` values are not comparable across rows because the 400-step row was trained in a different session.
-- **Baseline rows marked § were copied from the main benchmark**, which was trained by an earlier code revision (`initial_loss` 1.9180), whereas the non-§ ablation variants (`p_within in {0.0, 1.0}`, fixed length 180, 800 steps, 1,200 steps) were trained at `HEAD` (`initial_loss` 2.0525). To provide an exact same-revision (`HEAD`, `seed=42`, `initial_loss=2.0525`) 400-step reference for Studies 1, 3, and 4, Row 0 (`20.94% [20.02, 21.71] / 17.57%` pooled, `21.29% / 17.10%` macro) is included directly in the ablation table above alongside the 3-seed `HEAD` mean (`20.64% ± 0.73%`). Against this same-revision `HEAD` baseline, `p_within = 0.75` (`20.94%` pooled 1-utt) still outperforms pure cross-domain `p_within = 0.0` (`21.31%`) and pure within-domain `p_within = 1.0` (`21.34%`).
+- **Baseline rows marked § are the released checkpoint**, trained by an earlier code revision with fixed 180-frame crops (`initial_loss` 1.9180). The `HEAD` rows come in two crop regimes. *Fixed T = 180 (the released regime):* `p_within = 0.75` gives 18.99 % [18.14, 19.82] pooled 1-utt EER (`initial_loss` 1.9180 — identical to the released checkpoint's first step), pure cross-domain `p_within = 0.0` 20.55 % [19.73, 21.48] and pure within-domain `p_within = 1.0` 19.84 % [18.97, 20.63]; with the fixed-crop seed sd of 0.76 pp, the hybrid-vs-cross-domain gap (1.56 pp) is ≈ 2 sd and the CIs barely overlap, while the hybrid-vs-within-domain gap (0.85 pp) is ≈ 1 sd with overlapping CIs. *Variable-length `U(90,180)` (the current default):* 20.94 % / 21.31 % / 21.34 % for `p_within` = 0.75 / 0.0 / 1.0, i.e. 0.37–0.40 pp — half a seed sd. Stratified batching is therefore **suggestive against pure cross-domain sampling at fixed crops, and not distinguishable from seed noise otherwise**; it is no longer presented as a robust finding. The earlier statement that the released 19.40 % row beat the `p_within ∈ {0, 1}` rows with non-overlapping CIs compared two crop regimes and two code revisions and is withdrawn.
 - **Mamba directionality**: the minDCF values quoted in earlier revisions (0.9947 / 0.9481 / 0.9760) did not exist in the archive; the archived values are listed above, and the archive also shows VoxCeleb1 moving the other way (bidirectional 0.9570 vs unidirectional 0.8780).
-- **Seed floor and training reproducibility**: the standard deviation of pooled 1-utt EER across seeds {0, 1, 2} at the current code revision is about 0.7–0.8% absolute for both models. The released seed-42 checkpoints (19.40% / 20.12%) lie *below* both seed ranges, and **re-training seed 42 with the current code does not reproduce them**: it gives 20.94% / 21.40% pooled 1-utt EER, and the first-step loss already differs (2.0525 vs 1.9180 archived; 2.1204 vs 2.0965), i.e. the released weights were produced by earlier revisions of the training code (`model.safetensors` mtimes 2026-10-05 and 2026-10-15; the frontend, augmentation, pooling and backbone modules changed afterwards). Re-*evaluating* these two released checkpoints with the current code reproduces their archived per-domain EERs exactly (`released_checkpoint_reeval_current_code` in the JSON), so the archived numbers describe the released weights, but `scripts/train.py` at this revision will not regenerate them from the shipped YAMLs. The earlier claim that the released checkpoints were merely a lucky draw from the same distribution is withdrawn: they are draws from a different (earlier) pipeline. Differences between two single-seed models smaller than ~1.5% absolute should not be read as rankings; this covers all backbone comparisons except ResNet-18 and all objective/scorer comparisons in Sections 5–7.
+- **Seed floor and training reproducibility**: the standard deviation of pooled 1-utt EER across seeds {0, 1, 2} is 0.73 pp (variable-length crops) and 0.76 pp (fixed crops) for `univ_conformer_small_ge2e` and 0.78 pp for `ls_conformer_small_ge2e` (variable-length). The released seed-42 checkpoints (19.40 % / 20.12 %) were trained with fixed crops; re-training seed 42 with the current code **and fixed crops** reproduces their first-step loss exactly (1.9180 / 2.0965) and gives 18.99 % [18.14, 19.82] (inside the released CI [18.61, 20.26]; 3-seed fixed-crop mean 19.58 ± 0.76 %, which contains 19.40 %) and 21.15 % [20.41, 22.12] (released 20.12 % [19.30, 21.04]; overlapping CIs, 1.03 pp gap) pooled 1-utt EER, whereas the variable-length default gives 20.94 % / 21.40 % (first-step loss 2.0525 / 2.1204). The earlier explanation ("frontend, augmentation, pooling and backbone modules changed afterwards", with checkpoint file dates as evidence) is withdrawn: the first-order cause of the gap is the crop regime, which the step-0 fingerprint pins down for 42 of 44 checkpoints. The residual differences after step 0 (final loss 0.7719 vs 0.7821 and 0.3904 vs 0.3651; 0.41 pp and 1.03 pp pooled EER) are not explained and are of the order of one seed sd. Re-*evaluating* the released checkpoints with the current code reproduces their archived metrics exactly (`released_checkpoint_reeval_current_code`). Differences between two single-seed models smaller than about twice the seed sd (≈ 1.5 pp) should not be read as rankings; this covers the Conformer / Transformer / Mamba comparisons (gaps ≤ 1.01 pp vs. Conformer-Small/GE2E) and the metric-learning objectives (GE2E, contrast surrogate, BXS, Dr-Vector, PFAS-SN; ≤ 1.29 pp), but **not** the LSTM (1.91 pp), ECAPA-TDNN (3.41–3.76 pp), ResNet-18 (8.49 pp), triplet (4.67 pp) or margin-loss (5.71–6.44 pp) gaps. An sd estimated from three seeds is itself uncertain, so "2 sd" is a heuristic, not a test.
 - **Matched data**: trained on a 5,788-utterance subsample of the universal corpus (the LibriSpeech training-set size) at the current code revision, the universal model reaches 21.09% pooled 1-utt EER — close to the current-code seed-42 full-corpus universal run (20.94%) and better than the current-code seed-42 specialist (21.40%); against the seed means it sits between the universal (20.64%) and specialist (21.97%) distributions. At matched data quantity the universal-vs-specialist difference is within the seed floor; a substantial part of the pooled-EER advantage in Section 8 comes from the 1.6× larger corpus.
 - **Protocol disagreement**: across the 44 models the Spearman rank correlation between pooled 1-utt EER and the VoxCeleb1-O-subset EER is 0.16 (p = 0.29); the in-house VoxCeleb1 EER correlates better (0.55). Model selection by pooled EER says little about this semi-external protocol.
 
@@ -367,17 +435,19 @@ Every trained model (`44/44`) is published on the Hugging Face Hub in the [**`wq
 
 In addition, 6 representative models (3 Universal + 3 Single-Domain across Conformer-ATP, ECAPA-TDNN, and LSTM) were exported to **TensorFlow Lite (`.tflite`)** in both **FP32** and **dynamic-range INT8 quantized** formats via `jax2tf`. The exports are encoder-only with a **fixed, unmasked 180-frame (1.8 s) input window** (`export.sequence_length = 180`). Using `scripts/eval_tflite_models.py`, all 12 `.tflite` files were evaluated on the full verification trial lists (`universal_pooled` 8,000 trials for `univ_*` and `librispeech` 3,000 trials for `ls_*`), measuring 180-frame FP32 and INT8 verification EERs, utterance-level cosine similarity `cos(FP32, INT8)` across all 1,988 unique evaluation utterances, and 50-run averaged x86 CPU latency (after 5 warm-up calls):
 
+Every TFLite EER in `eval_results.json → tflite_eval` now carries a stratified-bootstrap 95 % CI (`eer_ci95_fp32` / `eer_ci95_int8`; e.g. `univ_ecapa_tdnn_small_ge2e` FP32 25.39 % [24.43, 26.39], INT8 25.35 % [24.39, 26.38]); latencies were re-measured in this release (50-run means after 5 warm-up calls, sequential, one model at a time).
+
 | Exported TFLite Model | FP32 / INT8 Size (MB, $10^6$ B) | Ratio | Primary Eval Set | TFLite FP32 180f EER (%) | TFLite INT8 180f EER (%) | JAX Full-Seq ($\le 500$f) EER (%) | `cos(FP32, INT8)` Mean (Min, 1,988 utts) | CPU Latency FP32 / INT8 (ms, 50-run mean) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| [`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) | 8.25 / **2.32** | **`3.55×`** | `universal_pooled` (8,000) | 23.14% | **23.08%** | 19.40% | **`0.999951`** (`0.999829`) | 9.24 / 9.59 ms |
-| [`wq2012/univ_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e) | 6.84 / **1.89** | **`3.62×`** | `universal_pooled` (8,000) | 25.39% | **25.35%** | 23.16% | **`0.999971`** (`0.999905`) | 7.55 / **7.32 ms** |
-| [`wq2012/univ_lstm_small_ge2e`](https://huggingface.co/wq2012/univ_lstm_small_ge2e) | 7.09 / **2.06** | **`3.44×`** | `universal_pooled` (8,000) | 23.96% | **23.81%** | 21.31% | **`0.999944`** (`0.999740`) | 29.56 / **15.73 ms** |
-| [`wq2012/ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) | 8.25 / **2.32** | **`3.55×`** | `librispeech` (3,000) | 12.50% | **12.37%** | 9.67% | **`0.999939`** (`0.999782`) | 9.47 / 9.67 ms |
-| [`wq2012/ls_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_small_ge2e) | 6.84 / **1.89** | **`3.62×`** | `librispeech` (3,000) | 16.30% | **16.23%** | 13.83% | **`0.999970`** (`0.999915`) | 7.46 / 7.47 ms |
-| [`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e) | 7.09 / **2.06** | **`3.44×`** | `librispeech` (3,000) | 15.43% | **15.40%** | 12.77% | **`0.999919`** (`0.999677`) | 30.18 / **15.05 ms** |
+| [`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) | 8.25 / **2.32** | **`3.55×`** | `universal_pooled` (8,000) | 23.14% | **23.08%** | 19.40% | **`0.999951`** (`0.999829`) | 9.28 / 9.81 ms |
+| [`wq2012/univ_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e) | 6.84 / **1.89** | **`3.62×`** | `universal_pooled` (8,000) | 25.39% | **25.35%** | 23.16% | **`0.999971`** (`0.999905`) | 7.59 / **7.16 ms** |
+| [`wq2012/univ_lstm_small_ge2e`](https://huggingface.co/wq2012/univ_lstm_small_ge2e) | 7.09 / **2.06** | **`3.44×`** | `universal_pooled` (8,000) | 23.96% | **23.81%** | 21.31% | **`0.999944`** (`0.999740`) | 29.23 / **15.76 ms** |
+| [`wq2012/ls_conformer_small_ge2e`](https://huggingface.co/wq2012/ls_conformer_small_ge2e) | 8.25 / **2.32** | **`3.55×`** | `librispeech` (3,000) | 12.50% | **12.37%** | 9.67% | **`0.999939`** (`0.999782`) | 9.21 / 9.39 ms |
+| [`wq2012/ls_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/ls_ecapa_tdnn_small_ge2e) | 6.84 / **1.89** | **`3.62×`** | `librispeech` (3,000) | 16.30% | **16.23%** | 13.83% | **`0.999970`** (`0.999915`) | 7.35 / **7.27 ms** |
+| [`wq2012/ls_lstm_small_ge2e`](https://huggingface.co/wq2012/ls_lstm_small_ge2e) | 7.09 / **2.06** | **`3.44×`** | `librispeech` (3,000) | 15.43% | **15.40%** | 12.77% | **`0.999919`** (`0.999677`) | 29.73 / **15.75 ms** |
 
 - **Quantization impact (`FP32` vs. `INT8`)**: Dynamic-range INT8 quantization reduces model size by **`3.44–3.62×`** while changing 180-frame verification EER by at most **`0.03–0.15` percentage points** relative to FP32 TFLite (`cos(FP32, INT8)` mean `0.999919–0.999971` over all 1,988 evaluation utterances).
-- **Why dynamic-range INT8 x86 CPU latency is comparable to FP32 on Conformer/ECAPA but $1.9\times$ faster on LSTM**: Because `export.export_to_tflite(..., quantize_int8=True)` applies **dynamic-range quantization** (`tf.lite.Optimize.DEFAULT` without a representative activation calibration dataset), weights are stored in INT8 while activations remain FP32 and are dynamically quantized and dequantized per operator at runtime in the x86 TFLite/XNNPACK kernel. On parallel conv/attention graphs (Conformer `9.24` vs. `9.59 ms`; ECAPA-TDNN `7.55` vs. `7.32 ms`), per-op dynamic activation quantization overhead roughly offsets the INT8 GEMM savings on x86 CPU, whereas on sequential memory-bandwidth-bound LSTM recurrence (`180` unrolled steps reading gate weight matrices at every step), the $3.44\times$ smaller INT8 weights substantially reduce cache/memory traffic and yield a **`~1.9×` speedup** (`29.56–30.18 ms` $\to$ `15.05–15.73 ms`).
+- **Why dynamic-range INT8 x86 CPU latency is comparable to FP32 on Conformer/ECAPA but $1.9\times$ faster on LSTM**: Because `export.export_to_tflite(..., quantize_int8=True)` applies **dynamic-range quantization** (`tf.lite.Optimize.DEFAULT` without a representative activation calibration dataset), weights are stored in INT8 while activations remain FP32 and are dynamically quantized and dequantized per operator at runtime in the x86 TFLite/XNNPACK kernel. On parallel conv/attention graphs (Conformer `9.28` vs. `9.81 ms`; ECAPA-TDNN `7.59` vs. `7.16 ms`), per-op dynamic activation quantization overhead roughly offsets the INT8 GEMM savings on x86 CPU, whereas on sequential memory-bandwidth-bound LSTM recurrence (`180` unrolled steps reading gate weight matrices at every step), the $3.44\times$ smaller INT8 weights substantially reduce cache/memory traffic and yield a **`~1.9×` speedup** (`29.23–29.73 ms` $\to$ `15.75–15.76 ms`).
 - **Fixed-window truncation cost (`180` frames vs. full sequence $\le 500$ frames)**: Comparing FP32 TFLite (`180` unmasked frames, 1.8 s) against full-sequence masked JAX inference ($\le 500$ frames, 5.0 s) isolates the acoustic context-truncation cost to **`+2.23` to `+3.74` percentage points EER**.
 
 ---

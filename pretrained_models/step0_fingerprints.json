@@ -1,0 +1,1251 @@
+{
+  "timestamp_utc": "2026-10-22T02:23:58.530759+00:00",
+  "code_commit": "ea7ebcc+dirty",
+  "tolerance": 5e-05,
+  "description": "Step-0 training loss at the released seed from the released YAML, under fixed seq_len crops (head_fixed) and U(min_seq_len, seq_len) crops (head_variable), compared with eval_results.json initial_loss.",
+  "checkpoints": {
+    "cn_conformer_small_dr_vectors": {
+      "train_dataset": "cnceleb2",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.9661,
+      "head_fixed": 1.9661,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 18.2,
+      "head_variable": 2.1125,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.2,
+      "match": "fixed"
+    },
+    "cn_conformer_small_ge2e": {
+      "train_dataset": "cnceleb2",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.9294,
+      "head_fixed": 1.9294,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 5.3,
+      "head_variable": 2.0926,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 7.1,
+      "match": "fixed"
+    },
+    "cn_ecapa_tdnn_small_arcface": {
+      "train_dataset": "cnceleb2",
+      "loss_type": "arcface",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 13.4474,
+      "head_fixed": 13.4474,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 9.4,
+      "head_variable": 12.7214,
+      "head_variable_valid_frames_first4": [
+        149,
+        137,
+        140,
+        148
+      ],
+      "head_variable_probe_sec": 3.9,
+      "match": "fixed"
+    },
+    "ls_conformer_base_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0807,
+      "head_fixed": 2.0807,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 11.9,
+      "head_variable": 2.1163,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 7.9,
+      "match": "fixed"
+    },
+    "ls_conformer_small_arcface": {
+      "train_dataset": "librispeech",
+      "loss_type": "arcface",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 13.2163,
+      "head_fixed": 13.2163,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.7,
+      "head_variable": 13.8209,
+      "head_variable_valid_frames_first4": [
+        149,
+        137,
+        91,
+        148
+      ],
+      "head_variable_probe_sec": 6.1,
+      "match": "fixed"
+    },
+    "ls_conformer_small_cosface": {
+      "train_dataset": "librispeech",
+      "loss_type": "cosface",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 13.2738,
+      "head_fixed": 13.2738,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.1,
+      "head_variable": 13.8907,
+      "head_variable_valid_frames_first4": [
+        149,
+        137,
+        91,
+        148
+      ],
+      "head_variable_probe_sec": 5.9,
+      "match": "fixed"
+    },
+    "ls_conformer_small_dr_vectors": {
+      "train_dataset": "librispeech",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.024,
+      "head_fixed": 2.024,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.0,
+      "head_variable": 2.0849,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 7.0,
+      "match": "fixed"
+    },
+    "ls_conformer_small_ext_softmax": {
+      "train_dataset": "librispeech",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0232,
+      "head_fixed": 2.0232,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.3,
+      "head_variable": 2.0882,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.5,
+      "match": "fixed"
+    },
+    "ls_conformer_small_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0965,
+      "head_fixed": 2.0965,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 5.9,
+      "head_variable": 2.1204,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.0,
+      "match": "fixed"
+    },
+    "ls_conformer_small_ge2e_contrast": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_contrast",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.0005,
+      "head_fixed": 1.0,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.1,
+      "head_variable": 1.0005,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.2,
+      "match": "variable"
+    },
+    "ls_conformer_tiny_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.09,
+      "head_fixed": 2.09,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 8.0,
+      "head_variable": 2.1332,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 5.2,
+      "match": "fixed"
+    },
+    "ls_ecapa_tdnn_base_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0638,
+      "head_fixed": 2.0638,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 9.9,
+      "head_variable": 2.0906,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 3.2,
+      "match": "fixed"
+    },
+    "ls_ecapa_tdnn_small_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.073,
+      "head_fixed": 2.073,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 3.0,
+      "head_variable": 2.084,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 3.6,
+      "match": "fixed"
+    },
+    "ls_ecapa_tdnn_tiny_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0736,
+      "head_fixed": 2.0736,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.3,
+      "head_variable": 2.0713,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 4.3,
+      "match": "fixed"
+    },
+    "ls_lstm_small_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.037,
+      "head_fixed": 2.037,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.1,
+      "head_variable": 2.0686,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 5.0,
+      "match": "fixed"
+    },
+    "ls_mamba_small_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0599,
+      "head_fixed": 2.0599,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 13.3,
+      "head_variable": 2.0537,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.0,
+      "match": "fixed"
+    },
+    "ls_resnet_small_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.074,
+      "head_fixed": 2.074,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 23.1,
+      "head_variable": 2.0695,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 8.8,
+      "match": "fixed"
+    },
+    "ls_transformer_small_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0829,
+      "head_fixed": 2.0829,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 4.2,
+      "head_variable": 2.1206,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 4.3,
+      "match": "fixed"
+    },
+    "univ_conformer_base_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.9922,
+      "head_fixed": 1.9922,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.4,
+      "head_variable": 2.0638,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 7.3,
+      "match": "fixed"
+    },
+    "univ_conformer_small_arcface": {
+      "train_dataset": "universal",
+      "loss_type": "arcface",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 14.4317,
+      "head_fixed": 14.4317,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.3,
+      "head_variable": 14.8459,
+      "head_variable_valid_frames_first4": [
+        129,
+        161,
+        130,
+        96
+      ],
+      "head_variable_probe_sec": 5.6,
+      "match": "fixed"
+    },
+    "univ_conformer_small_cosface": {
+      "train_dataset": "universal",
+      "loss_type": "cosface",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 14.4805,
+      "head_fixed": 14.4805,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 5.7,
+      "head_variable": 14.9096,
+      "head_variable_valid_frames_first4": [
+        129,
+        161,
+        130,
+        96
+      ],
+      "head_variable_probe_sec": 5.9,
+      "match": "fixed"
+    },
+    "univ_conformer_small_dr_vectors": {
+      "train_dataset": "universal",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.042,
+      "head_fixed": 2.042,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.7,
+      "head_variable": 2.1347,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 6.8,
+      "match": "fixed"
+    },
+    "univ_conformer_small_ext_softmax": {
+      "train_dataset": "universal",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0379,
+      "head_fixed": 2.0379,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.1,
+      "head_variable": 2.1339,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 6.2,
+      "match": "fixed"
+    },
+    "univ_conformer_small_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.918,
+      "head_fixed": 1.918,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.5,
+      "head_variable": 2.0525,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 6.0,
+      "match": "fixed"
+    },
+    "univ_conformer_tiny_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.9935,
+      "head_fixed": 1.9935,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 4.2,
+      "head_variable": 2.0288,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 4.2,
+      "match": "fixed"
+    },
+    "univ_ecapa_tdnn_base_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0546,
+      "head_fixed": 2.0546,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 4.3,
+      "head_variable": 2.0573,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 4.9,
+      "match": "fixed"
+    },
+    "univ_ecapa_tdnn_small_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.066,
+      "head_fixed": 2.066,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 4.4,
+      "head_variable": 2.065,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 4.5,
+      "match": "fixed"
+    },
+    "univ_lstm_small_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0203,
+      "head_fixed": 2.0203,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 4.9,
+      "head_variable": 2.0644,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 5.3,
+      "match": "fixed"
+    },
+    "univ_mamba_small_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.9903,
+      "head_fixed": 1.9903,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.0,
+      "head_variable": 2.0539,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 5.8,
+      "match": "fixed"
+    },
+    "univ_resnet_small_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0825,
+      "head_fixed": 2.0825,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 9.3,
+      "head_variable": 2.0738,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 9.1,
+      "match": "fixed"
+    },
+    "univ_transformer_small_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.016,
+      "head_fixed": 2.016,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 4.4,
+      "head_variable": 2.0179,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 3.6,
+      "match": "fixed"
+    },
+    "vox_conformer_small_ge2e": {
+      "train_dataset": "voxceleb1",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0441,
+      "head_fixed": 2.0441,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 5.7,
+      "head_variable": 2.2154,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 5.8,
+      "match": "fixed"
+    },
+    "vox_ecapa_tdnn_small_ext_softmax": {
+      "train_dataset": "voxceleb1",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0428,
+      "head_fixed": 2.0428,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 4.6,
+      "head_variable": 2.0999,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 5.1,
+      "match": "fixed"
+    },
+    "cn_conformer_small_pfas": {
+      "train_dataset": "cnceleb2",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.982,
+      "head_fixed": 1.9827,
+      "head_fixed_raw": 1.982746,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 13.5,
+      "head_variable": 2.0599,
+      "head_variable_raw": 2.05993,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.7,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0007,
+      "abs_diff_variable": 0.0779,
+      "match": "fixed_approx"
+    },
+    "ls_conformer_small_pfas": {
+      "train_dataset": "librispeech",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0491,
+      "head_fixed": 2.0493,
+      "head_fixed_raw": 2.049332,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.2,
+      "head_variable": 2.0415,
+      "head_variable_raw": 2.041494,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.6,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0002,
+      "abs_diff_variable": 0.0076,
+      "match": "fixed_approx"
+    },
+    "ls_conformer_small_pfas_ge2e": {
+      "train_dataset": "librispeech",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0451,
+      "head_fixed": 2.0452,
+      "head_fixed_raw": 2.04523,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.3,
+      "head_variable": 2.0093,
+      "head_variable_raw": 2.00934,
+      "head_variable_valid_frames_first4": [
+        106,
+        139,
+        165,
+        104
+      ],
+      "head_variable_probe_sec": 6.7,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0001,
+      "abs_diff_variable": 0.0358,
+      "match": "fixed_approx"
+    },
+    "ls_conformer_small_sphereface": {
+      "train_dataset": "librispeech",
+      "loss_type": "sphereface",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 9.8746,
+      "head_fixed": 7.2967,
+      "head_fixed_raw": 7.296714,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.5,
+      "head_variable": 7.9095,
+      "head_variable_raw": 7.909461,
+      "head_variable_valid_frames_first4": [
+        149,
+        137,
+        91,
+        148
+      ],
+      "head_variable_probe_sec": 5.7,
+      "head_fixed_legacy_lambda": 9.8746,
+      "head_fixed_legacy_lambda_raw": 9.874585,
+      "head_fixed_legacy_lambda_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_legacy_lambda_probe_sec": 6.0,
+      "head_variable_legacy_lambda": 10.5045,
+      "head_variable_legacy_lambda_raw": 10.504492,
+      "head_variable_legacy_lambda_valid_frames_first4": [
+        149,
+        137,
+        91,
+        148
+      ],
+      "head_variable_legacy_lambda_probe_sec": 6.2,
+      "legacy_lambda_used": true,
+      "abs_diff_fixed": 0.0,
+      "abs_diff_variable": 0.6299,
+      "match": "fixed"
+    },
+    "ls_conformer_small_triplet": {
+      "train_dataset": "librispeech",
+      "loss_type": "triplet",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 0.0945,
+      "head_fixed": 0.0935,
+      "head_fixed_raw": 0.09354,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.2,
+      "head_variable": 0.1044,
+      "head_variable_raw": 0.104392,
+      "head_variable_valid_frames_first4": [
+        98,
+        97,
+        161,
+        99
+      ],
+      "head_variable_probe_sec": 6.3,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.001,
+      "abs_diff_variable": 0.0099,
+      "match": "neither"
+    },
+    "univ_conformer_small_ge2e_contrast": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_contrast",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.0001,
+      "head_fixed": 1.0001,
+      "head_fixed_raw": 1.000062,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.4,
+      "head_variable": 1.0001,
+      "head_variable_raw": 1.000137,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 6.1,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0,
+      "abs_diff_variable": 0.0,
+      "match": "both"
+    },
+    "univ_conformer_small_pfas": {
+      "train_dataset": "universal",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.9818,
+      "head_fixed": 1.9822,
+      "head_fixed_raw": 1.982184,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 7.0,
+      "head_variable": 2.1081,
+      "head_variable_raw": 2.108124,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 7.5,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0004,
+      "abs_diff_variable": 0.1263,
+      "match": "fixed_approx"
+    },
+    "univ_conformer_small_pfas_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 1.97,
+      "head_fixed": 1.9704,
+      "head_fixed_raw": 1.970382,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.5,
+      "head_variable": 2.0883,
+      "head_variable_raw": 2.088271,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 6.7,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0004,
+      "abs_diff_variable": 0.1183,
+      "match": "fixed_approx"
+    },
+    "univ_conformer_small_sphereface": {
+      "train_dataset": "universal",
+      "loss_type": "sphereface",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 11.0875,
+      "head_fixed": 8.4967,
+      "head_fixed_raw": 8.496697,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.4,
+      "head_variable": 8.9258,
+      "head_variable_raw": 8.925766,
+      "head_variable_valid_frames_first4": [
+        129,
+        161,
+        130,
+        96
+      ],
+      "head_variable_probe_sec": 5.4,
+      "head_fixed_legacy_lambda": 11.0875,
+      "head_fixed_legacy_lambda_raw": 11.087462,
+      "head_fixed_legacy_lambda_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_legacy_lambda_probe_sec": 5.7,
+      "head_variable_legacy_lambda": 11.5231,
+      "head_variable_legacy_lambda_raw": 11.523127,
+      "head_variable_legacy_lambda_valid_frames_first4": [
+        129,
+        161,
+        130,
+        96
+      ],
+      "head_variable_legacy_lambda_probe_sec": 6.0,
+      "legacy_lambda_used": true,
+      "abs_diff_fixed": 0.0,
+      "abs_diff_variable": 0.4356,
+      "match": "fixed"
+    },
+    "univ_conformer_small_triplet": {
+      "train_dataset": "universal",
+      "loss_type": "triplet",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 0.1091,
+      "head_fixed": 0.102,
+      "head_fixed_raw": 0.102025,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 6.4,
+      "head_variable": 0.0875,
+      "head_variable_raw": 0.087532,
+      "head_variable_valid_frames_first4": [
+        98,
+        97,
+        161,
+        99
+      ],
+      "head_variable_probe_sec": 6.1,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0071,
+      "abs_diff_variable": 0.0216,
+      "match": "neither"
+    },
+    "univ_ecapa_tdnn_tiny_ge2e": {
+      "train_dataset": "universal",
+      "loss_type": "ge2e_softmax",
+      "seed": 42,
+      "seq_len": 180,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.0697,
+      "head_fixed": 2.0697,
+      "head_fixed_raw": 2.069715,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 10.5,
+      "head_variable": 2.0697,
+      "head_variable_raw": 2.069701,
+      "head_variable_valid_frames_first4": [
+        148,
+        165,
+        122,
+        138
+      ],
+      "head_variable_probe_sec": 4.7,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0,
+      "abs_diff_variable": 0.0,
+      "match": "both"
+    }
+  },
+  "histogram": {
+    "both": 2,
+    "fixed": 34,
+    "fixed_approx": 5,
+    "neither": 2,
+    "variable": 1
+  },
+  "num_checkpoints": 44
+}

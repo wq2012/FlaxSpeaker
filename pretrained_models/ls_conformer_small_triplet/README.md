@@ -41,7 +41,7 @@ metrics:
 
 This model was trained for **400 gradient steps** with mini-batches of 32 utterances (8 speakers x 4 utterances), i.e. about 1.35 epochs over the 9,447-utterance universal corpus, on a CPU workstation, with a single seed (42). Losses are not converged at this budget. All EERs below are therefore far from state of the art and are only meaningful for *relative* comparisons between FlaxSpeaker checkpoints trained under the same budget.
 
-**Training-code provenance.** The released weights were produced by an earlier revision of the FlaxSpeaker training code than the current `main`. Evaluating released weights with the current code reproduces the archived numbers (verified for `univ_conformer_small_ge2e` and `ls_conformer_small_ge2e`); re-training the shipped `config.json` / YAML with the current code does **not** regenerate them (for `univ_conformer_small_ge2e` and `ls_conformer_small_ge2e`, seed 42 re-trained at the current revision gives 20.94 % / 21.40 % instead of the archived 19.40 % / 20.12 % pooled 1-utt EER; see `pretrained_models/r2_seed_and_control_results.json` in the GitHub repository). The seed-to-seed standard deviation of pooled 1-utt EER at the current revision is about 0.7-0.8 % absolute, so sub-1.5 % differences between checkpoints are not rankings.
+**Training-crop provenance.** The crop regime of this checkpoint **cannot be established** from the step-0 loss fingerprint (its triplets were drawn from an unseeded random stream by the training code in use at the time); the git history indicates variable-length crops (`variable_length=True` was passed explicitly on the triplet branch). Treat the shipped `variable_length_training` value as unverified for this checkpoint. Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, `pretrained_models/step0_fingerprints.json`): archived `0.0945`; current code with fixed 180-frame crops `0.0935`, with `U(90, 180)` crops `0.1044` (match: `neither`). Evaluating the released weights with the current code reproduces the archived metrics in `eval_results.json`. The seed-to-seed standard deviation of pooled 1-utt EER at this budget is about 0.7-0.8 % absolute, so sub-1.5 % differences between checkpoints are not rankings.
 
 For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reach about 0.9% EER on the full VoxCeleb1-O list (Desplanques et al., 2020), and sub-1M-parameter systems about 2% (Wang et al., EfficientTDNN, 2022). The 400-step checkpoints released here are 10-30x worse than that and are intended for relative comparisons within the FlaxSpeaker benchmark, not as state-of-the-art models.
 
@@ -74,6 +74,8 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 ## Quickstart Usage
 
 ### Python API (from Hugging Face Hub or Local Directory)
+
+Requires `flaxspeaker >= 0.3.0` (`pip install -U flaxspeaker`); the `0.2.0` wheel on PyPI predates the released checkpoints and cannot load them.
 
 ```python
 from flaxspeaker import load_pretrained

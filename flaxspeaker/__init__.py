@@ -36,7 +36,7 @@ from flaxspeaker import scoring
 from flaxspeaker import specaug
 from flaxspeaker import vad
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 HF_DEFAULT_NAMESPACE = hf_compat.HF_DEFAULT_NAMESPACE
 HF_COLLECTION_URL = hf_compat.HF_COLLECTION_URL

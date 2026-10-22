@@ -180,8 +180,9 @@ def draw_architecture_diagram(
             "75% Within / 25% Cross-Domain",
             "Domain temp: $p_d \\propto |\\mathcal{S}_d|^{0.35}$",
             "Mutually exclusive feature aug:",
-            "  35% log-Mel noise | 32.5% SpecAug",
-            "  32.5% clean; $T \\sim \\mathcal{U}(90, 180)$",
+            "  35% noise | 32.5% SpecAug | 32.5% clean",
+            "Crop: fixed $T{=}180$ (released zoo) /",
+            "  $T \\sim \\mathcal{U}(90, 180)$ (pipeline default)",
         ],
         "#F0FDF4",
         "#22C55E",
@@ -212,7 +213,7 @@ def draw_architecture_diagram(
         y_top,
         2.75,
         h_top,
-        "4. Pooling (x8) & Bottleneck",
+        "4. Pooling (7 + PFAS-SN) & Bottleneck",
         "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS-SN: 640-D)",
         [
             "7 heads: ATP ($N_h{=}4$ subspace), ASP,",
@@ -262,7 +263,7 @@ def draw_architecture_diagram(
         "44 HF Hub Models + TFLite FP32/INT8",
         [
             "Hugging Face Hub (wq2012/*): SafeTensors + config.json",
-            "jax2tf → TFLite FP32 / INT8 (1.8 s window, 3.44–3.62× smaller)",
+            "jax2tf → SavedModel → TFLite FP32 / INT8 (1.8 s window)",
             "Gradio demo (real inference) + tests.py CI (flake8 / pytype)",
         ],
         "#ECFEFF",
@@ -626,7 +627,7 @@ def draw_benchmark_charts(
         error_kw=err_kw3,
     )
     bm = ax.bar(
-        x3 + 1.5 * w3, mc3, w3, label="3-Domain Macro-Avg", color="#7C3AED"
+        x3 + 1.5 * w3, mc3, w3, label="3-Domain Macro-Avg (point estimate)", color="#7C3AED"
     )
     for b in bm:
         ax.text(
@@ -644,7 +645,8 @@ def draw_benchmark_charts(
     ax.set_xticklabels([t[0] for t in train_sets], fontsize=8.3)
     ax.set_ylabel("1-Utterance EER (%)", fontsize=9.2)
     ax.set_title(
-        "(c) Single-domain specialists vs. universal training (95% CIs)",
+        "(c) Single-domain specialists vs. universal training\n"
+        "(95% CIs on per-domain bars; macro-average = point estimate)",
         fontsize=10.0,
         fontweight="bold",
     )

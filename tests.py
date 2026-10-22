@@ -26,6 +26,28 @@ from flaxspeaker import vad
 EPS = 1e-5
 
 
+def _released_weights_available(model_id: str = "univ_conformer_tiny_ge2e") -> bool:
+    """True if the released checkpoint can be loaded without network access.
+
+    `model.safetensors` is git-ignored, so a fresh clone has no local weights and
+    `from_pretrained` would fall back to the Hub; tests that need real released weights
+    skip when neither local weights nor Hub access (`HF_HUB_OFFLINE` unset and a cached
+    snapshot or connectivity) are available.
+    """
+    local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pretrained_models", model_id)
+    if hf_compat.FlaxSpeakerModel._has_local_weights(local):
+        return True
+    if os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
+        return False
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(repo_id=f"wq2012/{model_id}", allow_patterns=["config.json"])
+        return True
+    except Exception:
+        return False
+
+
 class TestBase(unittest.TestCase):
 
     def setUp(self):
@@ -654,7 +676,7 @@ class TestExportAndHuggingFaceCompat(TestBase):
             "pretrained_models",
             "univ_conformer_tiny_ge2e",
         )
-        if hf_compat.FlaxSpeakerModel._has_local_weights(local_pm):
+        if hf_compat.FlaxSpeakerModel._has_local_weights(local_pm) and _released_weights_available():
             m_local = hf_compat.load_pretrained(local_pm)
             m_hub = hf_compat.load_pretrained("wq2012/univ_conformer_tiny_ge2e")
             m_short = hf_compat.load_pretrained("univ_conformer_tiny_ge2e")
@@ -930,12 +952,17 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
 
         models = hf_app.list_available_models()
         self.assertGreaterEqual(len(models), 44)
+        if not _released_weights_available("univ_conformer_small_ge2e"):
+            self.skipTest("released weights unavailable offline (no local safetensors, no Hub)")
         p1 = "hf_space/examples/librispeech_spk1_utt1.flac"
         p2 = "hf_space/examples/librispeech_spk1_utt2.flac"
-        # Default threshold = the model's own pooled 1-utt EER operating point.
+        # Default threshold = the model's own pooled EER operating point for the
+        # enrollment count actually used (1-utt for one, 3-utt for two or three).
         ops = hf_app.get_default_threshold("univ_conformer_small_ge2e")
         self.assertIn("pooled", ops)
+        self.assertIn("pooled_3utt", ops)
         self.assertGreater(ops["pooled"], 0.0)
+        self.assertNotEqual(ops["pooled"], ops["pooled_3utt"])
         verdict, details, fig = hf_app.verify_pair(
             p1,
             p2,
@@ -947,10 +974,23 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         )
         self.assertIn("SPEAKER", verdict)
         self.assertEqual(details["num_enrollment_utterances"], 2)
-        self.assertAlmostEqual(details["threshold"], round(ops["pooled"], 4), places=4)
+        self.assertAlmostEqual(details["threshold"], round(ops["pooled_3utt"], 4), places=4)
+        self.assertIn("pooled_3utt", details["threshold_source"])
         self.assertIn("model_inference_latency_ms", details)
         self.assertNotIn("as_norm_applied", details)
         self.assertIsNotNone(fig)
+        # Single enrollment -> 1-utt operating point; manual slider honoured when
+        # `auto_threshold=False`; both VAD knobs are reported.
+        _, details_1, _ = hf_app.verify_pair(p1, p2, "univ_conformer_small_ge2e", 0.123)
+        self.assertEqual(details_1["num_enrollment_utterances"], 1)
+        self.assertAlmostEqual(details_1["threshold"], round(ops["pooled"], 4), places=4)
+        _, details_m, _ = hf_app.verify_pair(
+            p1, p2, "univ_conformer_small_ge2e", 0.123, auto_threshold=False, vad_top_db=30.0
+        )
+        self.assertAlmostEqual(details_m["threshold"], 0.123, places=4)
+        self.assertEqual(details_m["threshold_source"], "manual slider")
+        self.assertAlmostEqual(details_m["vad_top_db"], 30.0)
+        self.assertAlmostEqual(details_m["vad_snr_margin_db"], 4.5)
 
     def test_encode_features_matches_run_inference_and_eer_threshold(self):
         """`encode_features` (masked fixed window; one compiled kernel) == `run_inference`."""
@@ -994,6 +1034,8 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         }
         self.assertAlmostEqual(model.eer_threshold(), 0.625)
         self.assertIsNone(model.eer_threshold("librispeech"))
+        if not _released_weights_available():
+            self.skipTest("released weights unavailable offline (no local safetensors, no Hub)")
         released = hf_compat.FlaxSpeakerModel.from_pretrained(
             "pretrained_models/univ_conformer_tiny_ge2e"
         )
@@ -1522,6 +1564,166 @@ class TestRound2NumericReferences(unittest.TestCase):
                 evaluation.compute_roc_auc(bad_labels, bad_scores)
             with self.assertRaises(ValueError):
                 evaluation.compute_bootstrap_eer_ci(bad_labels, bad_scores)
+
+
+class TestRound3ReleaseHygiene(unittest.TestCase):
+    """Round-3 checks: packaging, documentation references and training provenance."""
+
+    REPO = os.path.dirname(os.path.abspath(__file__))
+
+    def test_version_consistency(self):
+        import re
+
+        import flaxspeaker
+
+        with open(os.path.join(self.REPO, "pyproject.toml"), "r", encoding="utf-8") as f:
+            m_py = re.search(r'^version = "([^"]+)"', f.read(), re.M)
+        with open(os.path.join(self.REPO, "setup.py"), "r", encoding="utf-8") as f:
+            m_setup = re.search(r'^VERSION = "([^"]+)"', f.read(), re.M)
+        self.assertIsNotNone(m_py)
+        self.assertIsNotNone(m_setup)
+        assert m_py is not None and m_setup is not None
+        py_ver = m_py.group(1)
+        setup_ver = m_setup.group(1)
+        self.assertEqual(flaxspeaker.__version__, py_ver)
+        self.assertEqual(flaxspeaker.__version__, setup_ver)
+        # The published 0.2.0 wheel predates the released checkpoints; anything that
+        # ships `load_pretrained` must carry a strictly newer version number.
+        self.assertGreaterEqual(tuple(int(x) for x in py_ver.split(".")[:3]), (0, 3, 0))
+        with open(os.path.join(self.REPO, "CHANGELOG.md"), "r", encoding="utf-8") as f:
+            self.assertIn(f"## {py_ver}", f.read())
+
+    def test_readme_script_references_exist(self):
+        import re
+
+        for doc in ("README.md", "RESEARCH_REPORT.md", "CHANGELOG.md"):
+            with open(os.path.join(self.REPO, doc), "r", encoding="utf-8") as f:
+                text = f.read()
+            for rel in sorted(set(re.findall(r"scripts/[a-z_0-9]+\.py", text))):
+                self.assertTrue(
+                    os.path.exists(os.path.join(self.REPO, rel)),
+                    f"{doc} references non-existent {rel}",
+                )
+
+    def test_training_provenance_recorded_for_all_released_checkpoints(self):
+        import json
+
+        pm = os.path.join(self.REPO, "pretrained_models")
+        fp_path = os.path.join(pm, "step0_fingerprints.json")
+        with open(fp_path, "r", encoding="utf-8") as f:
+            fps = json.load(f)["checkpoints"]
+        self.assertEqual(len(fps), 44)
+        for mid in hf_compat.PRETRAINED_MODEL_IDS:
+            with open(os.path.join(pm, mid, "config.json"), "r", encoding="utf-8") as f:
+                cfg_json = json.load(f)
+            prov = cfg_json.get("training_provenance")
+            self.assertIsInstance(prov, dict, f"{mid}: no training_provenance block")
+            self.assertIn(prov["variable_length_training_actual"], (True, False, "unknown"))
+            self.assertEqual(prov["step0_fingerprint_match"], fps[mid]["match"])
+            self.assertEqual(prov["released_initial_loss"], fps[mid]["released_initial_loss"])
+            flag = cfg_json["experiment_dict"]["model"]["variable_length_training"]
+            if prov["variable_length_training_actual"] != "unknown":
+                self.assertEqual(flag, prov["variable_length_training_actual"], mid)
+            ycfg = configs.ExperimentConfig.from_yaml(
+                os.path.join(self.REPO, "configs", f"{mid}.yml")
+            )
+            self.assertEqual(bool(ycfg.model.variable_length_training), bool(flag), mid)
+            # The block round-trips through FlaxSpeakerConfig.
+            hf_cfg = hf_compat.FlaxSpeakerConfig.from_pretrained(os.path.join(pm, mid))
+            self.assertEqual(hf_cfg.training_provenance, prov)
+        # Every checkpoint reproduces its archived step-0 loss under exactly one crop regime,
+        # except the two unseeded triplet runs.
+        unknown = sorted(m for m, v in fps.items() if v["match"] == "neither")
+        self.assertEqual(unknown, ["ls_conformer_small_triplet", "univ_conformer_small_triplet"])
+
+    def test_model_card_provenance_paragraph(self):
+        from flaxspeaker import model_card
+
+        pm = os.path.join(self.REPO, "pretrained_models")
+        for mid, needle in (
+            ("univ_conformer_small_ge2e", "fixed 180-frame"),
+            ("ls_conformer_small_ge2e_contrast", "variable-length crops"),
+            ("univ_conformer_small_triplet", "cannot be established"),
+        ):
+            exp_cfg = hf_compat.FlaxSpeakerModel.load_exp_config(os.path.join(pm, mid))
+            text = model_card._provenance_paragraph(os.path.join(pm, mid), exp_cfg)
+            self.assertIn(needle, text, mid)
+            self.assertIn("step0_fingerprints.json", text)
+            self.assertNotIn("2026-10", text)  # no date-based reasoning
+
+    def test_feature_cache_signature_and_legacy_fallback(self):
+        cfg = configs.ExperimentConfig()
+        fe = feature_extraction.AudioFrontend(cfg.frontend, cfg.vad)
+        with tempfile.TemporaryDirectory() as tmp:
+            c = feature_extraction.FeatureCache(fe, cache_dir=os.path.join(tmp, "librispeech"))
+            self.assertTrue(c._cfg_signature.startswith("v3_"))
+            self.assertIsNotNone(c._legacy_signature)
+            self.assertTrue(c._legacy_signature.startswith("v2_"))
+            # Changing a field the v2 signature omitted changes the v3 signature and
+            # disables the legacy fallback (no stale .npy can match).
+            cfg2 = configs.ExperimentConfig()
+            cfg2.frontend.fmax = 7000.0
+            c2 = feature_extraction.FeatureCache(
+                feature_extraction.AudioFrontend(cfg2.frontend, cfg2.vad),
+                cache_dir=os.path.join(tmp, "librispeech"),
+            )
+            self.assertNotEqual(c._cfg_signature, c2._cfg_signature)
+            self.assertIsNone(c2._legacy_signature)
+            cfg3 = configs.ExperimentConfig()
+            cfg3.vad.snr_margin_db = 6.0
+            c3 = feature_extraction.FeatureCache(
+                feature_extraction.AudioFrontend(cfg3.frontend, cfg3.vad),
+                cache_dir=os.path.join(tmp, "librispeech"),
+            )
+            self.assertNotEqual(c._cfg_signature, c3._cfg_signature)
+            self.assertIsNone(c3._legacy_signature)
+            # A legacy (v2-named) file is found by the v3 cache with default config.
+            arr = np.zeros((7, 80), dtype=np.float32)
+            legacy_name = c._digest_name(c._legacy_signature, "/x/a.flac")
+            np.save(os.path.join(tmp, "librispeech", legacy_name), arr)
+            self.assertTrue(np.allclose(c.get("/x/a.flac"), arr))
+            v3_name = c._digest_name(c2._cfg_signature, "/x/a.flac")
+            self.assertFalse(os.path.exists(os.path.join(tmp, "librispeech", v3_name)))
+            # merged() unions in-memory entries and refuses mismatched signatures.
+            m = feature_extraction.FeatureCache.merged(fe, [c], cache_dir=os.path.join(tmp, "universal"))
+            self.assertEqual(len(m), 1)
+            with self.assertRaises(ValueError):
+                feature_extraction.FeatureCache.merged(fe, [c2], cache_dir=os.path.join(tmp, "universal"))
+            # Bounded memory.
+            small = feature_extraction.FeatureCache(fe, cache_dir=os.path.join(tmp, "librispeech"), max_memory_items=1)
+            small._cache["k1"] = arr
+            small._cache["k2"] = arr
+            small._evict_if_needed()
+            self.assertEqual(len(small), 1)
+
+    def test_vad_processor_does_not_mutate_config(self):
+        vc = configs.VadConfig(enabled=True, sample_rate=16000)
+        proc = vad.VadProcessor(vc, sample_rate=8000)
+        self.assertEqual(vc.sample_rate, 16000)
+        self.assertEqual(proc.config.sample_rate, 8000)
+
+    def test_eer_threshold_by_enrollment_count_and_vad_knobs(self):
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.CONFORMER
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(cfg)
+        model = hf_compat.FlaxSpeakerModel(config=hf_cfg)
+        model.eval_results = {
+            "multi_domain_eval": {
+                "domains_1utt": {"universal_pooled": {"eer_threshold": 0.6}},
+                "domains_3utt": {"universal_pooled": {"eer_threshold": 0.7}},
+            }
+        }
+        self.assertAlmostEqual(model.eer_threshold(), 0.6)
+        self.assertAlmostEqual(model.eer_threshold(num_enroll=1), 0.6)
+        self.assertAlmostEqual(model.eer_threshold(num_enroll=2), 0.7)
+        self.assertAlmostEqual(model.eer_threshold(num_enroll=3), 0.7)
+        fe = model.resolve_frontend(vad_top_db=30.0, vad_snr_margin_db=6.0)
+        self.assertAlmostEqual(fe.vad_processor.config.energy_db_threshold, 30.0)
+        self.assertAlmostEqual(fe.vad_processor.config.snr_margin_db, 6.0)
+        self.assertIs(model.resolve_frontend(), model.frontend)
+        # The private alias used by older scripts still works.
+        self.assertIs(model._resolve_frontend(), model.frontend)
 
 
 if __name__ == "__main__":

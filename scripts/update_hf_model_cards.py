@@ -7,6 +7,10 @@ For every `pretrained_models/<model_id>/`:
   2. with `--push`, uploads `README.md`, `config.json`, `eval_results.json` to
      `wq2012/<model_id>` and deletes the stale `preprocessor_config.json` from the Hub.
 
+Weights (`model.safetensors`, `flax_model.msgpack`, `*.tflite`) are not touched by this
+script; they were uploaded once with `huggingface_hub.upload_folder(repo_id=..., folder_path=
+"pretrained_models/<model_id>")` after `scripts/export_model.py` produced the directory.
+
 Usage:
     python scripts/update_hf_model_cards.py            # regenerate locally only
     python scripts/update_hf_model_cards.py --push     # also push to the Hub
@@ -51,6 +55,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--push", action="store_true")
     parser.add_argument("--only", nargs="*", default=None, help="subset of model ids")
+    parser.add_argument(
+        "--commit_message",
+        default=(
+            "v0.3.0: training-crop provenance (fixed T=180 crops for the released weights; "
+            "step-0 loss fingerprint; training_provenance block; variable_length_training "
+            "aligned with the weights), TFLite EER CIs and re-measured latencies, "
+            "flaxspeaker>=0.3.0 quickstart"
+        ),
+    )
     args = parser.parse_args()
 
     model_dirs = sorted(
@@ -81,11 +94,7 @@ def main() -> None:
         api.create_commit(
             repo_id=repo_id,
             operations=ops,
-            commit_message=(
-                "Round 2: honest model card (training budget, variant labels, Vox1-O 10-spk subset, "
-                "TFLite window, deviations), cleaned config.json, 26 dB Vox1-O subset metrics; "
-                "remove misleading preprocessor_config.json"
-            ),
+            commit_message=args.commit_message,
         )
         print(f"pushed {repo_id}")
 

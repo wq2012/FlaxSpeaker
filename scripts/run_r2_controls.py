@@ -126,11 +126,11 @@ def main(data_root: str, output_root: str, output_json: str, seeds: list[int], s
     spk_train_sets["universal"] = dataset.get_csv_spk_to_utts(univ_info["train_csv"])
     trials_sets["universal"] = dataset.load_trials_file(univ_info["trials_file"])
     multi_trials_sets["universal"] = rrb.load_multi_enroll_trials(univ_info["multi_trials_file"])
-    univ_cache = feature_extraction.FeatureCache(
-        frontend, cache_dir=os.path.join(data_root, "feature_cache", "universal")
+    univ_cache = feature_extraction.FeatureCache.merged(
+        frontend,
+        [caches[d] for d in ("librispeech", "cnceleb2", "voxceleb1")],
+        cache_dir=os.path.join(data_root, "feature_cache", "universal"),
     )
-    for dname in ("librispeech", "cnceleb2", "voxceleb1"):
-        univ_cache._cache.update(caches[dname]._cache)
     caches["universal"] = univ_cache
 
     results: dict[str, Any] = {

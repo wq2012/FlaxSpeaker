@@ -6,13 +6,22 @@ Measures:
      `model_int8.tflite` across `librispeech` (3,000 trials), `cnceleb2` (3,000 trials),
      `voxceleb1` (2,000 trials), `universal_pooled` (8,000 trials), and the 3-domain
      macro-average, alongside the full-sequence (<=500-frame) masked JAX EER.
+     Every EER carries a stratified trial-bootstrap 95 % CI
+     (`evaluation.compute_bootstrap_eer_ci`, 500 resamples, seed 42) under
+     `eer_ci95_low` / `eer_ci95_high` of the per-domain records.
   2. Utterance-level cosine similarity `cos(FP32, INT8)` (mean and min over all 1,988
      unique evaluation utterances).
-  3. Averaged per-utterance CPU latency (ms) over 100 timed invocations (after 5
-     warm-up calls).
+  3. Averaged per-utterance CPU latency (ms) over 50 timed invocations (after 5
+     warm-up calls), measured sequentially on an otherwise idle interpreter.
 
 Updates `pretrained_models/<model_id>/eval_results.json` (`"tflite_eval"`) and
-`pretrained_models/benchmark_results.json`.
+`pretrained_models/benchmark_results.json` (`experiments.<id>.tflite_eval`,
+`tflite_exports.<id>_fp32|_int8.tflite_eval` and their `latency_ms`, which is
+overwritten with the 50-run mean so that the single-call export-time number is not
+left behind).
+
+Features are extracted with each model's own frontend / VAD configuration
+(`pretrained_models/<model_id>/config.json`), not the library defaults.
 """
 
 import argparse
@@ -29,11 +38,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from flaxspeaker import configs  # noqa: E402
 from flaxspeaker import dataset  # noqa: E402
 from flaxspeaker import evaluation  # noqa: E402
 from flaxspeaker import export  # noqa: E402
 from flaxspeaker import feature_extraction  # noqa: E402
+from flaxspeaker import hf_compat  # noqa: E402
 
 TFLITE_MODEL_IDS = (
     "univ_conformer_small_ge2e",
@@ -56,15 +65,34 @@ def _score_trials_cosine(
     n2 = np.linalg.norm(e2, axis=-1, keepdims=True) + 1e-6
     scores = np.sum((e1 / n1) * (e2 / n2), axis=-1)
     eer, thr = evaluation.compute_eer_exact(labels, scores)
+    ci_low, ci_high = evaluation.compute_bootstrap_eer_ci(labels, scores)
     dcf001 = evaluation.compute_min_dcf(labels, scores, p_target=0.01)
     auc = evaluation.compute_roc_auc(labels, scores)
     return {
         "eer_percent": round(eer * 100.0, 2),
+        "eer_ci95_low": round(ci_low * 100.0, 2),
+        "eer_ci95_high": round(ci_high * 100.0, 2),
         "eer_threshold": round(float(thr), 6),
         "min_dcf_001": round(float(dcf001), 4),
         "roc_auc": round(float(auc), 4),
         "num_trials": len(trials),
     }
+
+
+def _load_feat_map(
+    model_id: str, pm_dir: str, cache_root: str, all_utts: list[str]
+) -> dict[str, np.ndarray]:
+    """Features for `all_utts` extracted with the model's own frontend / VAD config."""
+    model_dir = os.path.join(pm_dir, model_id)
+    exp_cfg = hf_compat.FlaxSpeakerModel.load_exp_config(model_dir)
+    frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
+    fcache = feature_extraction.FeatureCache(
+        frontend=frontend,
+        n_mfcc=exp_cfg.frontend.feature_dim,
+        cache_dir=os.path.join(cache_root, "universal"),
+    )
+    fcache.preload(all_utts, num_workers=8)
+    return {u: fcache.get(u) for u in all_utts}
 
 
 def _eval_one_model(
@@ -159,7 +187,15 @@ def _eval_one_model(
         "primary_domain": primary_dom,
         "protocol": primary_protocol,
         "eer_percent": domains_fp32[primary_dom]["eer_percent"],
+        "eer_ci95_fp32": [
+            domains_fp32[primary_dom]["eer_ci95_low"],
+            domains_fp32[primary_dom]["eer_ci95_high"],
+        ],
         "eer_percent_int8": domains_int8[primary_dom]["eer_percent"],
+        "eer_ci95_int8": [
+            domains_int8[primary_dom]["eer_ci95_low"],
+            domains_int8[primary_dom]["eer_ci95_high"],
+        ],
         "jax_full_seq_eer_percent": round(jax_full_eer, 2),
         "pooled_1utt_eer_fp32_percent": domains_fp32["universal_pooled"][
             "eer_percent"
@@ -222,23 +258,18 @@ def main() -> None:
         + domain_trials["voxceleb1"]
     )
 
-    exp_cfg = configs.ExperimentConfig()
-    frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
-    fcache = feature_extraction.FeatureCache(
-        frontend=frontend,
-        n_mfcc=exp_cfg.frontend.feature_dim,
-        cache_dir=os.path.join(cache_root, "universal"),
-    )
     all_utts = sorted(all_utts_set)
-    fcache.preload(all_utts, num_workers=8)
-    feat_map = {u: fcache.get(u) for u in all_utts}
-    print(f"Loaded features for {len(feat_map)} unique evaluation utterances.")
+    feat_maps = {
+        mid: _load_feat_map(mid, args.models_dir, cache_root, all_utts)
+        for mid in TFLITE_MODEL_IDS
+    }
+    print(f"Loaded features for {len(all_utts)} unique evaluation utterances.")
 
     results: dict[str, dict[str, Any]] = {}
     with futures.ThreadPoolExecutor(max_workers=6) as ex:
         futs = [
             ex.submit(
-                _eval_one_model, mid, args.models_dir, domain_trials, feat_map
+                _eval_one_model, mid, args.models_dir, domain_trials, feat_maps[mid]
             )
             for mid in TFLITE_MODEL_IDS
         ]
@@ -247,7 +278,7 @@ def main() -> None:
             results[mid] = tfl_eval
 
     # Sequentially measure single-thread / uncontended per-utterance CPU latency
-    sample_feat = feat_map[all_utts[0]]
+    sample_feat = feat_maps[TFLITE_MODEL_IDS[0]][all_utts[0]]
     for mid in TFLITE_MODEL_IDS:
         model_dir = os.path.join(args.models_dir, mid)
         runner_fp32 = export.TFLiteSpeakerRunner(
@@ -295,8 +326,27 @@ def main() -> None:
 
         if mid in bench.get("experiments", {}):
             bench["experiments"][mid]["tflite_eval"] = tfl_eval
-        if mid in bench.get("tflite_exports", {}):
-            bench["tflite_exports"][mid]["tflite_eval"] = tfl_eval
+        # `tflite_exports` is keyed `<model_id>_fp32` / `<model_id>_int8`; overwrite the
+        # export-time single-call `latency_ms` with the 50-run mean measured above.
+        exports = bench.setdefault("tflite_exports", {})
+        for suffix, lat_key in (
+            ("fp32", "latency_ms_fp32_mean_50runs"),
+            ("int8", "latency_ms_int8_mean_50runs"),
+        ):
+            exp_key = f"{mid}_{suffix}"
+            if exp_key in exports:
+                exports[exp_key]["latency_ms"] = tfl_eval[lat_key]
+                exports[exp_key]["latency_ms_source"] = (
+                    "scripts/eval_tflite_models.py: mean of 50 sequential calls "
+                    "after 5 warm-up calls"
+                )
+                exports[exp_key]["tflite_eval"] = {
+                    "eer_percent": tfl_eval[
+                        "eer_percent" if suffix == "fp32" else "eer_percent_int8"
+                    ],
+                    "eer_ci95": tfl_eval[f"eer_ci95_{suffix}"],
+                    "primary_domain": tfl_eval["primary_domain"],
+                }
 
     with open(bench_path, "w", encoding="utf-8") as f:
         json.dump(bench, f, indent=2)

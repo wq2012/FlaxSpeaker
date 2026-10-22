@@ -348,9 +348,10 @@ def encode_features(
     so a single warm-up call compiles the kernel used by all subsequent inputs
     (what an interactive demo needs for steady-state latency). Because every
     backbone is padding-mask invariant, the embedding equals `run_inference`'s up to
-    floating-point noise for inputs of >= 32 frames (tested in `tests.py`); for
-    shorter inputs this function keeps the benchmark's tiling (whole tiled block)
-    whereas `run_inference` truncates the tiling to 32 frames.
+    floating-point noise for inputs of any length (tested in `tests.py`): inputs of
+    >= 32 frames are zero-padded / centre-cropped with a validity mask, and inputs
+    shorter than 32 frames are tiled and truncated to exactly 32 valid frames by
+    both paths (`prepare_eval_input` and `run_inference`).
     """
     padded, mask = prepare_eval_input(np.asarray(features), exp_cfg)
     emb = _jit_encode_eval_batch(

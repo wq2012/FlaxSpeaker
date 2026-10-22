@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Optional
 import numpy as np
 
@@ -114,16 +115,30 @@ def smooth_vad_mask(
 
 
 class VadProcessor:
-    """Configurable Voice Activity Detector operating on waveforms or feature matrices."""
+    """Configurable Voice Activity Detector operating on waveforms or feature matrices.
+
+    Modes (``VadConfig.mode``):
+
+    * ``"energy"`` -- frame log-energy against the adaptive threshold of Eq. (1)
+      (``max(energy_threshold_db, P95 - energy_db_threshold, P10 + snr_margin_db)``);
+    * ``"spectral"`` -- the **union** of the energy mask and a spectral-flatness /
+      band-ratio mask (frames pass if *either* detector fires); it is therefore more
+      permissive than ``"energy"``, not a spectral-only detector;
+    * ``"hybrid"`` -- the **intersection** of the two masks (more aggressive).
+
+    The processor never mutates the ``VadConfig`` it is given: ``sample_rate``
+    overrides are applied to a private copy.
+    """
 
     def __init__(
         self,
         config: Optional[configs.VadConfig] = None,
         sample_rate: Optional[int] = None,
     ):
-        self.config = config or configs.VadConfig(enabled=True)
-        if sample_rate is not None:
-            self.config.sample_rate = sample_rate
+        cfg = config if config is not None else configs.VadConfig(enabled=True)
+        if sample_rate is not None and int(sample_rate) != int(cfg.sample_rate):
+            cfg = dataclasses.replace(cfg, sample_rate=int(sample_rate))
+        self.config = cfg
 
     def normalize_waveform(self, waveform: np.ndarray) -> np.ndarray:
         """Applies automatic gain control (peak normalization) to [-1, 1] when enabled."""
@@ -231,7 +246,16 @@ class VadProcessor:
         waveform: Optional[np.ndarray] = None,
         pre_normalized: bool = False,
     ) -> np.ndarray:
-        """Filters frame-level acoustic features of shape (T, D) using VAD."""
+        """Filters frame-level acoustic features of shape (T, D) using VAD.
+
+        When ``waveform`` is given, the frame mask is computed on the waveform with the
+        VAD's own ``frame_size_ms`` / ``frame_step_ms`` grid. If that grid differs from
+        the feature frame grid (e.g. a different hop or STFT centring), the mask is
+        aligned to ``features.shape[0]`` by nearest-neighbour resampling of frame
+        indices -- adequate for the +/-1-frame offsets that arise in practice, but not a
+        re-detection on the feature grid. Without a waveform, a feature-domain energy
+        proxy (mean log-mel per frame) is thresholded instead.
+        """
         features = np.asarray(features, dtype=np.float32)
         if not self.config.enabled or features.shape[0] <= 4:
             return features

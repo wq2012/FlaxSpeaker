@@ -115,6 +115,7 @@ class FlaxSpeakerConfig(PretrainedConfig):
         scoring_type: str = "cosine",
         loss_type: str = "ge2e_softmax",
         experiment_dict: Optional[dict[str, Any]] = None,
+        training_provenance: Optional[dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -136,6 +137,11 @@ class FlaxSpeakerConfig(PretrainedConfig):
         self.scoring_type = scoring_type
         self.loss_type = loss_type
         self.experiment_dict = experiment_dict or {}
+        # How the *released* weights were actually trained, when this differs from
+        # the recipe in `experiment_dict` (e.g. `variable_length_training_actual`,
+        # `crop_frames`, `training_code`, `step0_loss_fingerprint`). Written by
+        # `scripts/write_training_provenance.py`; `None` for freshly trained models.
+        self.training_provenance = training_provenance
 
     @classmethod
     def from_experiment_config(
@@ -220,35 +226,60 @@ class FlaxSpeakerModel:
         }
         return neural_net.count_parameters(enc_only)
 
-    def eer_threshold(self, domain: str = "universal_pooled") -> Optional[float]:
-        """Decision threshold at the checkpoint's own 1-utt EER operating point.
+    def eer_threshold(
+        self, domain: str = "universal_pooled", num_enroll: int = 1
+    ) -> Optional[float]:
+        """Decision threshold at the checkpoint's own EER operating point.
 
         Read from `eval_results.json` (`multi_domain_eval.domains_1utt[domain]
-        .eer_threshold`); `None` if the checkpoint has no such record. Scores are on
-        the model's own scale (cosine, Dr-Vector or PFAS), so this is the only
-        default that is meaningful across scorers.
+        .eer_threshold` for `num_enroll == 1`, `domains_3utt[domain].eer_threshold`
+        for `num_enroll >= 2`, i.e. the 3-utterance multi-enrollment protocol); `None`
+        if the checkpoint has no such record. Scores are on the model's own scale
+        (cosine, Dr-Vector or PFAS), so this is the only default that is meaningful
+        across scorers.
         """
         if not self.eval_results:
             return None
-        d1 = self.eval_results.get("multi_domain_eval", {}).get("domains_1utt", {})
-        rec = d1.get(domain)
+        md = self.eval_results.get("multi_domain_eval", {})
+        block = "domains_3utt" if int(num_enroll) >= 2 else "domains_1utt"
+        rec = md.get(block, {}).get(domain)
+        if rec is None and block == "domains_3utt":
+            # Fall back to the 1-utt operating point if no multi-enroll record exists.
+            rec = md.get("domains_1utt", {}).get(domain)
         if rec is None and domain == "universal_pooled":
             rec = self.eval_results.get("in_domain_eval")
         if isinstance(rec, dict) and "eer_threshold" in rec:
             return float(rec["eer_threshold"])
         return None
 
+    @staticmethod
+    def load_exp_config(model_dir: str) -> configs.ExperimentConfig:
+        """The `ExperimentConfig` stored in a checkpoint directory's `config.json`.
+
+        Does not instantiate the network; useful for scripts that only need the
+        model's frontend / VAD configuration (e.g. TFLite evaluation).
+        """
+        return FlaxSpeakerConfig.from_pretrained(model_dir).to_experiment_config()
+
     def __call__(self, features: jax.Array) -> jax.Array:
         """Forward pass on batched features `(B, T, F) -> (B, D)`."""
         return self._jit_apply(self.state.params, features)
 
-    def _resolve_frontend(
+    def resolve_frontend(
         self,
         apply_vad: Optional[bool] = None,
         vad_top_db: Optional[float] = None,
+        vad_snr_margin_db: Optional[float] = None,
     ) -> feature_extraction.AudioFrontend:
-        """Resolve an AudioFrontend with optional VAD overrides."""
-        if apply_vad is None and vad_top_db is None:
+        """Resolve an AudioFrontend with optional VAD overrides.
+
+        `vad_top_db` maps to `VadConfig.energy_db_threshold` (frames more than this
+        many dB below the utterance's 95th-percentile energy are dropped) and
+        `vad_snr_margin_db` to `VadConfig.snr_margin_db` (margin above the adaptive
+        noise-floor percentile); see Eq. (1) of the paper. These are the same two knobs
+        exposed by `scripts/inference.py` and the Gradio demo.
+        """
+        if apply_vad is None and vad_top_db is None and vad_snr_margin_db is None:
             return self.frontend
         vad_cfg = dataclasses.replace(
             self.exp_config.vad,
@@ -262,10 +293,18 @@ class FlaxSpeakerModel:
                 if vad_top_db is not None
                 else self.exp_config.vad.energy_db_threshold
             ),
+            snr_margin_db=(
+                float(vad_snr_margin_db)
+                if vad_snr_margin_db is not None
+                else self.exp_config.vad.snr_margin_db
+            ),
         )
         return feature_extraction.AudioFrontend(
             self.exp_config.frontend, vad_cfg
         )
+
+    # Backwards-compatible private alias.
+    _resolve_frontend = resolve_frontend
 
     def extract_embedding(
         self,
@@ -274,6 +313,7 @@ class FlaxSpeakerModel:
         full_sequence: Optional[bool] = None,
         apply_vad: Optional[bool] = None,
         vad_top_db: Optional[float] = None,
+        vad_snr_margin_db: Optional[float] = None,
     ) -> np.ndarray:
         """Extract speaker embedding from an audio file path or 1D waveform.
 
@@ -284,8 +324,10 @@ class FlaxSpeakerModel:
         `full_sequence=False` (or `exp_config.eval.full_sequence_inference = False`)
         uses the sliding-window path in `evaluation.run_inference`.
         """
-        active_frontend = self._resolve_frontend(
-            apply_vad=apply_vad, vad_top_db=vad_top_db
+        active_frontend = self.resolve_frontend(
+            apply_vad=apply_vad,
+            vad_top_db=vad_top_db,
+            vad_snr_margin_db=vad_snr_margin_db,
         )
         if isinstance(audio_or_path, str):
             feats = active_frontend.extract_from_file(audio_or_path)
@@ -439,6 +481,7 @@ class FlaxSpeakerModel:
         full_sequence: Optional[bool] = None,
         apply_vad: Optional[bool] = None,
         vad_top_db: Optional[float] = None,
+        vad_snr_margin_db: Optional[float] = None,
     ) -> float:
         """Compute verification similarity score between enrollment and test audio.
 
@@ -450,6 +493,7 @@ class FlaxSpeakerModel:
             full_sequence=full_sequence,
             apply_vad=apply_vad,
             vad_top_db=vad_top_db,
+            vad_snr_margin_db=vad_snr_margin_db,
         )
         if isinstance(enroll_audio, (list, tuple)):
             e_embs = [
@@ -458,6 +502,7 @@ class FlaxSpeakerModel:
                     full_sequence=full_sequence,
                     apply_vad=apply_vad,
                     vad_top_db=vad_top_db,
+                    vad_snr_margin_db=vad_snr_margin_db,
                 )
                 for item in enroll_audio
             ]
@@ -467,6 +512,7 @@ class FlaxSpeakerModel:
             full_sequence=full_sequence,
             apply_vad=apply_vad,
             vad_top_db=vad_top_db,
+            vad_snr_margin_db=vad_snr_margin_db,
         )
         return self.score_embeddings(e_emb, t_emb)
 

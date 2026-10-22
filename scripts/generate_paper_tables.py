@@ -77,6 +77,11 @@ def macro(e: dict, n: int) -> dict:
     return e["multi_domain_eval"][f"universal_macro_avg_{n}utt"]
 
 
+def bold_max(values: list[float], fmt=f2) -> list[str]:
+    best = max(values)
+    return [f"\\textbf{{{fmt(v)}}}" if v == best else fmt(v) for v in values]
+
+
 def bold_min(values: list[float], fmt=f2) -> list[str]:
     m = min(values)
     return [f"\\textbf{{{fmt(v)}}}" if v == m else fmt(v) for v in values]
@@ -100,6 +105,10 @@ def main(paper_dir: str) -> None:
     vox = load("vox1_o_10spk_subset_results.json")
     r2_path = os.path.join(PM, "r2_seed_and_control_results.json")
     r2 = json.load(open(r2_path, encoding="utf-8")) if os.path.exists(r2_path) else {}
+    r3_path = os.path.join(PM, "r3_fixed_crop_controls.json")
+    r3 = json.load(open(r3_path, encoding="utf-8")) if os.path.exists(r3_path) else {}
+    fp_path = os.path.join(PM, "step0_fingerprints.json")
+    fps = json.load(open(fp_path, encoding="utf-8")) if os.path.exists(fp_path) else {}
     ex = bench["experiments"]
     assert len(ex) == 44, len(ex)
 
@@ -219,7 +228,8 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("spearmanPooledVox", f"{rho:.2f}"))
     nums.append(macro_def("spearmanPooledVoxP", f"{pval:.2f}"))
     nums.append(macro_def("spearmanInVoxVox", f"{rho_v:.2f}"))
-    nums.append(macro_def("spearmanInVoxVoxP", f"{pval_v:.1e}".replace("e-0", "e-")))
+    mant, expo = f"{pval_v:.1e}".split("e")
+    nums.append(macro_def("spearmanInVoxVoxP", f"{mant}\\times10^{{{int(expo)}}}"))
 
     # Ablations.
     h = abl["training_horizon_ablation"]
@@ -262,6 +272,74 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def(f"vl{tag}ShortLsOne", f2(sh["domains_1utt"]["librispeech"]["eer_percent"])))
         nums.append(macro_def(f"vl{tag}ShortLsThree", f2(sh["domains_3utt"]["librispeech"]["eer_percent"])))
 
+    # Fixed-crop controls (same code, same crop regime as the released zoo).
+    fc_mix = r3.get("domain_mixing_fixed_crop", {})
+    nums.append(macro_def("fixedCropControlsAvailable", "1" if fc_mix else "0"))
+    for k, tag in (("p_within_0.0", "Zero"), ("p_within_1.0", "One")):
+        rec = fc_mix.get(k)
+        if rec:
+            p = rec["multi_domain_eval"]["domains_1utt"]["universal_pooled"]
+            nums.append(macro_def(f"fcMix{tag}PooledOne", f2(p["eer_percent"])))
+            nums.append(macro_def(f"fcMix{tag}PooledOneLo", f2(p["eer_ci95_low_percent"])))
+            nums.append(macro_def(f"fcMix{tag}PooledOneHi", f2(p["eer_ci95_high_percent"])))
+            nums.append(macro_def(f"fcMix{tag}MacroOne", f2(rec["multi_domain_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
+            nums.append(macro_def(f"fcMix{tag}InitLoss", f"{rec['initial_loss']:.4f}"))
+    # The fixed-crop p_within = 0.75, seed 42 arm is the archived Study-3 fixed-length run.
+    vfix = vl["variable_length_false"]
+    pfix = vfix["full_seq_eval"]["domains_1utt"]["universal_pooled"]
+    nums.append(macro_def("fcMixDefaultPooledOne", f2(pfix["eer_percent"])))
+    nums.append(macro_def("fcMixDefaultPooledOneLo", f2(pfix["eer_ci95_low_percent"])))
+    nums.append(macro_def("fcMixDefaultPooledOneHi", f2(pfix["eer_ci95_high_percent"])))
+    nums.append(macro_def("fcMixDefaultMacroOne", f2(vfix["full_seq_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
+    nums.append(macro_def("fcMixDefaultInitLoss", f"{vfix['initial_loss']:.4f}"))
+    nums.append(macro_def("fcMixDefaultFinalLoss", f"{vfix['final_loss']:.4f}"))
+    fc_seed = r3.get("seed_noise_floor_fixed_crop", {}).get("univ_conformer_small_ge2e")
+    nums.append(macro_def("fixedCropSeedFloorAvailable", "1" if fc_seed and "mean_std_over_seeds" in fc_seed else "0"))
+    if fc_seed and "mean_std_over_seeds" in fc_seed:
+        ms = fc_seed["mean_std_over_seeds"]
+        seeds_sorted = sorted(fc_seed["per_seed"], key=int)
+        nums.append(macro_def("fcSeedN", str(len(seeds_sorted))))
+        nums.append(macro_def("fcSeedSeeds", ", ".join(seeds_sorted)))
+        nums.append(macro_def("fcSeedPooledOneList", " / ".join(f2(fc_seed["per_seed"][sd]["summary"]["pooled_1utt_eer"]) for sd in seeds_sorted)))
+        for key, ktag in (("pooled_1utt_eer", "PooledOne"), ("macro_1utt_eer", "MacroOne"), ("pooled_3utt_eer", "PooledThree"), ("macro_3utt_eer", "MacroThree")):
+            nums.append(macro_def("fcSeed" + ktag + "Mean", f2(ms[key]["mean"])))
+            nums.append(macro_def("fcSeed" + ktag + "Std", f2(ms[key]["std"])))
+            nums.append(macro_def("fcSeed" + ktag + "Min", f2(ms[key]["min"])))
+            nums.append(macro_def("fcSeed" + ktag + "Max", f2(ms[key]["max"])))
+    ls_fc = r3.get("ls_fixed_crop_seed42", {}).get("ls_conformer_small_ge2e")
+    nums.append(macro_def("lsFixedRerunAvailable", "1" if ls_fc else "0"))
+    if ls_fc:
+        sm = ls_fc["summary"]
+        nums.append(macro_def("lsFixedRerunPooledOne", f2(sm["pooled_1utt_eer"])))
+        nums.append(macro_def("lsFixedRerunMacroOne", f2(sm["macro_1utt_eer"])))
+        nums.append(macro_def("lsFixedRerunLsOne", f2(sm["ls_1utt_eer"])))
+        nums.append(macro_def("lsFixedRerunPooledThree", f2(sm["pooled_3utt_eer"])))
+        pls = ls_fc["multi_domain_eval"]["domains_1utt"]["universal_pooled"]
+        nums.append(macro_def("lsFixedRerunPooledOneLo", f2(pls["eer_ci95_low_percent"])))
+        nums.append(macro_def("lsFixedRerunPooledOneHi", f2(pls["eer_ci95_high_percent"])))
+        nums.append(macro_def("lsFixedRerunInitLoss", f"{float(ls_fc['initial_loss']):.4f}"))
+        nums.append(macro_def("lsFixedRerunFinalLoss", f"{float(ls_fc['final_loss']):.4f}"))
+    nums.append(macro_def("fixedCropCommit", tex_escape(str(r3.get("code_commit", "")))))
+    # Step-0 fingerprint histogram.
+    fp_ck = fps.get("checkpoints", {})
+    nums.append(macro_def("fpAvailable", "1" if fp_ck else "0"))
+    if fp_ck:
+        hist = {}
+        for v in fp_ck.values():
+            hist[v["match"]] = hist.get(v["match"], 0) + 1
+        nums.append(macro_def("fpTotal", str(len(fp_ck))))
+        nums.append(macro_def("fpNumFixed", str(hist.get("fixed", 0))))
+        nums.append(macro_def("fpNumFixedApprox", str(hist.get("fixed_approx", 0))))
+        nums.append(macro_def("fpNumFixedAll", str(hist.get("fixed", 0) + hist.get("fixed_approx", 0))))
+        nums.append(macro_def("fpNumVariable", str(hist.get("variable", 0) + hist.get("variable_approx", 0))))
+        nums.append(macro_def("fpNumBoth", str(hist.get("both", 0))))
+        nums.append(macro_def("fpNumNeither", str(hist.get("neither", 0))))
+        nums.append(macro_def("fpCommit", tex_escape(str(fps.get("code_commit", "")))))
+        nums.append(macro_def("fpNeitherList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] == "neither")))
+        nums.append(macro_def("fpBothList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] == "both")))
+        nums.append(macro_def("fpVariableList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] in ("variable", "variable_approx"))))
+        nums.append(macro_def("fpFixedApproxList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] == "fixed_approx")))
+
     # TFLite.
     tf = bench["tflite_exports"]
     ratios, fp32_mb, int8_mb, cos = [], [], [], []
@@ -292,7 +370,7 @@ def main(paper_dir: str) -> None:
         ("tfliteLsEcapa", "ls_ecapa_tdnn_small_ge2e"),
         ("tfliteLsLstm", "ls_lstm_small_ge2e"),
     ]
-    tfl_cos_means, tfl_eer_deltas = [], []
+    tfl_cos_means, tfl_cos_mins, tfl_eer_deltas, tfl_trunc = [], [], [], []
     for ttag, tmid in tfl_tags:
         te = ex[tmid].get("tflite_eval", {})
         if te:
@@ -303,11 +381,18 @@ def main(paper_dir: str) -> None:
             nums.append(macro_def(ttag + "LatFp", f2(te["latency_ms_fp32_mean_50runs"])))
             nums.append(macro_def(ttag + "LatInt", f2(te["latency_ms_int8_mean_50runs"])))
             tfl_cos_means.append(te["cos_fp32_int8_mean"])
+            tfl_cos_mins.append(te["cos_fp32_int8_min"])
             tfl_eer_deltas.append(abs(te["eer_percent_int8"] - te["eer_percent"]))
+            tfl_trunc.append(te["eer_percent"] - te["jax_full_seq_eer_percent"])
     if tfl_cos_means:
         nums.append(macro_def("tfliteCosMeanMin", f"{min(tfl_cos_means):.6f}"))
         nums.append(macro_def("tfliteCosMeanMax", f"{max(tfl_cos_means):.6f}"))
+        nums.append(macro_def("tfliteCosUttMin", f"{min(tfl_cos_mins):.6f}"))
         nums.append(macro_def("tfliteEerDeltaMax", f2(max(tfl_eer_deltas))))
+        nums.append(macro_def("tfliteTruncMin", f2(min(tfl_trunc))))
+        nums.append(macro_def("tfliteTruncMax", f2(max(tfl_trunc))))
+        lat_ratio = ex["univ_lstm_small_ge2e"]["tflite_eval"]
+        nums.append(macro_def("tfliteLstmSpeedup", f"{lat_ratio['latency_ms_fp32_mean_50runs'] / lat_ratio['latency_ms_int8_mean_50runs']:.1f}"))
 
     # Round-2 controls.
     seed_rows = []
@@ -342,6 +427,9 @@ def main(paper_dir: str) -> None:
             nums.append(macro_def(tag + "MacroThree", f2(sm["macro_3utt_eer"])))
             nums.append(macro_def(tag + "InitLoss", f"{float(rec['initial_loss']):.4f}"))
             nums.append(macro_def(tag + "FinalLoss", f"{float(rec['final_loss']):.4f}"))
+            prr = rec["multi_domain_eval"]["domains_1utt"]["universal_pooled"]
+            nums.append(macro_def(tag + "PooledOneLo", f2(prr["eer_ci95_low_percent"])))
+            nums.append(macro_def(tag + "PooledOneHi", f2(prr["eer_ci95_high_percent"])))
     h800 = r2.get("training_horizon_800_own_schedule", {}).get("steps_800_own_schedule")
     nums.append(macro_def("horizonEightOwnAvailable", "1" if h800 else "0"))
     if h800:
@@ -449,12 +537,15 @@ def main(paper_dir: str) -> None:
     cols = list(zip(*rows))
     b1 = bold_min(list(cols[1]), f4)
     b2 = bold_min(list(cols[2]), f4)
+    a1 = bold_max(list(cols[3]), f4)
+    a2 = bold_max(list(cols[4]), f4)
     bv = bold_min(list(cols[5]))
+    bvd = bold_min(list(cols[8]), f4)
     lines = []
     for i, r in enumerate(rows):
         if i == len(UNIV_ORDER):
             lines.append("\\midrule")
-        lines.append(f"\\texttt{{{tex_escape(r[0])}}} & {b1[i]} / {b2[i]} & {f4(r[3])} / {f4(r[4])} & {bv[i]} [{f2(r[6])}, {f2(r[7])}] & {f4(r[8])} \\\\")
+        lines.append(f"\\texttt{{{tex_escape(r[0])}}} & {b1[i]} / {b2[i]} & {a1[i]} / {a2[i]} & {bv[i]} [{f2(r[6])}, {f2(r[7])}] & {bvd[i]} \\\\")
     tbl = ("\\begin{tabular}{@{}lccc c@{}}\n\\toprule\n"
            "\\textbf{Model} & \\textbf{Macro minDCF 1/3} & \\textbf{Pooled AUC 1/3} & "
            "\\textbf{Vox1-O subset EER [95\\% CI]} & \\textbf{Subset minDCF} \\\\\n\\midrule\n"
@@ -472,10 +563,18 @@ def main(paper_dir: str) -> None:
         cells.append(f"{f2(p1['eer_percent'])} [{f2(p1['eer_ci95_low_percent'])}, {f2(p1['eer_ci95_high_percent'])}] / {f2(d_3['universal_pooled']['eer_percent'])}")
         return " & ".join(cells) + " \\\\"
 
-    lines = ["\\multirow{3}{*}{\\textbf{1. Stratified batching}}"]
-    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.00$ (pure cross-domain)", dm["p_within_0.0"]["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$ (default)", dm["p_within_0.75"]["multi_domain_eval"], copied=True))
-    lines.append(" & " + row_from_md("$p_{\\text{within}} = 1.00$ (pure within-domain)", dm["p_within_1.0"]["multi_domain_eval"]))
+    rr_u_abl = rerun.get("models", {}).get("univ_conformer_small_ge2e")
+    n_s1 = 1 + 2 + (1 if rr_u_abl else 0) + (3 if fc_mix else 0)
+    lines = [f"\\multirow{{{n_s1}}}{{*}}{{\\textbf{{1. Stratified batching}}}}"]
+    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$, fixed $T{=}180$ (released)", dm["p_within_0.75"]["multi_domain_eval"], copied=True))
+    if fc_mix:
+        lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.00$, fixed $T{=}180$ (\\texttt{HEAD})", fc_mix["p_within_0.0"]["multi_domain_eval"]))
+        lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$, fixed $T{=}180$ (\\texttt{HEAD})", vl["variable_length_false"]["full_seq_eval"]))
+        lines.append(" & " + row_from_md("$p_{\\text{within}} = 1.00$, fixed $T{=}180$ (\\texttt{HEAD})", fc_mix["p_within_1.0"]["multi_domain_eval"]))
+    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.00$, $T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD})", dm["p_within_0.0"]["multi_domain_eval"]))
+    if rr_u_abl:
+        lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$, $T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD})", rr_u_abl["multi_domain_eval"]))
+    lines.append(" & " + row_from_md("$p_{\\text{within}} = 1.00$, $T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD})", dm["p_within_1.0"]["multi_domain_eval"]))
     lines.append("\\midrule")
     lines.append("\\multirow{4}{*}{\\textbf{2. Ext.-set softmax \\& Dr-Vectors}}")
     lines.append(" & " + row_from_md("Pure ext.-set softmax (paper Eq.~2), cosine", xs["ext_softmax_pure_eq3"]["multi_domain_eval"]))
@@ -483,31 +582,81 @@ def main(paper_dir: str) -> None:
     lines.append(" & " + row_from_md("3-term Dr-Vector variant$^{*}$ + pure ext.-set", xs["dr_vectors_3term_pure_eq7"]["multi_domain_eval"]))
     lines.append(" & " + row_from_md("1-term Dr-Vector variant$^{*}$ + BXS$^{*}$", xs["dr_vectors_1term_blended"]["multi_domain_eval"], copied=True))
     lines.append("\\midrule")
-    lines.append("\\multirow{4}{*}{\\textbf{3. Variable vs.\\ fixed length}}")
-    lines.append(" & " + row_from_md("$T \\sim \\mathcal{U}(90,180)$, full-sequence eval", vl["variable_length_true"]["full_seq_eval"], copied=True))
-    lines.append(" & " + row_from_md("fixed $T = 180$, full-sequence eval", vl["variable_length_false"]["full_seq_eval"]))
-    lines.append(" & " + row_from_md("$T \\sim \\mathcal{U}(90,180)$, 1.0\\,s (100-frame) eval", vl["variable_length_true"]["short_1s_eval"], copied=True))
-    lines.append(" & " + row_from_md("fixed $T = 180$, 1.0\\,s (100-frame) eval", vl["variable_length_false"]["short_1s_eval"]))
+    n_s3 = 4 + (1 if rr_u_abl else 0)
+    lines.append(f"\\multirow{{{n_s3}}}{{*}}{{\\textbf{{3. Fixed vs.\\ variable-length crops}}}}")
+    lines.append(" & " + row_from_md("fixed $T{=}180$ (released), full-sequence eval", vl["variable_length_true"]["full_seq_eval"], copied=True))
+    lines.append(" & " + row_from_md("fixed $T{=}180$ (\\texttt{HEAD}), full-sequence eval", vl["variable_length_false"]["full_seq_eval"]))
+    if rr_u_abl:
+        lines.append(" & " + row_from_md("$T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD}), full-sequence eval", rr_u_abl["multi_domain_eval"]))
+    lines.append(" & " + row_from_md("fixed $T{=}180$ (released), 1.0\\,s (100-frame) eval", vl["variable_length_true"]["short_1s_eval"], copied=True))
+    lines.append(" & " + row_from_md("fixed $T{=}180$ (\\texttt{HEAD}), 1.0\\,s (100-frame) eval", vl["variable_length_false"]["short_1s_eval"]))
     lines.append("\\midrule")
-    rr_u_abl = rerun.get("models", {}).get("univ_conformer_small_ge2e")
     n_h = 3 + (1 if h800 else 0) + (1 if rr_u_abl else 0)
     lines.append(f"\\multirow{{{n_h}}}{{*}}{{\\textbf{{4. Training horizon}}}}")
-    lines.append(" & " + row_from_md("400 steps (released checkpoint, earlier revision)", h["steps_400"]["multi_domain_eval"], copied=True))
+    lines.append(" & " + row_from_md("400 steps (released)", h["steps_400"]["multi_domain_eval"], copied=True))
     if rr_u_abl:
-        lines.append(" & " + row_from_md("400 steps, same revision as ablations (\\texttt{HEAD}, seed 42)", rr_u_abl["multi_domain_eval"]))
+        lines.append(" & " + row_from_md("400 steps, same revision as ablations (\\texttt{HEAD})", rr_u_abl["multi_domain_eval"]))
     lines.append(" & " + row_from_md("1,200-step run, snapshot at step 800 (LR mid-schedule)", h["steps_800"]["multi_domain_eval"]))
     if h800:
-        lines.append(" & " + row_from_md("800 steps, own 800-step schedule (Round 2)", h800["multi_domain_eval"]))
+        lines.append(" & " + row_from_md("800 steps, own 800-step schedule (\\texttt{HEAD})", h800["multi_domain_eval"]))
     lines.append(" & " + row_from_md("1,200 steps (3$\\times$ budget)", h["steps_1200"]["multi_domain_eval"]))
     lines.append("\\midrule")
     lines.append("\\multirow{2}{*}{\\textbf{5. Mamba directionality}}")
     lines.append(" & " + row_from_md("unidirectional (\\texttt{bidirectional=False})", m["unidirectional"]["multi_domain_eval"], copied=True))
     lines.append(" & " + row_from_md("bidirectional (\\texttt{bidirectional=True})$^{\\ddagger}$", m["bidirectional"]["multi_domain_eval"]))
-    tbl = ("\\begin{tabular}{@{}llccccc@{}}\n\\toprule\n"
+    tbl = ("\\begin{tabular}{@{}l>{\\raggedright\\arraybackslash}p{6.1cm}ccccc@{}}\n\\toprule\n"
            "\\textbf{Study} & \\textbf{Variant} & \\textbf{LS 1/3-utt} & \\textbf{CN 1/3-utt} & \\textbf{VOX 1/3-utt} & "
            "\\textbf{Macro 1/3-utt} & \\textbf{Pooled 1-utt [95\\% CI] / 3-utt} \\\\\n\\midrule\n"
            + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
     emit(os.path.join(out_dir, "table_ablations.tex"), tbl)
+
+    # ------------------------------------------------------------- Table: TFLite
+    tfl_lines = []
+    for ttag, tmid in tfl_tags:
+        te = ex[tmid].get("tflite_eval", {})
+        if not te:
+            continue
+        variant = "fp32"
+        prim = te["primary_domain"]
+        rec32 = te["domains_1utt_fp32"][prim]
+        rec8 = te["domains_1utt_int8"][prim]
+
+        def eer_ci(rec):
+            if "eer_ci95_low" in rec:
+                return f"{f2(rec['eer_percent'])} [{f2(rec['eer_ci95_low'])}, {f2(rec['eer_ci95_high'])}]"
+            return f2(rec["eer_percent"])
+
+        del variant
+        tfl_lines.append(
+            f"\\texttt{{{tex_escape(tmid)}}} & \\texttt{{{tex_escape(prim)}}} & {f2(te['jax_full_seq_eer_percent'])} & "
+            f"{eer_ci(rec32)} & {eer_ci(rec8)} & {te['eer_percent_int8'] - te['eer_percent']:+.2f} & "
+            f"{f4(rec32['min_dcf_001'])} / {f4(rec8['min_dcf_001'])} & "
+            f"{te['cos_fp32_int8_mean']:.6f} / {te['cos_fp32_int8_min']:.6f} & "
+            f"{f2(te['latency_ms_fp32_mean_50runs'])} / {f2(te['latency_ms_int8_mean_50runs'])} \\\\"
+        )
+    has_ci = any("eer_ci95_low" in ex[tmid]["tflite_eval"]["domains_1utt_fp32"][ex[tmid]["tflite_eval"]["primary_domain"]] for _, tmid in tfl_tags if ex[tmid].get("tflite_eval"))
+    ci_hdr = " [95\\% CI]" if has_ci else ""
+    tbl = ("\\begin{tabular}{@{}llccccccc@{}}\n\\toprule\n"
+           "\\textbf{Model} & \\textbf{Eval set} & \\textbf{JAX EER} & "
+           f"\\textbf{{FP32 EER{ci_hdr}}} & \\textbf{{INT8 EER{ci_hdr}}} & \\textbf{{$\\Delta$}} & "
+           "\\textbf{minDCF FP32/INT8} & \\textbf{cos mean/min} & \\textbf{Lat.\\ FP32/INT8 (ms)} \\\\\n\\midrule\n"
+           + "\n".join(tfl_lines) + "\n\\bottomrule\n\\end{tabular}\n")
+    emit(os.path.join(out_dir, "table_tflite.tex"), tbl)
+
+    # ------------------------------------------- Table: universal vs. specialist deltas
+    dl = []
+    for m_id, t_id in pairs:
+        pu, pl = d1(ex[m_id], "universal_pooled")["eer_percent"], d1(ex[t_id], "universal_pooled")["eer_percent"]
+        mu, ml = macro(ex[m_id], 1)["eer_percent"], macro(ex[t_id], 1)["eer_percent"]
+        p3u, p3l = d3(ex[m_id], "universal_pooled")["eer_percent"], d3(ex[t_id], "universal_pooled")["eer_percent"]
+        dl.append((pair_label(m_id), pl, pu, pu - pl, mu - ml, p3u - p3l))
+    dl.sort(key=lambda r: r[3])
+    dlines = [f"{r[0]} & {f2(r[1])} & {f2(r[2])} & {r[3]:+.2f} & {r[4]:+.2f} & {r[5]:+.2f} \\\\" for r in dl]
+    tbl = ("\\begin{tabular}{@{}lccccc@{}}\n\\toprule\n"
+           "\\textbf{Backbone / objective} & \\textbf{\\texttt{ls\\_*} pooled 1-utt} & \\textbf{\\texttt{univ\\_*} pooled 1-utt} & "
+           "\\textbf{$\\Delta$ pooled 1-utt} & \\textbf{$\\Delta$ macro 1-utt} & \\textbf{$\\Delta$ pooled 3-utt} \\\\\n\\midrule\n"
+           + "\n".join(dlines) + "\n\\bottomrule\n\\end{tabular}\n")
+    emit(os.path.join(out_dir, "table_univ_vs_ls.tex"), tbl)
 
     # ------------------------------------------------------------ Table: seed floor
     if seed_rows:
@@ -529,14 +678,14 @@ def main(paper_dir: str) -> None:
                 f"{f2(ms['macro_1utt_eer']['mean'])} $\\pm$ {f2(ms['macro_1utt_eer']['std'])} & "
                 f"{f2(ms['pooled_3utt_eer']['mean'])} $\\pm$ {f2(ms['pooled_3utt_eer']['std'])} & "
                 f"{f2(ms['macro_3utt_eer']['mean'])} $\\pm$ {f2(ms['macro_3utt_eer']['std'])} & "
-                f"{f2(d1(main_e, 'universal_pooled')['eer_percent'])} / {f2(macro(main_e, 1)['eer_percent'])} & "
+                f"{f2(d1(main_e, 'universal_pooled')['eer_percent'])} / {f2(macro(main_e, 1)['eer_percent'])} $\\mid$ "
                 f"{rr_cell} \\\\"
             )
-        tbl = ("\\begin{tabular}{@{}llccccccc@{}}\n\\toprule\n"
-               "\\textbf{Model} & \\textbf{Seeds} & \\textbf{Pooled 1-utt EER per seed} & \\textbf{Pooled 1-utt} & "
+        tbl = ("\\begin{tabular}{@{}llcccccc@{}}\n\\toprule\n"
+               "\\textbf{Model} & \\textbf{Seeds} & \\textbf{Pooled 1-utt per seed} & \\textbf{Pooled 1-utt} & "
                "\\textbf{Macro 1-utt} & \\textbf{Pooled 3-utt} & \\textbf{Macro 3-utt} & "
-               "\\textbf{Seed 42 (released)} & \\textbf{Seed 42 (re-trained)} \\\\\n"
-               " & & & \\multicolumn{4}{c}{mean $\\pm$ sd over seeds} & pooled / macro 1-utt & pooled / macro 1-utt \\\\\n\\midrule\n" + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
+               "\\textbf{Seed 42: released $\\mid$ re-trained} \\\\\n"
+               " & & & \\multicolumn{4}{c}{mean $\\pm$ sd over seeds} & pooled / macro 1-utt \\\\\n\\midrule\n" + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
         emit(os.path.join(out_dir, "table_seed_floor.tex"), tbl)
 
     # ---------------------------------------------------- Table: matched-data control

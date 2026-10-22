@@ -54,7 +54,7 @@ model:
   min_seq_len: 90
   max_seq_len: 180
   max_eval_seq_len: 500
-  variable_length_training: true
+  variable_length_training: false
   sliding_window_step: 50
   use_transformer: false
   frame_aggregation_mean: true

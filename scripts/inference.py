@@ -24,7 +24,7 @@ import json
 import os
 import sys
 import time
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 
@@ -78,9 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help=(
-            "Verification decision threshold. Default: the checkpoint's own pooled "
-            "1-utt EER operating point from eval_results.json (falls back to 0.5 if "
-            "the checkpoint ships no metrics)."
+            "Verification decision threshold. Default: the checkpoint's own EER "
+            "operating point from eval_results.json -- the pooled 1-utt threshold for "
+            "one enrollment utterance, the pooled 3-utt threshold for >= 2 enrollment "
+            "utterances; with --tflite_path, the matching tflite_eval "
+            "domains_1utt_<fp32|int8>.universal_pooled.eer_threshold (falls back to 0.5 "
+            "if the checkpoint ships no metrics)."
         ),
     )
     parser.add_argument(
@@ -100,7 +103,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--vad_top_db",
         type=float,
         default=None,
-        help="Override VAD dynamic-range threshold in dB (default: checkpoint's 26.0 dB).",
+        help=(
+            "Override VAD dynamic-range threshold in dB (VadConfig.energy_db_threshold; "
+            "default: checkpoint's 26.0 dB)."
+        ),
+    )
+    parser.add_argument(
+        "--vad_snr_margin_db",
+        type=float,
+        default=None,
+        help=(
+            "Override the VAD SNR margin above the adaptive noise floor in dB "
+            "(VadConfig.snr_margin_db; default: checkpoint's 4.5 dB). Same knob as the "
+            "Gradio demo's 'VAD SNR margin' slider."
+        ),
     )
     parser.add_argument(
         "--full_sequence",
@@ -130,8 +146,10 @@ def main() -> None:
 
     def _extract_one(audio_path: str) -> np.ndarray:
         if tfl_runner is not None:
-            fe = model._resolve_frontend(
-                apply_vad=args.apply_vad, vad_top_db=args.vad_top_db
+            fe = model.resolve_frontend(
+                apply_vad=args.apply_vad,
+                vad_top_db=args.vad_top_db,
+                vad_snr_margin_db=args.vad_snr_margin_db,
             )
             feats = fe.extract_from_file(audio_path)
             return tfl_runner(feats)
@@ -140,7 +158,21 @@ def main() -> None:
             full_sequence=args.full_sequence,
             apply_vad=args.apply_vad,
             vad_top_db=args.vad_top_db,
+            vad_snr_margin_db=args.vad_snr_margin_db,
         )
+
+    def _tflite_eer_threshold() -> tuple[Optional[float], str]:
+        """EER operating point of the TFLite export itself (fixed 180-frame window)."""
+        tfl = (model.eval_results or {}).get("tflite_eval") or {}
+        variant = "int8" if "int8" in os.path.basename(args.tflite_path).lower() else "fp32"
+        rec = tfl.get(f"domains_1utt_{variant}", {}).get("universal_pooled")
+        if isinstance(rec, dict) and "eer_threshold" in rec:
+            return (
+                float(rec["eer_threshold"]),
+                f"eval_results.json tflite_eval.domains_1utt_{variant}.universal_pooled "
+                "EER operating point",
+            )
+        return None, ""
 
     short_id = os.path.basename(os.path.normpath(args.model_dir))
     output: dict[str, Any] = {
@@ -168,19 +200,25 @@ def main() -> None:
         output["inference_time_ms"] = round(elapsed_ms, 2)
 
     if args.enroll_audio and args.test_audio:
+        enroll_paths = [p.strip() for p in args.enroll_audio.split(",") if p.strip()]
         if args.threshold is not None:
             threshold = float(args.threshold)
             threshold_source = "--threshold"
         else:
-            eer_thr = model.eer_threshold()
+            eer_thr: Optional[float] = None
+            threshold_source = ""
+            if tfl_runner is not None:
+                eer_thr, threshold_source = _tflite_eer_threshold()
+            if eer_thr is None:
+                eer_thr = model.eer_threshold(num_enroll=len(enroll_paths))
+                threshold_source = (
+                    "eval_results.json pooled "
+                    f"{'3' if len(enroll_paths) >= 2 else '1'}-utt EER operating point"
+                )
+            if eer_thr is None:
+                threshold_source = "fallback 0.5 (no eval_results.json)"
             threshold = eer_thr if eer_thr is not None else 0.5
-            threshold_source = (
-                "eval_results.json pooled 1-utt EER operating point"
-                if eer_thr is not None
-                else "fallback 0.5 (no eval_results.json)"
-            )
         t0 = time.time()
-        enroll_paths = [p.strip() for p in args.enroll_audio.split(",") if p.strip()]
         if tfl_runner is None:
             score = model.verify(
                 enroll_paths[0] if len(enroll_paths) == 1 else enroll_paths,
@@ -188,6 +226,7 @@ def main() -> None:
                 full_sequence=args.full_sequence,
                 apply_vad=args.apply_vad,
                 vad_top_db=args.vad_top_db,
+                vad_snr_margin_db=args.vad_snr_margin_db,
             )
         else:
             e_embs = [_extract_one(p) for p in enroll_paths]

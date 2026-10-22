@@ -40,6 +40,79 @@ def _fmt_ci(d_m: dict[str, Any]) -> str:
     )
 
 
+def _load_training_provenance(save_directory: str) -> Optional[dict[str, Any]]:
+    """The `training_provenance` block of `<save_directory>/config.json`, if any."""
+    import json
+
+    path = os.path.join(save_directory, "config.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            block = json.load(f).get("training_provenance")
+    except (OSError, ValueError):
+        return None
+    return block if isinstance(block, dict) else None
+
+
+def _provenance_paragraph(save_directory: str, exp_cfg: configs.ExperimentConfig) -> str:
+    """Training-crop provenance paragraph, derived from `config.json` (no dates, no guesses)."""
+    prov = _load_training_provenance(save_directory)
+    seq_len = int(exp_cfg.model.seq_len)
+    min_len = int(exp_cfg.model.min_seq_len)
+    common = (
+        " Evaluating the released weights with the current code reproduces the archived "
+        "metrics in `eval_results.json`. The seed-to-seed standard deviation of pooled "
+        "1-utt EER at this budget is about 0.7-0.8 % absolute, so sub-1.5 % differences "
+        "between checkpoints are not rankings."
+    )
+    if prov is None:
+        return (
+            "**Training-crop provenance.** No `training_provenance` block is recorded in "
+            "`config.json` for this checkpoint (freshly trained with the current code: "
+            f"`variable_length_training = {bool(exp_cfg.model.variable_length_training)}`)."
+            + common
+        )
+    actual = prov.get("variable_length_training_actual")
+    match = prov.get("step0_fingerprint_match", "n/a")
+    rel = prov.get("released_initial_loss")
+    hf_ = prov.get("head_fixed_step0_loss")
+    hv_ = prov.get("head_variable_step0_loss")
+    fp_sentence = (
+        f" Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, "
+        f"`pretrained_models/step0_fingerprints.json`): archived `{rel}`; current code with fixed "
+        f"{seq_len}-frame crops `{hf_}`, with `U({min_len}, {seq_len})` crops `{hv_}` (match: `{match}`)."
+    )
+    if actual is False:
+        head = (
+            f"**Training-crop provenance.** This checkpoint was trained with **fixed {seq_len}-frame "
+            f"({seq_len / 100:.1f} s) crops and all-ones validity masks**, not with the "
+            f"`U({min_len}, {seq_len})` variable-length crops that are the current pipeline default: "
+            "the training code in use at the time defaulted the batchers to `variable_length=False` and "
+            "the benchmark driver did not pass the flag. The shipped `config.json` / YAML therefore "
+            f"set `variable_length_training: false`, which re-creates this regime."
+        )
+    elif actual is True:
+        head = (
+            f"**Training-crop provenance.** This checkpoint was trained with `U({min_len}, {seq_len})`-frame "
+            "variable-length crops and an exact validity mask (the current pipeline default); the shipped "
+            "`config.json` / YAML (`variable_length_training: true`) describes the released weights."
+        )
+    else:
+        head = (
+            "**Training-crop provenance.** The crop regime of this checkpoint **cannot be established** "
+            "from the step-0 loss fingerprint (its triplets were drawn from an unseeded random stream by "
+            "the training code in use at the time); the git history indicates variable-length crops "
+            "(`variable_length=True` was passed explicitly on the triplet branch). Treat the shipped "
+            "`variable_length_training` value as unverified for this checkpoint."
+        )
+    sf = prov.get("sphereface_note")
+    sf_sentence = f" {sf}" if sf else ""
+    nd = prov.get("fingerprint_note")
+    nd_sentence = f" {nd}" if nd else ""
+    return head + fp_sentence + nd_sentence + sf_sentence + common
+
+
 def objective_label(exp_cfg: configs.ExperimentConfig) -> str:
     """Honest human-readable name for the training objective actually optimised."""
     loss = exp_cfg.train.loss
@@ -293,20 +366,7 @@ def build_model_card(
             "FlaxSpeaker checkpoints trained under the same budget."
         ),
         "",
-        (
-            "**Training-code provenance.** The released weights were produced by an earlier "
-            "revision of the FlaxSpeaker training code than the current `main`. Evaluating "
-            "released weights with the current code reproduces the archived numbers (verified "
-            "for `univ_conformer_small_ge2e` and `ls_conformer_small_ge2e`); re-training "
-            "the shipped `config.json` / YAML with the current code does **not** regenerate "
-            "them (for `univ_conformer_small_ge2e` and `ls_conformer_small_ge2e`, seed 42 "
-            "re-trained at the current revision gives 20.94 % / 21.40 % instead of the "
-            "archived 19.40 % / 20.12 % pooled 1-utt EER; see "
-            "`pretrained_models/r2_seed_and_control_results.json` in the GitHub repository). "
-            "The seed-to-seed standard deviation of pooled 1-utt EER at the current revision "
-            "is about 0.7-0.8 % absolute, so sub-1.5 % differences between checkpoints are "
-            "not rankings."
-        ),
+        _provenance_paragraph(save_directory, exp_cfg),
         "",
         SOTA_ANCHOR,
         "",
@@ -395,6 +455,9 @@ def build_model_card(
         "## Quickstart Usage",
         "",
         "### Python API (from Hugging Face Hub or Local Directory)",
+        "",
+        "Requires `flaxspeaker >= 0.3.0` (`pip install -U flaxspeaker`); the `0.2.0` wheel on PyPI "
+        "predates the released checkpoints and cannot load them.",
         "",
         "```python",
         "from flaxspeaker import load_pretrained",

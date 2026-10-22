@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import functools
 from multiprocessing import pool as mp_pool
 import os
@@ -510,58 +511,162 @@ def random_crop_or_pad(
 
 
 class FeatureCache:
-    """In-memory and optional on-disk feature cache for fast training and evaluation."""
+    """In-memory and optional on-disk feature cache for fast training and evaluation.
+
+    The on-disk file name is derived from a signature of *every* frontend and VAD
+    hyper-parameter that influences the extracted features (``v3`` signature), so a
+    changed ``fmax``, ``preemph``, ``snr_margin_db`` ... can never silently reuse a stale
+    ``.npy`` file. Files written by earlier releases used a shorter ``v2`` signature; they
+    are still found, but only when every field that the ``v2`` signature omitted is at
+    its dataclass default (the only configuration those files can have been produced
+    with).
+
+    The in-memory dictionary is bounded by ``max_memory_items`` (least-recently-inserted
+    eviction); the on-disk cache is unbounded.
+    """
+
+    # Frontend / VAD fields that the pre-0.3.0 ``v2`` signature did not hash.
+    _V3_FRONTEND_FIELDS = (
+        "sample_rate", "frame_size_ms", "frame_step_ms", "n_fft", "fmin", "fmax",
+        "preemph", "log_offset", "cmvn_norm_vars", "n_mfcc",
+    )
+    _V3_VAD_FIELDS = (
+        "sample_rate", "frame_size_ms", "frame_step_ms", "adaptive_percentile",
+        "snr_margin_db", "spectral_flatness_threshold", "min_speech_frames",
+    )
 
     def __init__(
         self,
         frontend: Optional[AudioFrontend] = None,
         n_mfcc: int = 80,
         cache_dir: Optional[str] = None,
+        max_memory_items: Optional[int] = 200_000,
     ):
         self.frontend = frontend
         self.n_mfcc = n_mfcc
         self.cache_dir = cache_dir
+        self.max_memory_items = max_memory_items
         if self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
-        self._cache: dict[str, np.ndarray] = {}
+        self._cache: "collections.OrderedDict[str, np.ndarray]" = collections.OrderedDict()
         self._cfg_signature = self._build_signature()
+        self._legacy_signature = self._build_legacy_signature()
 
-    def _build_signature(self) -> str:
-        if self.frontend is None:
-            return f"legacy_mfcc_{self.n_mfcc}"
-        fc = self.frontend.config
-        vp = self.frontend.vad_processor
-        vc_str = "novad"
+    @classmethod
+    def merged(
+        cls,
+        frontend: Optional[AudioFrontend],
+        sources: list["FeatureCache"],
+        cache_dir: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "FeatureCache":
+        """Builds a cache whose in-memory features are the union of ``sources``.
+
+        Used for the ``universal`` corpus, whose utterances are the union of the
+        per-domain corpora (so the per-domain caches can be re-used without re-reading
+        the ``.npy`` files). Only features with an identical configuration signature
+        are copied; a mismatch raises instead of silently mixing feature spaces.
+        """
+        out = cls(frontend=frontend, cache_dir=cache_dir, **kwargs)
+        for src in sources:
+            if src._cfg_signature != out._cfg_signature:
+                raise ValueError(
+                    "FeatureCache.merged: source cache signature "
+                    f"{src._cfg_signature!r} != {out._cfg_signature!r}"
+                )
+            for k, v in src._cache.items():
+                out._cache[k] = v
+        out._evict_if_needed()
+        return out
+
+    def _vad_sig_parts(self) -> tuple[str, Optional[Any]]:
+        vp = self.frontend.vad_processor if self.frontend is not None else None
         if vp is not None and vp.config.enabled:
             vc = vp.config
-            vc_str = (
+            return (
                 f"vad_{vc.mode}_{vc.energy_threshold_db}_"
                 f"{getattr(vc, 'energy_db_threshold', 26.0)}_"
                 f"{getattr(vc, 'apply_agc', True)}_{vc.hangover_frames}"
-            )
+            ), vc
+        return "novad", None
+
+    def _build_legacy_signature(self) -> Optional[str]:
+        """The pre-0.3.0 ``v2`` signature, or ``None`` if legacy files cannot apply.
+
+        Legacy files were produced with the omitted fields at their defaults; if any
+        of them differs from the default now, no legacy file can be a valid hit.
+        """
+        if self.frontend is None:
+            return None
+        fc = self.frontend.config
+        fc_defaults = type(fc)()
+        if any(getattr(fc, f) != getattr(fc_defaults, f) for f in self._V3_FRONTEND_FIELDS):
+            return None
+        vc_str, vc = self._vad_sig_parts()
+        if vc is not None:
+            vc_defaults = type(vc)()
+            if any(getattr(vc, f) != getattr(vc_defaults, f) for f in self._V3_VAD_FIELDS):
+                return None
         return (
             f"v2_{fc.feature_type}_{fc.n_mels}_{fc.apply_cmvn}_"
             f"{fc.stack_left_context}_{fc.stack_right_context}_{fc.frame_stride}_{vc_str}"
         )
 
-    def _disk_path(self, audio_file: str) -> Optional[str]:
-        if not self.cache_dir:
-            return None
+    def _build_signature(self) -> str:
+        if self.frontend is None:
+            return f"legacy_mfcc_{self.n_mfcc}"
+        fc = self.frontend.config
+        vc_str, vc = self._vad_sig_parts()
+        if vc is not None:
+            vc_str += "_" + "_".join(str(getattr(vc, f)) for f in self._V3_VAD_FIELDS)
+        fe_extra = "_".join(str(getattr(fc, f)) for f in self._V3_FRONTEND_FIELDS)
+        return (
+            f"v3_{fc.feature_type}_{fc.n_mels}_{fc.apply_cmvn}_"
+            f"{fc.stack_left_context}_{fc.stack_right_context}_{fc.frame_stride}_"
+            f"{fe_extra}_{vc_str}"
+        )
+
+    @staticmethod
+    def _digest_name(signature: str, audio_file: str) -> str:
         import hashlib
 
-        key = f"{self._cfg_signature}::{audio_file}"
-        digest = hashlib.md5(key.encode("utf-8")).hexdigest()
-        fname = f"{digest}.npy"
-        primary = os.path.join(self.cache_dir, fname)
-        if os.path.exists(primary):
-            return primary
+        key = f"{signature}::{audio_file}"
+        return hashlib.md5(key.encode("utf-8")).hexdigest() + ".npy"
+
+    def _candidate_dirs(self) -> list[str]:
+        """The cache dir itself, then the sibling per-domain dirs (universal = union)."""
+        assert self.cache_dir is not None
+        dirs = [self.cache_dir]
         parent_dir = os.path.dirname(self.cache_dir.rstrip(os.sep))
         if parent_dir and os.path.isdir(parent_dir):
             for sub in ("librispeech", "cnceleb2", "voxceleb1"):
-                cand = os.path.join(parent_dir, sub, fname)
+                cand = os.path.join(parent_dir, sub)
+                if cand != self.cache_dir and os.path.isdir(cand):
+                    dirs.append(cand)
+        return dirs
+
+    def _disk_path(self, audio_file: str) -> Optional[str]:
+        """Returns an existing cache file for ``audio_file`` or the path to write to."""
+        if not self.cache_dir:
+            return None
+        primary = os.path.join(self.cache_dir, self._digest_name(self._cfg_signature, audio_file))
+        if os.path.exists(primary):
+            return primary
+        names = [self._digest_name(self._cfg_signature, audio_file)]
+        if self._legacy_signature is not None:
+            names.append(self._digest_name(self._legacy_signature, audio_file))
+        for d in self._candidate_dirs():
+            for fname in names:
+                cand = os.path.join(d, fname)
                 if os.path.exists(cand):
                     return cand
         return primary
+
+    def _evict_if_needed(self) -> None:
+        if self.max_memory_items is None:
+            return
+        while len(self._cache) > self.max_memory_items:
+            self._cache.popitem(last=False)
 
     def get(self, audio_file: str) -> np.ndarray:
         if audio_file in self._cache:
@@ -571,6 +676,7 @@ class FeatureCache:
             try:
                 arr = np.load(disk_p)
                 self._cache[audio_file] = arr
+                self._evict_if_needed()
                 return arr
             except Exception:
                 pass
@@ -583,6 +689,7 @@ class FeatureCache:
             except Exception:
                 pass
         self._cache[audio_file] = arr
+        self._evict_if_needed()
         return arr
 
     def preload(self, audio_files: list[str], num_workers: int = 8) -> None:

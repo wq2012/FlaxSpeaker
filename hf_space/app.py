@@ -10,7 +10,6 @@ The folder is self-contained: `flaxspeaker` is installed from `requirements.txt`
 downloaded from the Hugging Face Hub when `pretrained_models/` is not present.
 """
 
-import dataclasses
 import json
 import os
 import sys
@@ -92,9 +91,11 @@ def get_model(model_name: str) -> hf_compat.FlaxSpeakerModel:
         model = hf_compat.FlaxSpeakerModel.from_pretrained(_resolve_model_target(model_name))
         warm = np.zeros((64, int(model.exp_config.frontend.feature_dim)), dtype=np.float32)
         warm_emb = evaluation.encode_features(warm, model.state, model.exp_config)
-        # The Dr-Vector / PFAS scorers are JIT-compiled lazily; warm them as well.
+        # The Dr-Vector / PFAS scorers are JIT-compiled lazily and the PFAS kernel is
+        # shape-specialised on the enrollment count; warm 1-, 2- and 3-utt enrollment.
         model.score_embeddings(warm_emb, warm_emb)
         model.score_embeddings([warm_emb, warm_emb], warm_emb)
+        model.score_embeddings([warm_emb, warm_emb, warm_emb], warm_emb)
         _MODEL_CACHE[model_name] = model
     return _MODEL_CACHE[model_name]
 
@@ -102,8 +103,11 @@ def get_model(model_name: str) -> hf_compat.FlaxSpeakerModel:
 def get_default_threshold(model_name: str) -> dict[str, float]:
     """Per-model EER operating points read from the checkpoint's `eval_results.json`.
 
-    Returns `{"pooled": t_pooled, "librispeech": ..., "cnceleb2": ..., "voxceleb1": ...}`
-    (whatever is available). Falls back to 0.5 when no metrics file is found.
+    Returns `{"pooled": t_pooled_1utt, "pooled_3utt": t_pooled_3utt, "librispeech": ...,
+    "cnceleb2": ..., "voxceleb1": ...}` (whatever is available): the 1-utt operating
+    points from `multi_domain_eval.domains_1utt` and the 3-utt multi-enrollment one
+    from `domains_3utt.universal_pooled`. Falls back to 0.5 when no metrics file is
+    found.
     """
     if model_name in _THRESHOLD_CACHE:
         return _THRESHOLD_CACHE[model_name]
@@ -129,8 +133,13 @@ def get_default_threshold(model_name: str) -> dict[str, float]:
         ):
             if key in d1 and "eer_threshold" in d1[key]:
                 out[name] = float(d1[key]["eer_threshold"])
+        d3 = metrics.get("multi_domain_eval", {}).get("domains_3utt", {})
+        if "universal_pooled" in d3 and "eer_threshold" in d3["universal_pooled"]:
+            out["pooled_3utt"] = float(d3["universal_pooled"]["eer_threshold"])
     if "pooled" not in out:
         out["pooled"] = 0.5
+    if "pooled_3utt" not in out:
+        out["pooled_3utt"] = out["pooled"]
     _THRESHOLD_CACHE[model_name] = out
     return out
 
@@ -148,8 +157,8 @@ def threshold_slider_update(model_name: str) -> Any:
         maximum=hi,
         value=round(t, 3),
         label=(
-            f"Decision Threshold ({scoring_type_str} score; default = this model's pooled "
-            f"1-utt EER operating point {t:.3f})"
+            f"Manual Decision Threshold ({scoring_type_str} score; this model's pooled "
+            f"1-utt EER operating point is {t:.3f})"
         ),
     )
 
@@ -261,24 +270,24 @@ def verify_pair(
     enroll_audio_3: Optional[str] = None,
     use_vad: bool = True,
     vad_snr_margin_db: float = 4.5,
+    vad_top_db: float = 26.0,
+    auto_threshold: bool = True,
 ) -> tuple[str, dict[str, Any], Any]:
+    """Scores one trial.
+
+    Threshold selection: with `auto_threshold=True` (default) the decision threshold
+    is the checkpoint's own EER operating point for the *enrollment count actually
+    used* -- `domains_1utt.universal_pooled.eer_threshold` for one enrollment
+    utterance and `domains_3utt.universal_pooled.eer_threshold` for two or three
+    (the multi-enrollment protocol of the benchmark). With `auto_threshold=False`
+    the slider value `threshold` is used verbatim. The VAD knobs are the same two
+    exposed by `scripts/inference.py` (`--vad_snr_margin_db`, `--vad_top_db`).
+    """
     if not enroll_audio or not test_audio:
         return "Please provide both Enrollment and Test audio files.", {}, None
 
     t0 = time.time()
     model = get_model(model_name)
-    if threshold is None:
-        threshold = get_default_threshold(model_name)["pooled"]
-    vad_cfg = dataclasses.replace(
-        model.exp_config.vad,
-        enabled=bool(use_vad),
-        snr_margin_db=float(vad_snr_margin_db),
-    )
-    frontend = feature_extraction.AudioFrontend(
-        model.exp_config.frontend, vad_cfg
-    )
-    vad_proc = vad.VadProcessor(vad_cfg)
-
     enroll_paths = [
         p
         for p in (enroll_audio, enroll_audio_2, enroll_audio_3)
@@ -286,6 +295,23 @@ def verify_pair(
     ]
     if not enroll_paths:
         enroll_paths = [enroll_audio]
+    operating_points = get_default_threshold(model_name)
+    op_key = "pooled_3utt" if len(enroll_paths) >= 2 else "pooled"
+    if threshold is None or auto_threshold:
+        threshold = operating_points[op_key]
+        threshold_source = (
+            f"eval_results.json {op_key} EER operating point "
+            f"({len(enroll_paths)} enrollment utterance(s))"
+        )
+    else:
+        threshold_source = "manual slider"
+    frontend = model.resolve_frontend(
+        apply_vad=bool(use_vad),
+        vad_top_db=float(vad_top_db),
+        vad_snr_margin_db=float(vad_snr_margin_db),
+    )
+    vad_cfg = frontend.vad_processor.config if frontend.vad_processor else model.exp_config.vad
+    vad_proc = vad.VadProcessor(vad_cfg)
 
     enroll_wav_1 = feature_extraction.load_waveform(
         enroll_paths[0], target_sr=frontend.config.sample_rate
@@ -313,7 +339,6 @@ def verify_pair(
     infer_ms = (time.time() - t_infer0) * 1000.0
     scoring_type_str = str(model.config.scoring_type).lower()
     elapsed_ms = (time.time() - t0) * 1000.0
-    operating_points = get_default_threshold(model_name)
 
     is_same = score >= threshold
     verdict = (
@@ -336,8 +361,10 @@ def verify_pair(
         "num_enrollment_utterances": len(enroll_embs),
         "vad_enabled": bool(use_vad),
         "vad_snr_margin_db": round(float(vad_snr_margin_db), 2),
+        "vad_top_db": round(float(vad_top_db), 2),
         "similarity_score": round(float(score), 4),
         "threshold": round(float(threshold), 4),
+        "threshold_source": threshold_source,
         "model_eer_operating_points": {k: round(v, 4) for k, v in operating_points.items()},
         "decision": "same_speaker" if is_same else "different_speaker",
         "enroll_vad_frames": int(sum(f.shape[0] for f in enroll_feats_list)),
@@ -386,11 +413,11 @@ def build_demo() -> Any:
         p3 = os.path.join(EXAMPLES_DIR, f"{dom}_spk2_utt1{ext}")
         if os.path.exists(p1) and os.path.exists(p2):
             example_rows.append(
-                [p1, p2, default_model, default_threshold, None, None, True, 4.5]
+                [p1, p2, default_model, default_threshold, None, None, True, 4.5, 26.0, True]
             )
         if os.path.exists(p1) and os.path.exists(p3):
             example_rows.append(
-                [p1, p3, default_model, default_threshold, None, None, True, 4.5]
+                [p1, p3, default_model, default_threshold, None, None, True, 4.5, 26.0, True]
             )
 
     with gr.Blocks(title="FlaxSpeaker — Universal Speaker Recognition") as demo:
@@ -407,7 +434,8 @@ def build_demo() -> Any:
             "(18.75-30.23% pooled 1-utt EER on the in-house trial lists, 22.5-32.2% on a "
             "10-speaker VoxCeleb1-O subset; published systems reach ~1%). Every verdict "
             "below is real inference of the selected checkpoint on your audio; the default decision "
-            "threshold is the model's own pooled 1-utt EER operating point from `eval_results.json`.\n\n"
+            "threshold is the model's own pooled EER operating point from `eval_results.json` "
+            "(1-utt for one enrollment utterance, 3-utt for two or three).\n\n"
             "**Links**: "
             "[Hugging Face Collection (44 Pretrained Models)]"
             "(https://huggingface.co/collections/wq2012/flaxspeaker) | "
@@ -445,14 +473,21 @@ def build_demo() -> Any:
                     value=default_model,
                     label="Pretrained FlaxSpeaker Model (44 Checkpoints)",
                 )
+                auto_threshold_checkbox = gr.Checkbox(
+                    value=True,
+                    label=(
+                        "Use the model's own EER operating point for the enrollment count "
+                        "(1-utt / 3-utt; overrides the slider)"
+                    ),
+                )
                 threshold_slider = gr.Slider(
                     minimum=-0.2,
                     maximum=1.0,
                     value=default_threshold,
                     step=0.005,
                     label=(
-                        f"Decision Threshold (cosine score; default = this model's pooled "
-                        f"1-utt EER operating point {default_threshold:.3f})"
+                        f"Manual Decision Threshold (cosine score; this model's pooled "
+                        f"1-utt EER operating point is {default_threshold:.3f})"
                     ),
                 )
                 with gr.Row():
@@ -464,7 +499,14 @@ def build_demo() -> Any:
                     maximum=12.0,
                     value=4.5,
                     step=0.5,
-                    label="VAD Dynamic SNR Margin (dB)",
+                    label="VAD SNR margin above adaptive noise floor (dB) [--vad_snr_margin_db]",
+                )
+                vad_top_db_slider = gr.Slider(
+                    minimum=10.0,
+                    maximum=60.0,
+                    value=26.0,
+                    step=1.0,
+                    label="VAD dynamic-range threshold below peak energy (dB) [--vad_top_db]",
                 )
                 verify_btn = gr.Button("Run Speaker Verification", variant="primary")
             with gr.Column(scale=1):
@@ -485,6 +527,8 @@ def build_demo() -> Any:
             enroll_input_3,
             vad_checkbox,
             vad_margin_slider,
+            vad_top_db_slider,
+            auto_threshold_checkbox,
         ]
         model_dropdown.change(
             fn=threshold_slider_update, inputs=[model_dropdown], outputs=[threshold_slider]

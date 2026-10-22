@@ -252,11 +252,11 @@ def run_all_benchmarks(
         multi_trials_sets["universal"] = load_multi_enroll_trials(
             univ_info["multi_trials_file"]
         )
-    univ_cache = feature_extraction.FeatureCache(
-        frontend, cache_dir=os.path.join(data_root, "feature_cache", "universal")
+    univ_cache = feature_extraction.FeatureCache.merged(
+        frontend,
+        [caches[d] for d in ("librispeech", "cnceleb2", "voxceleb1")],
+        cache_dir=os.path.join(data_root, "feature_cache", "universal"),
     )
-    for dname in ("librispeech", "cnceleb2", "voxceleb1"):
-        univ_cache._cache.update(caches[dname]._cache)
     caches["universal"] = univ_cache
     preloaded_train_domains: set[str] = set()
 

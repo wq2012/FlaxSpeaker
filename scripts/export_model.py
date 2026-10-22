@@ -77,8 +77,11 @@ def main() -> None:
     if args.export_tflite or args.quantize_int8:
         quant_modes = [False, True] if (args.export_tflite and args.quantize_int8) else [args.quantize_int8]
         rng = np.random.default_rng(42)
+        # Fidelity is checked on the *export* window (export.sequence_length, 0 =
+        # model.seq_len), i.e. the exact input the .tflite file was traced with.
+        export_window = export._resolve_export_seq_len(model.exp_config)
         sample_feat = rng.standard_normal(
-            (model.exp_config.model.seq_len, model.exp_config.frontend.feature_dim)
+            (export_window, model.exp_config.frontend.feature_dim)
         ).astype(np.float32)
         flax_emb = np.asarray(
             model.state.apply_fn({"params": model.state.params}, sample_feat[None, :, :])[0]
@@ -91,14 +94,20 @@ def main() -> None:
                 model.state, model.exp_config, tfl_path, quantize_int8=q
             )
             runner = export.TFLiteSpeakerRunner(tfl_path)
-            t0 = time.time()
-            tfl_emb = runner(sample_feat)
-            latency_ms = (time.time() - t0) * 1000.0
+            tfl_emb = runner(sample_feat)  # first call (interpreter warm-up)
+            for _ in range(4):
+                runner(sample_feat)
+            t0 = time.perf_counter()
+            for _ in range(50):
+                runner(sample_feat)
+            latency_ms = (time.perf_counter() - t0) * 1000.0 / 50.0
             cos_sim = float(
                 np.dot(tfl_emb, flax_emb)
                 / (np.linalg.norm(tfl_emb) * np.linalg.norm(flax_emb) + 1e-6)
             )
             info["latency_ms"] = round(latency_ms, 3)
+            info["latency_ms_source"] = "mean of 50 calls after 5 warm-up calls"
+            info["export_window_frames"] = int(export_window)
             info["cosine_fidelity_vs_flax"] = round(cos_sim, 6)
             summary["tflite_exports"][suffix] = info
 

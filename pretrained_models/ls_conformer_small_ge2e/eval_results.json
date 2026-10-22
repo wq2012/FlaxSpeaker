@@ -243,7 +243,15 @@
     "primary_domain": "librispeech",
     "protocol": "librispeech 3,000 1-utt trials (fixed 180-frame unmasked window)",
     "eer_percent": 12.5,
+    "eer_ci95_fp32": [
+      11.1,
+      13.58
+    ],
     "eer_percent_int8": 12.37,
+    "eer_ci95_int8": [
+      11.13,
+      13.57
+    ],
     "jax_full_seq_eer_percent": 9.67,
     "pooled_1utt_eer_fp32_percent": 22.68,
     "pooled_1utt_eer_int8_percent": 22.6,
@@ -259,6 +267,8 @@
     "domains_1utt_fp32": {
       "librispeech": {
         "eer_percent": 12.5,
+        "eer_ci95_low": 11.1,
+        "eer_ci95_high": 13.58,
         "eer_threshold": 0.539363,
         "min_dcf_001": 0.7767,
         "roc_auc": 0.9488,
@@ -266,6 +276,8 @@
       },
       "cnceleb2": {
         "eer_percent": 30.9,
+        "eer_ci95_low": 29.22,
+        "eer_ci95_high": 32.6,
         "eer_threshold": 0.550231,
         "min_dcf_001": 0.9987,
         "roc_auc": 0.7636,
@@ -273,6 +285,8 @@
       },
       "voxceleb1": {
         "eer_percent": 25.9,
+        "eer_ci95_low": 24.1,
+        "eer_ci95_high": 28.2,
         "eer_threshold": 0.47841,
         "min_dcf_001": 0.997,
         "roc_auc": 0.8195,
@@ -280,6 +294,8 @@
       },
       "universal_pooled": {
         "eer_percent": 22.68,
+        "eer_ci95_low": 21.8,
+        "eer_ci95_high": 23.65,
         "eer_threshold": 0.528661,
         "min_dcf_001": 0.9987,
         "roc_auc": 0.8571,
@@ -289,6 +305,8 @@
     "domains_1utt_int8": {
       "librispeech": {
         "eer_percent": 12.37,
+        "eer_ci95_low": 11.13,
+        "eer_ci95_high": 13.57,
         "eer_threshold": 0.542202,
         "min_dcf_001": 0.778,
         "roc_auc": 0.9488,
@@ -296,6 +314,8 @@
       },
       "cnceleb2": {
         "eer_percent": 30.83,
+        "eer_ci95_low": 29.2,
+        "eer_ci95_high": 32.55,
         "eer_threshold": 0.549381,
         "min_dcf_001": 0.9987,
         "roc_auc": 0.7637,
@@ -303,6 +323,8 @@
       },
       "voxceleb1": {
         "eer_percent": 26.05,
+        "eer_ci95_low": 24.1,
+        "eer_ci95_high": 28.15,
         "eer_threshold": 0.47646,
         "min_dcf_001": 0.997,
         "roc_auc": 0.8197,
@@ -310,13 +332,15 @@
       },
       "universal_pooled": {
         "eer_percent": 22.6,
+        "eer_ci95_low": 21.79,
+        "eer_ci95_high": 23.63,
         "eer_threshold": 0.526667,
         "min_dcf_001": 0.9985,
         "roc_auc": 0.8572,
         "num_trials": 8000
       }
     },
-    "latency_ms_fp32_mean_50runs": 9.47,
-    "latency_ms_int8_mean_50runs": 9.67
+    "latency_ms_fp32_mean_50runs": 9.21,
+    "latency_ms_int8_mean_50runs": 9.39
   }
 }
