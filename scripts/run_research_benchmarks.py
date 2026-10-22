@@ -261,7 +261,7 @@ def run_all_benchmarks(
     preloaded_train_domains: set[str] = set()
 
     # VoxCeleb1-O 10-speaker subset trials (filtered veri_test2.txt over the 10 held-out
-    # eval speakers; NOT the published 37,720-trial protocol). The canonical evaluation of
+    # eval speakers; NOT the published 37,611-trial cleaned protocol). The canonical evaluation of
     # all 44 models on this subset is `scripts/eval_vox1_o_subset.py`.
     vox_official_trials = dataset.load_trials_file(
         ds_summary["voxceleb1"].get(

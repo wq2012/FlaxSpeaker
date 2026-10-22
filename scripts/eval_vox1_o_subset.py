@@ -4,7 +4,7 @@
 IMPORTANT -- this is NOT the published VoxCeleb1-O protocol and the resulting
 numbers are NOT comparable to published VoxCeleb1-O EERs:
 
-- The official `veri_test2.txt` list (37,720 balanced trials over the 40
+- The official `veri_test2.txt` list (37,611 balanced trials over the 40
   VoxCeleb1 test speakers) is filtered to trials where *both* sides belong to the
   10 held-out evaluation speakers of `splits/voxceleb1/eval.csv`, then capped at
   `max_trials` (default 2,500) -> ~72 % target trials, 45 impostor speaker pairs.

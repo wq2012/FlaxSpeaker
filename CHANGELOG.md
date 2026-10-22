@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (after 0.3.0)
+
+- Model cards of the two `*_sphereface` checkpoints now quote the step-0 fingerprint arms that were actually compared with the archive (constant-lambda arms, e.g. archived `9.8746` = fixed-crop `9.8746` vs `U(90, 180)` `10.5045`) and report the current-schedule values (`7.2967` / `7.9095`) separately; previously the paragraph showed the non-matching current-schedule values next to "match: fixed". The five `*_pfas*` cards state why their match is `fixed_approx` (fixed arm within 1e-4 to 7e-4 of the archive; variable arm at least an order of magnitude farther). Cards re-pushed to the Hub (`flaxspeaker/model_card.py`).
+- `RESEARCH_REPORT.md` title and intro said `v0.2.0`; the PyPI `0.2.0` wheel predates every released checkpoint, so the report now says `v0.3.0`.
+- The published VoxCeleb1-O trial count is stated consistently as 37,611 (the cleaned `veri_test2.txt` list used by `scripts/eval_vox1_o_subset.py`, verified by line count; 37,720 is the original list) in README, `RESEARCH_REPORT.md`, `scripts/eval_vox1_o_subset.py` and `scripts/run_research_benchmarks.py`; the paper already said 37,611.
+
 ## 0.3.0
 
 First PyPI release that can load the released checkpoints. PyPI `0.2.0` corresponds to git tag `v0.2.0` (`526be70`, 2026-10-04), a snapshot taken *before* the 44 checkpoints, `load_pretrained`, `encode_features`, `FLAXSPEAKER_PRETRAINED_ROOT` and `model_card.py` existed; a `pip install flaxspeaker==0.2.0` cannot run the README quickstart or the model cards. The version number is now asserted consistent across `pyproject.toml`, `setup.py` and `flaxspeaker.__version__` (`tests.py::test_version_consistency`); the proposed CI workflow (`ci/python-app.proposed.yml`, see Fixes) builds the wheel and imports it from a clean virtualenv.

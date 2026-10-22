@@ -78,11 +78,31 @@ def _provenance_paragraph(save_directory: str, exp_cfg: configs.ExperimentConfig
     rel = prov.get("released_initial_loss")
     hf_ = prov.get("head_fixed_step0_loss")
     hv_ = prov.get("head_variable_step0_loss")
-    fp_sentence = (
-        f" Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, "
-        f"`pretrained_models/step0_fingerprints.json`): archived `{rel}`; current code with fixed "
-        f"{seq_len}-frame crops `{hf_}`, with `U({min_len}, {seq_len})` crops `{hv_}` (match: `{match}`)."
-    )
+    hf_legacy = prov.get("head_fixed_step0_loss_legacy_lambda")
+    hv_legacy = prov.get("head_variable_step0_loss_legacy_lambda")
+    if hf_legacy is not None and hv_legacy is not None:
+        # SphereFace: the arms that were compared with the archive use the constant
+        # annealing lambda of the training code at the time; the current schedule
+        # gives different step-0 values, which are reported separately.
+        fp_sentence = (
+            f" Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, "
+            f"`pretrained_models/step0_fingerprints.json`, constant-lambda arms): archived `{rel}`; "
+            f"current code with fixed {seq_len}-frame crops `{hf_legacy}`, with "
+            f"`U({min_len}, {seq_len})` crops `{hv_legacy}` (match: `{match}`); with the current "
+            f"lambda schedule the same step gives `{hf_}` / `{hv_}` and matches neither."
+        )
+    else:
+        fp_sentence = (
+            f" Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, "
+            f"`pretrained_models/step0_fingerprints.json`): archived `{rel}`; current code with fixed "
+            f"{seq_len}-frame crops `{hf_}`, with `U({min_len}, {seq_len})` crops `{hv_}` (match: `{match}`)."
+        )
+    if match == "fixed_approx" and rel is not None and hf_ is not None:
+        fp_sentence += (
+            f" The fixed-crop arm is within `{abs(float(hf_) - float(rel)):.4f}` of the archive instead "
+            "of exact (the PFAS scorer gained numerical changes after this checkpoint was trained); "
+            "the variable-length arm is an order of magnitude farther away."
+        )
     if actual is False:
         head = (
             f"**Training-crop provenance.** This checkpoint was trained with **fixed {seq_len}-frame "

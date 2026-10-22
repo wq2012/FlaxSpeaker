@@ -329,7 +329,7 @@ The released checkpoints implement **FlaxSpeaker variants** of the cited algorit
 | Conformer | 12 × 512, 4–8 heads, kernel 32, relative PE, dropout, stack-by-2 | 2–4 blocks × 128–256, 4–8 heads, kernel 15, no PE, GroupNorm(2) instead of BatchNorm, conv stem + MFA, no dropout | `odyssey2022_conformer_atp_config(pure_paper_mode=True)` (conv-before-MHSA, sinusoidal PE, stack-by-2 after block 3) |
 | ECAPA-TDNN / SphereFace | BatchNorm / integer `m = 4` | LayerNorm / real-valued `m = 1.35` with λ-annealing | — |
 | Augmentation | waveform MTR with recorded noise + room simulator | synthetic log-Mel noise (SNR 12–20 dB) + one-tap smoothing | — |
-| Evaluation | VoxCeleb1-O 37,720 trials over 40 speakers after VoxCeleb1-dev / VoxCeleb2 training | 10-speaker subset of `veri_test2.txt` (2,500 trials, 72 % target); 30/40 official test speakers used for training | — |
+| Evaluation | VoxCeleb1-O 37,611 trials (cleaned `veri_test2.txt`; 37,720 in the original list) over 40 speakers after VoxCeleb1-dev / VoxCeleb2 training | 10-speaker subset of `veri_test2.txt` (2,500 trials, 72 % target); 30/40 official test speakers used for training | — |
 
 ---
 
