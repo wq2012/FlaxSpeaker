@@ -279,6 +279,26 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("univWinsPooledOne", str(len(pairs) - len(worse_pool1))))
     nums.append(macro_def("univWinsMacroOne", str(len(pairs) - len(worse_macro1))))
     nums.append(macro_def("univWinsPooledThree", str(len(pairs) - len(worse_pool3))))
+    pool1_gains = [
+        d1(ex[t], "universal_pooled")["eer_percent"]
+        - d1(ex[m], "universal_pooled")["eer_percent"]
+        for m, t in pairs
+    ]
+    macro1_gains = [
+        macro(ex[t], 1)["eer_percent"] - macro(ex[m], 1)["eer_percent"]
+        for m, t in pairs
+    ]
+    pool3_gains = [
+        d3(ex[t], "universal_pooled")["eer_percent"]
+        - d3(ex[m], "universal_pooled")["eer_percent"]
+        for m, t in pairs
+    ]
+    nums.append(macro_def("univGainPooledOneMin", f2(min(pool1_gains))))
+    nums.append(macro_def("univGainPooledOneMax", f2(max(pool1_gains))))
+    nums.append(macro_def("univGainMacroOneMin", f2(min(macro1_gains))))
+    nums.append(macro_def("univGainMacroOneMax", f2(max(macro1_gains))))
+    nums.append(macro_def("univGainPooledThreeMin", f2(min(pool3_gains))))
+    nums.append(macro_def("univGainPooledThreeMax", f2(max(pool3_gains))))
 
     def pair_label(mid: str) -> str:
         e = ex[mid]

@@ -434,7 +434,7 @@ def build_demo() -> Any:
             "> **Corpus-scale caveat**: all 44 checkpoints (`v0.4.0`) are trained to convergence "
             "(`S_safe = X + 2 epochs`, 1,000–4,600 steps) on bounded public subsets (≤381 "
             "speakers, ≤9,447 utterances), achieving **14.60–22.35% pooled 1-utt EER** "
-            "(10.40–19.67% 3-utt; 19.15–29.96% on a 10-speaker VoxCeleb1-O subset; published "
+            "(10.40–19.03% 3-utt; 19.15–29.96% on a 10-speaker VoxCeleb1-O subset; published "
             "systems trained on 6,000-speaker VoxCeleb2 reach ~1%). Every verdict "
             "below is real inference of the selected checkpoint on your audio; the default decision "
             "threshold is the model's own pooled EER operating point from `eval_results.json` "

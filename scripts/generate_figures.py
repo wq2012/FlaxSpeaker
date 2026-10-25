@@ -98,22 +98,22 @@ def draw_architecture_diagram(
         # Tensor shape pill
         ax.text(
             x + w / 2,
-            y + h - hdr_h - 0.17,
+            y + h - hdr_h - 0.19,
             shape_tag,
             ha="center",
             va="center",
-            fontsize=8.0,
+            fontsize=7.8,
             fontweight="bold",
             color=hdr,
             bbox=dict(
-                boxstyle="round,pad=0.15",
+                boxstyle="round,pad=0.22",
                 facecolor="#FFFFFF",
                 edgecolor=border,
                 lw=0.8,
             ),
         )
-        top_y = y + h - hdr_h - 0.39
-        step = (h - hdr_h - 0.45) / max(len(items), 1)
+        top_y = y + h - hdr_h - 0.41
+        step = (h - hdr_h - 0.46) / max(len(items), 1)
         for idx, item in enumerate(items):
             prefix = "  " if item.startswith("  ") else "• "
             ax.text(
@@ -179,8 +179,8 @@ def draw_architecture_diagram(
         [
             "75% Within / 25% Cross-Domain",
             "Domain temp: $p_d \\propto |\\mathcal{S}_d|^{0.35}$",
-            "Mutually exclusive feature aug:",
-            "  35% noise | 32.5% SpecAug | 32.5% clean",
+            "Mutually exclusive aug: 35% noise,",
+            "  32.5% SpecAug, 32.5% clean",
             "Variable crop: $T \\sim \\mathcal{U}(90, 180)$ + mask",
             "Converged $S_{\\mathrm{safe}}{=}X{+}2$ ep (1k–4.6k st)",
         ],
