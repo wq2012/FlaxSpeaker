@@ -66,6 +66,7 @@
       "ge2e_split_batch": false,
       "loss_type": "triplet",
       "margin": 0.2,
+      "margin_warmup_steps": 0,
       "multi_row_window": 0,
       "num_speakers_per_batch": 8,
       "num_utts_per_speaker": 4,
@@ -232,6 +233,7 @@
         "ge2e_split_batch": false,
         "loss_type": "triplet",
         "margin": 0.2,
+        "margin_warmup_steps": 0,
         "multi_row_window": 0,
         "num_speakers_per_batch": 8,
         "num_utts_per_speaker": 4,
@@ -249,7 +251,7 @@
       "min_learning_rate": 1.5e-05,
       "num_processes": 4,
       "num_spks_per_batch": 8,
-      "num_steps": 400,
+      "num_steps": 4600,
       "num_utts_per_spk": 4,
       "optimizer": "adamw",
       "save_model_frequency": 0,
@@ -267,7 +269,7 @@
         "use_specaug": true
       },
       "triplet_alpha": 0.1,
-      "warmup_steps": 40,
+      "warmup_steps": 460,
       "waveform_aug": {
         "aug_prob": 0.35,
         "enabled": true,
@@ -306,17 +308,17 @@
   "scoring_type": "cosine",
   "seq_len": 180,
   "size_variant": "small",
-  "transformers_version": "5.17.0",
   "training_provenance": {
-    "variable_length_training_actual": "unknown",
-    "crop_frames": "unknown",
-    "training_code": "uncommitted working tree before 1cb90c7; the triplet branch passed variable_length=True explicitly but drew triplets from the unseeded global `random` module, so the step-0 loss cannot be fingerprinted",
-    "step0_fingerprint_match": "neither",
-    "released_initial_loss": 0.1091,
+    "variable_length_training_actual": true,
+    "crop_frames": "90-180",
+    "training_code": "9accf95 (2026-10-18) or later: variable_length_training honoured by the benchmark driver (T ~ U(min_seq_len, seq_len) crops with an exact validity mask)",
+    "step0_fingerprint_match": "variable",
+    "released_initial_loss": 0.0875,
     "head_fixed_step0_loss": 0.102,
     "head_variable_step0_loss": 0.0875,
-    "fingerprint_code_commit": "ea7ebcc+dirty",
+    "fingerprint_code_commit": "9b091a5+dirty",
     "fingerprint_source": "pretrained_models/step0_fingerprints.json",
     "note": "How the released weights were actually trained. Evaluating the released weights with the current code reproduces the archived metrics; re-training the shipped recipe reproduces the archived step-0 loss only under 'crop_frames'. See README.md 'Training-crop provenance'."
-  }
+  },
+  "transformers_version": "5.17.0"
 }

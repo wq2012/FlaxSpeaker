@@ -374,9 +374,10 @@ def verify_pair(
         "end_to_end_latency_ms": round(elapsed_ms, 2),
         "note": (
             "Steady-state latency: inference uses the masked fixed-window evaluation "
-            "path, whose single kernel is compiled when the model is loaded. 400-step "
-            "demonstration checkpoint: the released zoo spans 18.75-30.23% pooled 1-utt "
-            "EER (22.5-32.2% on the VoxCeleb1-O 10-speaker subset); see the model card."
+            "path, whose single kernel is compiled when the model is loaded. Converged "
+            "S_safe = X + 2 epochs checkpoint (v0.4.0): the 44-model zoo spans "
+            "14.60-22.35% pooled 1-utt EER (19.15-29.96% on the 10-speaker VoxCeleb1-O "
+            "subset); see the model card for corpus-scale limits."
         ),
     }
     fig = build_diagnostic_plot(
@@ -422,7 +423,7 @@ def build_demo() -> Any:
 
     with gr.Blocks(title="FlaxSpeaker — Universal Speaker Recognition") as demo:
         gr.Markdown(
-            "# FlaxSpeaker — Universal Multi-Domain Speaker Verification\n"
+            "# FlaxSpeaker (`v0.4.0`) — Universal Multi-Domain Speaker Verification\n"
             "> **Disclaimer**: **This is not an officially supported Google product.** "
             "FlaxSpeaker is a from-scratch JAX/Flax re-implementation (using only the published "
             "papers, no proprietary code) of "
@@ -430,9 +431,11 @@ def build_demo() -> Any:
             "[Dr-Vectors (`arXiv:2104.01989`)](https://arxiv.org/abs/2104.01989), "
             "[ATP pooling (`arXiv:2202.12163`)](https://arxiv.org/abs/2202.12163), and "
             "[PFAS (`arXiv:2203.05642`)](https://arxiv.org/abs/2203.05642).\n\n"
-            "> **Accuracy caveat**: all 44 checkpoints are **400-step CPU demonstration models** "
-            "(18.75-30.23% pooled 1-utt EER on the in-house trial lists, 22.5-32.2% on a "
-            "10-speaker VoxCeleb1-O subset; published systems reach ~1%). Every verdict "
+            "> **Corpus-scale caveat**: all 44 checkpoints (`v0.4.0`) are trained to convergence "
+            "(`S_safe = X + 2 epochs`, 1,000–4,600 steps) on bounded public subsets (≤381 "
+            "speakers, ≤9,447 utterances), achieving **14.60–22.35% pooled 1-utt EER** "
+            "(10.40–19.67% 3-utt; 19.15–29.96% on a 10-speaker VoxCeleb1-O subset; published "
+            "systems trained on 6,000-speaker VoxCeleb2 reach ~1%). Every verdict "
             "below is real inference of the selected checkpoint on your audio; the default decision "
             "threshold is the model's own pooled EER operating point from `eval_results.json` "
             "(1-utt for one enrollment utterance, 3-utt for two or three).\n\n"

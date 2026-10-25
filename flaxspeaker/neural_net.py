@@ -574,6 +574,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     sf_l_base = float(getattr(loss_cfg, "sphereface_lambda_base", 1000.0))
     sf_l_gamma = float(getattr(loss_cfg, "sphereface_lambda_gamma", 0.12))
     sf_l_power = float(getattr(loss_cfg, "sphereface_lambda_power", 1.0))
+    margin_warmup_steps = int(getattr(loss_cfg, "margin_warmup_steps", 0))
     triplet_alpha = float(exp_cfg.train.triplet_alpha)
     batch_size = int(exp_cfg.train.batch_size)
 
@@ -597,6 +598,15 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
             sf_l_min,
             sf_l_base * jnp.power(1.0 + sf_l_gamma * step_f, -sf_l_power),
         )
+        if margin_warmup_steps > 0:
+            warmup_frac = jnp.clip(
+                step_f / float(margin_warmup_steps), 0.0, 1.0
+            )
+            eff_margin = margin * warmup_frac
+            eff_sphere_m = 1.0 + (sphere_m - 1.0) * warmup_frac
+        else:
+            eff_margin = margin
+            eff_sphere_m = sphere_m
 
         def loss_fn(params: dict[str, Any]) -> jax.Array:
             embeddings = state.apply_fn(
@@ -708,7 +718,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     class_weights=params["_aux_class_weights"],
                     labels=batch_labels,
                     scale=scale,
-                    margin=margin,
+                    margin=eff_margin,
                 )
             elif loss_type == "cosface":
                 return losses.cosface_loss(
@@ -716,7 +726,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     class_weights=params["_aux_class_weights"],
                     labels=batch_labels,
                     scale=scale,
-                    margin=margin,
+                    margin=eff_margin,
                 )
             elif loss_type == "sphereface":
                 return losses.sphereface_loss(
@@ -724,7 +734,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     class_weights=params["_aux_class_weights"],
                     labels=batch_labels,
                     scale=scale,
-                    margin=sphere_m,
+                    margin=eff_sphere_m,
                     anneal_lambda=sf_lambda,
                 )
             elif loss_type == "softmax":

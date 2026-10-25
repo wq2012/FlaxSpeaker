@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Generate every number and table of the FlaxSpeaker paper from the JSON archives.
+"""Generate every number and table of the FlaxSpeaker v0.4.0 paper from JSON archives.
 
 Truth-in-reporting: the paper (`~/Code/github/flax_speaker_paper`) `\\input`s the files
 written here, so no benchmark number is typed by hand. Sources:
 
-- `pretrained_models/benchmark_results.json`           (44 models + TFLite exports)
-- `pretrained_models/ablation_results.json`            (5 ablation studies)
+- `pretrained_models/benchmark_results.json`           (44 converged v0.4.0 models + TFLite exports)
+- `pretrained_models/ablation_results.json`            (7 converged ablation groups incl. pure_paper_mode)
 - `pretrained_models/vox1_o_10spk_subset_results.json` (VoxCeleb1-O 10-speaker subset)
-- `pretrained_models/r2_seed_and_control_results.json` (seed floor, 800-step, matched data)
+- `pretrained_models/r2_seed_and_control_results.json` (3-seed stability, own-schedule horizon, matched data)
+- `pretrained_models/phase1_convergence_pilot.json`    (5,000-step Phase-1 convergence pilot)
+- `pretrained_models/step0_fingerprints.json`          (step-0 loss fingerprints of all 44 checkpoints)
 
 Usage: python scripts/generate_paper_tables.py --paper_dir ~/Code/github/flax_speaker_paper
 """
@@ -21,29 +23,46 @@ from typing import Any
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PM = os.path.join(REPO_ROOT, "pretrained_models")
 
-UNIV_ORDER = [
-    "univ_conformer_tiny_ge2e", "univ_conformer_small_ge2e", "univ_conformer_small_dr_vectors",
-    "univ_conformer_small_ext_softmax", "univ_conformer_base_ge2e", "univ_conformer_small_pfas_ge2e",
-    "univ_mamba_small_ge2e", "univ_transformer_small_ge2e", "univ_conformer_small_pfas",
-    "univ_conformer_small_ge2e_contrast", "univ_lstm_small_ge2e", "univ_ecapa_tdnn_base_ge2e",
-    "univ_ecapa_tdnn_small_ge2e", "univ_ecapa_tdnn_tiny_ge2e", "univ_conformer_small_triplet",
-    "univ_conformer_small_arcface", "univ_conformer_small_cosface", "univ_conformer_small_sphereface",
-    "univ_resnet_small_ge2e",
+HIGHLIGHT_SPEC_ORDER = [
+    "ls_conformer_small_arcface",
+    "ls_conformer_small_ge2e",
+    "cn_conformer_small_ge2e",
+    "vox_conformer_small_ge2e",
 ]
-HIGHLIGHT_ORDER = [
-    "ls_conformer_small_ge2e", "cn_conformer_small_ge2e", "vox_conformer_small_ge2e",
-    "univ_conformer_tiny_ge2e", "univ_conformer_small_ge2e", "univ_conformer_small_dr_vectors",
-    "univ_conformer_small_pfas_ge2e", "univ_conformer_small_pfas", "univ_conformer_small_ge2e_contrast",
-    "univ_mamba_small_ge2e", "univ_transformer_small_ge2e", "univ_lstm_small_ge2e",
+HIGHLIGHT_UNIV_ORDER = [
+    "univ_conformer_small_arcface",
+    "univ_conformer_small_sphereface",
+    "univ_conformer_small_cosface",
+    "univ_conformer_small_ge2e_contrast",
+    "univ_conformer_small_pfas_ge2e",
+    "univ_lstm_small_ge2e",
+    "univ_conformer_small_pfas",
+    "univ_resnet_small_ge2e",
+    "univ_conformer_small_ext_softmax",
+    "univ_conformer_small_ge2e",
+    "univ_conformer_small_dr_vectors",
+    "univ_conformer_tiny_ge2e",
+    "univ_conformer_base_ge2e",
     "univ_ecapa_tdnn_small_ge2e",
+    "univ_transformer_small_ge2e",
+    "univ_mamba_small_ge2e",
 ]
 TFLITE_REPOS = {
-    "univ_conformer_small_ge2e", "univ_lstm_small_ge2e", "univ_ecapa_tdnn_small_ge2e",
-    "ls_conformer_small_ge2e", "ls_lstm_small_ge2e", "ls_ecapa_tdnn_small_ge2e",
+    "univ_conformer_small_ge2e",
+    "univ_lstm_small_ge2e",
+    "univ_ecapa_tdnn_small_ge2e",
+    "ls_conformer_small_ge2e",
+    "ls_lstm_small_ge2e",
+    "ls_ecapa_tdnn_small_ge2e",
 }
 LOSS_SHORT = {
-    "ge2e_softmax": "GE2E", "ge2e_contrast": "GE2E-C$^{*}$", "extended_set_softmax": "BXS$^{*}$",
-    "arcface": "ArcFace", "cosface": "CosFace", "sphereface": "SphereFace", "triplet": "Triplet",
+    "ge2e_softmax": "GE2E",
+    "ge2e_contrast": "GE2E-C$^{*}$",
+    "extended_set_softmax": "BXS$^{*}$",
+    "arcface": "ArcFace",
+    "cosface": "CosFace",
+    "sphereface": "SphereFace",
+    "triplet": "Triplet",
 }
 SCORE_SHORT = {"cosine": "cos", "dr_vector": "DrV$^{*}$", "pfas": "PFAS$^{*}$"}
 
@@ -58,6 +77,13 @@ def f2(x: float) -> str:
 
 def f4(x: float) -> str:
     return f"{x:.4f}"
+
+
+def fmt_sci(p: float) -> str:
+    if p < 1e-3:
+        mant, expo = f"{p:.1e}".split("e")
+        return f"{mant}\\times10^{{{int(expo)}}}"
+    return f"{p:.2f}"
 
 
 def load(name: str) -> Any:
@@ -79,12 +105,12 @@ def macro(e: dict, n: int) -> dict:
 
 def bold_max(values: list[float], fmt=f2) -> list[str]:
     best = max(values)
-    return [f"\\textbf{{{fmt(v)}}}" if v == best else fmt(v) for v in values]
+    return [f"\\textbf{{{fmt(v)}}}" if round(v, 6) == round(best, 6) else fmt(v) for v in values]
 
 
 def bold_min(values: list[float], fmt=f2) -> list[str]:
     m = min(values)
-    return [f"\\textbf{{{fmt(v)}}}" if v == m else fmt(v) for v in values]
+    return [f"\\textbf{{{fmt(v)}}}" if round(v, 6) == round(m, 6) else fmt(v) for v in values]
 
 
 def emit(path: str, text: str) -> None:
@@ -97,111 +123,187 @@ def macro_def(name: str, value: str) -> str:
     return f"\\newcommand{{\\{name}}}{{{value}}}\n"
 
 
+def add_mde_nums(nums: list[str], prefix: str, mde: dict) -> None:
+    p1 = mde["domains_1utt"]["universal_pooled"]
+    p3 = mde["domains_3utt"]["universal_pooled"]
+    nums.append(macro_def(prefix + "LsOne", f2(mde["domains_1utt"]["librispeech"]["eer_percent"])))
+    nums.append(macro_def(prefix + "CnOne", f2(mde["domains_1utt"]["cnceleb2"]["eer_percent"])))
+    nums.append(macro_def(prefix + "VoxOne", f2(mde["domains_1utt"]["voxceleb1"]["eer_percent"])))
+    nums.append(macro_def(prefix + "MacroOne", f2(mde["universal_macro_avg_1utt"]["eer_percent"])))
+    nums.append(macro_def(prefix + "MacroThree", f2(mde["universal_macro_avg_3utt"]["eer_percent"])))
+    nums.append(macro_def(prefix + "PooledOne", f2(p1["eer_percent"])))
+    nums.append(macro_def(prefix + "PooledOneLo", f2(p1["eer_ci95_low_percent"])))
+    nums.append(macro_def(prefix + "PooledOneHi", f2(p1["eer_ci95_high_percent"])))
+    nums.append(macro_def(prefix + "PooledThree", f2(p3["eer_percent"])))
+
+
 def main(paper_dir: str) -> None:
     out_dir = os.path.join(paper_dir, "generated")
     os.makedirs(out_dir, exist_ok=True)
     bench = load("benchmark_results.json")
     abl = load("ablation_results.json")
     vox = load("vox1_o_10spk_subset_results.json")
-    r2_path = os.path.join(PM, "r2_seed_and_control_results.json")
-    r2 = json.load(open(r2_path, encoding="utf-8")) if os.path.exists(r2_path) else {}
-    r3_path = os.path.join(PM, "r3_fixed_crop_controls.json")
-    r3 = json.load(open(r3_path, encoding="utf-8")) if os.path.exists(r3_path) else {}
-    fp_path = os.path.join(PM, "step0_fingerprints.json")
-    fps = json.load(open(fp_path, encoding="utf-8")) if os.path.exists(fp_path) else {}
+    r2 = load("r2_seed_and_control_results.json")
+    p1_pilot = load("phase1_convergence_pilot.json")
+    fps = load("step0_fingerprints.json")
+
     ex = bench["experiments"]
     assert len(ex) == 44, len(ex)
+
+    univ_order = sorted(
+        [k for k in ex if k.startswith("univ_")],
+        key=lambda k: (d1(ex[k], "universal_pooled")["eer_percent"], macro(ex[k], 1)["eer_percent"]),
+    )
+    single_order = sorted(
+        [k for k in ex if not k.startswith("univ_")],
+        key=lambda k: (
+            {"librispeech": 0, "cnceleb2": 1, "voxceleb1": 2}[ex[k]["train_dataset"]],
+            d1(ex[k], ex[k]["train_dataset"])["eer_percent"],
+        ),
+    )
 
     # ------------------------------------------------------------------ numbers.tex
     nums: list[str] = []
     times = sorted(float(e["train_time_sec"]) / 60.0 for e in ex.values())
+    total_hours = sum(float(e["train_time_sec"]) for e in ex.values()) / 3600.0
     tmin = min(ex.items(), key=lambda kv: kv[1]["train_time_sec"])
     tmax = max(ex.items(), key=lambda kv: kv[1]["train_time_sec"])
     nums.append(macro_def("numModels", str(len(ex))))
     nums.append(macro_def("trainMinMinutes", f"{times[0]:.1f}"))
     nums.append(macro_def("trainMaxMinutes", f"{times[-1]:.1f}"))
     nums.append(macro_def("trainMedianMinutes", f"{statistics.median(times):.1f}"))
+    nums.append(macro_def("trainTotalHours", f"{total_hours:.2f}"))
     nums.append(macro_def("trainMinModel", tex_escape(tmin[0])))
     nums.append(macro_def("trainMaxModel", tex_escape(tmax[0])))
+
     params = [int(e["num_parameters"]) for e in ex.values()]
     nums.append(macro_def("paramsMinM", f"{min(params) / 1e6:.2f}"))
     nums.append(macro_def("paramsMaxM", f"{max(params) / 1e6:.2f}"))
+
     pooled_all = [d1(e, "universal_pooled")["eer_percent"] for e in ex.values()]
+    pooled_univ = [d1(ex[k], "universal_pooled")["eer_percent"] for k in univ_order]
+    pooled3_all = [d3(e, "universal_pooled")["eer_percent"] for e in ex.values()]
     nums.append(macro_def("zooPooledOneMin", f2(min(pooled_all))))
     nums.append(macro_def("zooPooledOneMax", f2(max(pooled_all))))
+    nums.append(macro_def("zooUnivPooledOneMin", f2(min(pooled_univ))))
+    nums.append(macro_def("zooUnivPooledOneMax", f2(max(pooled_univ))))
+    nums.append(macro_def("zooPooledThreeMin", f2(min(pooled3_all))))
+    nums.append(macro_def("zooPooledThreeMax", f2(max(pooled3_all))))
     losses_used = sorted({e["loss_type"] for e in ex.values()})
     nums.append(macro_def("numLossesBenchmarked", str(len(losses_used))))
 
     def add_model_nums(prefix: str, mid: str) -> None:
         e = ex[mid]
-        nums.append(macro_def(prefix + "LsOne", f2(d1(e, "librispeech")["eer_percent"])))
-        nums.append(macro_def(prefix + "CnOne", f2(d1(e, "cnceleb2")["eer_percent"])))
-        nums.append(macro_def(prefix + "VoxOne", f2(d1(e, "voxceleb1")["eer_percent"])))
-        nums.append(macro_def(prefix + "MacroOne", f2(macro(e, 1)["eer_percent"])))
-        nums.append(macro_def(prefix + "PooledOne", f2(d1(e, "universal_pooled")["eer_percent"])))
-        nums.append(macro_def(prefix + "PooledOneLo", f2(d1(e, "universal_pooled")["eer_ci95_low_percent"])))
-        nums.append(macro_def(prefix + "PooledOneHi", f2(d1(e, "universal_pooled")["eer_ci95_high_percent"])))
-        nums.append(macro_def(prefix + "MacroThree", f2(macro(e, 3)["eer_percent"])))
-        nums.append(macro_def(prefix + "PooledThree", f2(d3(e, "universal_pooled")["eer_percent"])))
+        add_mde_nums(nums, prefix, e["multi_domain_eval"])
+        nums.append(macro_def(prefix + "LsThree", f2(d3(e, "librispeech")["eer_percent"])))
+        nums.append(macro_def(prefix + "CnThree", f2(d3(e, "cnceleb2")["eer_percent"])))
+        nums.append(macro_def(prefix + "VoxThree", f2(d3(e, "voxceleb1")["eer_percent"])))
         nums.append(macro_def(prefix + "MacroMinDcfOne", f4(macro(e, 1)["min_dcf_001"])))
         nums.append(macro_def(prefix + "MacroMinDcfThree", f4(macro(e, 3)["min_dcf_001"])))
+        nums.append(macro_def(prefix + "PooledAucOne", f4(d1(e, "universal_pooled")["roc_auc"])))
         nums.append(macro_def(prefix + "PooledAucThree", f4(d3(e, "universal_pooled")["roc_auc"])))
         nums.append(macro_def(prefix + "VoxSubset", f2(e["cross_dataset_eval"]["vox1_o_10spk_subset"]["eer_percent"])))
         nums.append(macro_def(prefix + "ParamsM", f"{int(e['num_parameters']) / 1e6:.2f}"))
+        nums.append(macro_def(prefix + "Steps", f"{int(e['num_steps']):,}"))
         nums.append(macro_def(prefix + "InitLoss", f"{float(e['initial_loss']):.2f}"))
         nums.append(macro_def(prefix + "FinalLoss", f"{float(e['final_loss']):.2f}"))
         nums.append(macro_def(prefix + "InitLossFour", f"{float(e['initial_loss']):.4f}"))
         nums.append(macro_def(prefix + "FinalLossFour", f"{float(e['final_loss']):.4f}"))
 
     for prefix, mid in [
-        ("univSmall", "univ_conformer_small_ge2e"), ("univTiny", "univ_conformer_tiny_ge2e"),
-        ("univBase", "univ_conformer_base_ge2e"), ("lsSmall", "ls_conformer_small_ge2e"),
-        ("cnSmall", "cn_conformer_small_ge2e"), ("voxSmall", "vox_conformer_small_ge2e"),
-        ("univDr", "univ_conformer_small_dr_vectors"), ("univPfas", "univ_conformer_small_pfas"),
-        ("univPfasGe", "univ_conformer_small_pfas_ge2e"), ("univContrast", "univ_conformer_small_ge2e_contrast"),
-        ("univMamba", "univ_mamba_small_ge2e"), ("univTransformer", "univ_transformer_small_ge2e"),
-        ("univLstm", "univ_lstm_small_ge2e"), ("univEcapaS", "univ_ecapa_tdnn_small_ge2e"),
-        ("univResnet", "univ_resnet_small_ge2e"), ("univArc", "univ_conformer_small_arcface"),
-        ("cnDr", "cn_conformer_small_dr_vectors"), ("voxEcapaXs", "vox_ecapa_tdnn_small_ext_softmax"),
+        ("univSmall", "univ_conformer_small_ge2e"),
+        ("univTiny", "univ_conformer_tiny_ge2e"),
+        ("univBase", "univ_conformer_base_ge2e"),
+        ("lsSmall", "ls_conformer_small_ge2e"),
+        ("lsTiny", "ls_conformer_tiny_ge2e"),
+        ("lsBase", "ls_conformer_base_ge2e"),
+        ("lsArc", "ls_conformer_small_arcface"),
+        ("lsCos", "ls_conformer_small_cosface"),
+        ("lsSphere", "ls_conformer_small_sphereface"),
+        ("cnSmall", "cn_conformer_small_ge2e"),
+        ("cnEcapaArc", "cn_ecapa_tdnn_small_arcface"),
+        ("voxSmall", "vox_conformer_small_ge2e"),
+        ("univArc", "univ_conformer_small_arcface"),
+        ("univCos", "univ_conformer_small_cosface"),
+        ("univSphere", "univ_conformer_small_sphereface"),
+        ("univContrast", "univ_conformer_small_ge2e_contrast"),
+        ("univExt", "univ_conformer_small_ext_softmax"),
+        ("univDr", "univ_conformer_small_dr_vectors"),
+        ("univPfas", "univ_conformer_small_pfas"),
+        ("univPfasGe", "univ_conformer_small_pfas_ge2e"),
+        ("univTriplet", "univ_conformer_small_triplet"),
+        ("univMamba", "univ_mamba_small_ge2e"),
+        ("univTransformer", "univ_transformer_small_ge2e"),
+        ("univLstm", "univ_lstm_small_ge2e"),
+        ("univEcapaT", "univ_ecapa_tdnn_tiny_ge2e"),
+        ("univEcapaS", "univ_ecapa_tdnn_small_ge2e"),
+        ("univEcapaB", "univ_ecapa_tdnn_base_ge2e"),
+        ("lsEcapaT", "ls_ecapa_tdnn_tiny_ge2e"),
+        ("lsEcapaS", "ls_ecapa_tdnn_small_ge2e"),
+        ("lsEcapaB", "ls_ecapa_tdnn_base_ge2e"),
+        ("univResnet", "univ_resnet_small_ge2e"),
+        ("lsResnet", "ls_resnet_small_ge2e"),
+        ("cnDr", "cn_conformer_small_dr_vectors"),
+        ("voxEcapaXs", "vox_ecapa_tdnn_small_ext_softmax"),
     ]:
         add_model_nums(prefix, mid)
 
+    # Phase-1 pilot summary macros.
+    p1_cap = p1_pilot["capacity_scaling_comparison"]["best_converged"]
+    nums.append(macro_def("pOneBaseLsBest", f2(p1_cap["base"]["librispeech_1utt_eer"])))
+    nums.append(macro_def("pOneSmallLsBest", f2(p1_cap["small"]["librispeech_1utt_eer"])))
+    nums.append(macro_def("pOneTinyLsBest", f2(p1_cap["tiny"]["librispeech_1utt_eer"])))
+    p1_mw = p1_pilot["margin_warmup_comparison"]["univ_conformer_small_arcface"]
+    nums.append(macro_def("pOneArcConstPooled", f2(p1_mw["constant_margin_best_pooled_1utt_eer"])))
+    nums.append(macro_def("pOneArcWarmPooled", f2(p1_mw["warmup500_best_pooled_1utt_eer"])))
+
     # Matched univ_* vs ls_* pairs.
     pairs = []
-    for mid in UNIV_ORDER:
+    for mid in univ_order:
         twin = "ls_" + mid[len("univ_"):]
         if twin in ex:
             pairs.append((mid, twin))
     worse_macro1 = [m for m, t in pairs if macro(ex[m], 1)["eer_percent"] > macro(ex[t], 1)["eer_percent"]]
-    worse_pool1 = [m for m, t in pairs if d1(ex[m], "universal_pooled")["eer_percent"] > d1(ex[t], "universal_pooled")["eer_percent"]]
-    worse_pool3 = [m for m, t in pairs if d3(ex[m], "universal_pooled")["eer_percent"] > d3(ex[t], "universal_pooled")["eer_percent"]]
+    worse_pool1 = [
+        m for m, t in pairs
+        if d1(ex[m], "universal_pooled")["eer_percent"] > d1(ex[t], "universal_pooled")["eer_percent"]
+    ]
+    worse_pool3 = [
+        m for m, t in pairs
+        if d3(ex[m], "universal_pooled")["eer_percent"] > d3(ex[t], "universal_pooled")["eer_percent"]
+    ]
     nums.append(macro_def("numMatchedPairs", str(len(pairs))))
     nums.append(macro_def("univWorseMacroOne", str(len(worse_macro1))))
     nums.append(macro_def("univWorsePooledOne", str(len(worse_pool1))))
     nums.append(macro_def("univWorsePooledThree", str(len(worse_pool3))))
     nums.append(macro_def("univWinsPooledOne", str(len(pairs) - len(worse_pool1))))
+    nums.append(macro_def("univWinsMacroOne", str(len(pairs) - len(worse_macro1))))
+    nums.append(macro_def("univWinsPooledThree", str(len(pairs) - len(worse_pool3))))
 
     def pair_label(mid: str) -> str:
-        """Human-readable label for a `univ_*` model: '<backbone>-<size>/<objective>'."""
         e = ex[mid]
         backbone = {
-            "conformer": "Conformer", "transformer": "Transformer", "mamba": "Mamba",
-            "lstm": "LSTM", "ecapa_tdnn": "ECAPA-TDNN", "resnet": "ResNet-18",
+            "conformer": "Conformer",
+            "transformer": "Transformer",
+            "mamba": "Mamba",
+            "lstm": "LSTM",
+            "ecapa_tdnn": "ECAPA-TDNN",
+            "resnet": "ResNet-18",
         }.get(e["backbone"], e["backbone"])
         obj = {
-            "ge2e_softmax": "GE2E", "ge2e_contrast": "GE2E-C$^{*}$",
-            "extended_set_softmax": "BXS$^{*}$", "arcface": "ArcFace", "cosface": "CosFace",
-            "sphereface": "SphereFace", "triplet": "triplet",
+            "ge2e_softmax": "GE2E",
+            "ge2e_contrast": "GE2E-C$^{*}$",
+            "extended_set_softmax": "BXS$^{*}$",
+            "arcface": "ArcFace",
+            "cosface": "CosFace",
+            "sphereface": "SphereFace",
+            "triplet": "triplet",
         }.get(e["loss_type"], e["loss_type"])
         if e["scoring_type"] == "dr_vector":
             obj = "Dr-Vec$^{*}$"
         elif e["scoring_type"] == "pfas":
             obj = "PFAS-SN$^{*}$/\\allowbreak " + ("GE2E" if e["loss_type"] == "ge2e_softmax" else "BXS")
         return f"{backbone}-{e['size_variant'][0].upper()}/\\allowbreak {obj}"
-
-    win_pool1 = [m for m, _ in pairs if m not in worse_pool1]
-    nums.append(macro_def("univWinPooledOneList", ", ".join(pair_label(m) for m in win_pool1)))
-    nums.append(macro_def("univLosePooledOneList", ", ".join(pair_label(m) for m in worse_pool1)))
 
     # VoxCeleb1-O subset summary + Spearman vs pooled.
     vox_eers = {k: v["eer_percent"] for k, v in vox["models"].items()}
@@ -226,126 +328,95 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("voxSubsetMaxEer", f2(worst_vox[1])))
     nums.append(macro_def("voxSubsetMaxModel", tex_escape(worst_vox[0])))
     nums.append(macro_def("spearmanPooledVox", f"{rho:.2f}"))
-    nums.append(macro_def("spearmanPooledVoxP", f"{pval:.2f}"))
+    nums.append(macro_def("spearmanPooledVoxP", fmt_sci(pval)))
     nums.append(macro_def("spearmanInVoxVox", f"{rho_v:.2f}"))
-    mant, expo = f"{pval_v:.1e}".split("e")
-    nums.append(macro_def("spearmanInVoxVoxP", f"{mant}\\times10^{{{int(expo)}}}"))
+    nums.append(macro_def("spearmanInVoxVoxP", fmt_sci(pval_v)))
 
-    # Ablations.
-    h = abl["training_horizon_ablation"]
-    for k, tag in (("steps_400", "Four"), ("steps_800", "Eight"), ("steps_1200", "Twelve")):
-        e = h[k]
-        nums.append(macro_def(f"horizon{tag}MacroOne", f2(e["multi_domain_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
-        nums.append(macro_def(f"horizon{tag}PooledOne", f2(e["multi_domain_eval"]["domains_1utt"]["universal_pooled"]["eer_percent"])))
-        nums.append(macro_def(f"horizon{tag}MacroThree", f2(e["multi_domain_eval"]["universal_macro_avg_3utt"]["eer_percent"])))
-        nums.append(macro_def(f"horizon{tag}PooledThree", f2(e["multi_domain_eval"]["domains_3utt"]["universal_pooled"]["eer_percent"])))
-        nums.append(macro_def(f"horizon{tag}AucThree", f4(e["multi_domain_eval"]["domains_3utt"]["universal_pooled"]["roc_auc"])))
-        nums.append(macro_def(f"horizon{tag}InitLoss", f"{e['initial_loss']:.4f}"))
-        nums.append(macro_def(f"horizon{tag}FinalLoss", f"{e['final_loss']:.4f}"))
-    m = abl["mamba_directionality_ablation"]
-    for k, tag in (("unidirectional", "Uni"), ("bidirectional", "Bi")):
-        d = m[k]["multi_domain_eval"]
-        for dom, dtag in (("librispeech", "Ls"), ("cnceleb2", "Cn"), ("voxceleb1", "Vox"), ("universal_pooled", "Pooled")):
-            nums.append(macro_def(f"mamba{tag}{dtag}MinDcf", f4(d["domains_1utt"][dom]["min_dcf_001"])))
-            nums.append(macro_def(f"mamba{tag}{dtag}Eer", f2(d["domains_1utt"][dom]["eer_percent"])))
-        nums.append(macro_def(f"mamba{tag}MacroMinDcf", f4(d["universal_macro_avg_1utt"]["min_dcf_001"])))
-        nums.append(macro_def(f"mamba{tag}MacroEer", f2(d["universal_macro_avg_1utt"]["eer_percent"])))
+    # Ablations (all converged v0.4.0).
+    st = abl.get("studies", {})
     dm = abl["domain_mixing_ablation"]
-    for k, tag in (("p_within_0.0", "Zero"), ("p_within_0.75", "Default"), ("p_within_1.0", "One")):
-        p = dm[k]["multi_domain_eval"]["domains_1utt"]["universal_pooled"]
-        nums.append(macro_def(f"mix{tag}PooledOne", f2(p["eer_percent"])))
-        nums.append(macro_def(f"mix{tag}PooledOneLo", f2(p["eer_ci95_low_percent"])))
-        nums.append(macro_def(f"mix{tag}PooledOneHi", f2(p["eer_ci95_high_percent"])))
-    xs = abl["extended_set_and_dr_ablation"]
-    nums.append(macro_def("xsPureMacroOne", f2(xs["ext_softmax_pure_eq3"]["multi_domain_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
-    nums.append(macro_def("xsBlendMacroOne", f2(xs["ext_softmax_blended"]["multi_domain_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
-    nums.append(macro_def("drThreePureMacroOne", f2(xs["dr_vectors_3term_pure_eq7"]["multi_domain_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
-    nums.append(macro_def("drOneBlendMacroOne", f2(xs["dr_vectors_1term_blended"]["multi_domain_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
-    vl = abl["variable_length_ablation"]
-    for k, tag in (("variable_length_true", "Var"), ("variable_length_false", "Fixed")):
-        fs = vl[k]["full_seq_eval"]
-        sh = vl[k]["short_1s_eval"]
-        nums.append(macro_def(f"vl{tag}FullMacroOne", f2(fs["universal_macro_avg_1utt"]["eer_percent"])))
-        nums.append(macro_def(f"vl{tag}FullPooledOne", f2(fs["domains_1utt"]["universal_pooled"]["eer_percent"])))
-        nums.append(macro_def(f"vl{tag}ShortMacroOne", f2(sh["universal_macro_avg_1utt"]["eer_percent"])))
-        nums.append(macro_def(f"vl{tag}ShortPooledOne", f2(sh["domains_1utt"]["universal_pooled"]["eer_percent"])))
-        nums.append(macro_def(f"vl{tag}ShortLsOne", f2(sh["domains_1utt"]["librispeech"]["eer_percent"])))
-        nums.append(macro_def(f"vl{tag}ShortLsThree", f2(sh["domains_3utt"]["librispeech"]["eer_percent"])))
+    for k, tag in (("p_within_0.0", "mixZero"), ("p_within_0.75", "mixDefault"), ("p_within_1.0", "mixOne")):
+        add_mde_nums(nums, tag, dm[k]["multi_domain_eval"])
 
-    # Fixed-crop controls (same code, same crop regime as the released zoo).
-    fc_mix = r3.get("domain_mixing_fixed_crop", {})
-    nums.append(macro_def("fixedCropControlsAvailable", "1" if fc_mix else "0"))
-    for k, tag in (("p_within_0.0", "Zero"), ("p_within_1.0", "One")):
-        rec = fc_mix.get(k)
-        if rec:
-            p = rec["multi_domain_eval"]["domains_1utt"]["universal_pooled"]
-            nums.append(macro_def(f"fcMix{tag}PooledOne", f2(p["eer_percent"])))
-            nums.append(macro_def(f"fcMix{tag}PooledOneLo", f2(p["eer_ci95_low_percent"])))
-            nums.append(macro_def(f"fcMix{tag}PooledOneHi", f2(p["eer_ci95_high_percent"])))
-            nums.append(macro_def(f"fcMix{tag}MacroOne", f2(rec["multi_domain_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
-            nums.append(macro_def(f"fcMix{tag}InitLoss", f"{rec['initial_loss']:.4f}"))
-    # The fixed-crop p_within = 0.75, seed 42 arm is the archived Study-3 fixed-length run.
-    vfix = vl["variable_length_false"]
-    pfix = vfix["full_seq_eval"]["domains_1utt"]["universal_pooled"]
-    nums.append(macro_def("fcMixDefaultPooledOne", f2(pfix["eer_percent"])))
-    nums.append(macro_def("fcMixDefaultPooledOneLo", f2(pfix["eer_ci95_low_percent"])))
-    nums.append(macro_def("fcMixDefaultPooledOneHi", f2(pfix["eer_ci95_high_percent"])))
-    nums.append(macro_def("fcMixDefaultMacroOne", f2(vfix["full_seq_eval"]["universal_macro_avg_1utt"]["eer_percent"])))
-    nums.append(macro_def("fcMixDefaultInitLoss", f"{vfix['initial_loss']:.4f}"))
-    nums.append(macro_def("fcMixDefaultFinalLoss", f"{vfix['final_loss']:.4f}"))
-    fc_seed = r3.get("seed_noise_floor_fixed_crop", {}).get("univ_conformer_small_ge2e")
-    nums.append(macro_def("fixedCropSeedFloorAvailable", "1" if fc_seed and "mean_std_over_seeds" in fc_seed else "0"))
-    if fc_seed and "mean_std_over_seeds" in fc_seed:
-        ms = fc_seed["mean_std_over_seeds"]
-        seeds_sorted = sorted(fc_seed["per_seed"], key=int)
-        nums.append(macro_def("fcSeedN", str(len(seeds_sorted))))
-        nums.append(macro_def("fcSeedSeeds", ", ".join(seeds_sorted)))
-        nums.append(macro_def("fcSeedPooledOneList", " / ".join(f2(fc_seed["per_seed"][sd]["summary"]["pooled_1utt_eer"]) for sd in seeds_sorted)))
-        for key, ktag in (("pooled_1utt_eer", "PooledOne"), ("macro_1utt_eer", "MacroOne"), ("pooled_3utt_eer", "PooledThree"), ("macro_3utt_eer", "MacroThree")):
-            nums.append(macro_def("fcSeed" + ktag + "Mean", f2(ms[key]["mean"])))
-            nums.append(macro_def("fcSeed" + ktag + "Std", f2(ms[key]["std"])))
-            nums.append(macro_def("fcSeed" + ktag + "Min", f2(ms[key]["min"])))
-            nums.append(macro_def("fcSeed" + ktag + "Max", f2(ms[key]["max"])))
-    ls_fc = r3.get("ls_fixed_crop_seed42", {}).get("ls_conformer_small_ge2e")
-    nums.append(macro_def("lsFixedRerunAvailable", "1" if ls_fc else "0"))
-    if ls_fc:
-        sm = ls_fc["summary"]
-        nums.append(macro_def("lsFixedRerunPooledOne", f2(sm["pooled_1utt_eer"])))
-        nums.append(macro_def("lsFixedRerunMacroOne", f2(sm["macro_1utt_eer"])))
-        nums.append(macro_def("lsFixedRerunLsOne", f2(sm["ls_1utt_eer"])))
-        nums.append(macro_def("lsFixedRerunPooledThree", f2(sm["pooled_3utt_eer"])))
-        pls = ls_fc["multi_domain_eval"]["domains_1utt"]["universal_pooled"]
-        nums.append(macro_def("lsFixedRerunPooledOneLo", f2(pls["eer_ci95_low_percent"])))
-        nums.append(macro_def("lsFixedRerunPooledOneHi", f2(pls["eer_ci95_high_percent"])))
-        nums.append(macro_def("lsFixedRerunInitLoss", f"{float(ls_fc['initial_loss']):.4f}"))
-        nums.append(macro_def("lsFixedRerunFinalLoss", f"{float(ls_fc['final_loss']):.4f}"))
-    nums.append(macro_def("fixedCropCommit", tex_escape(str(r3.get("code_commit", "")))))
+    xs = abl["extended_set_and_dr_ablation"]
+    add_mde_nums(nums, "xsPure", xs["ext_softmax_pure_eq3"]["multi_domain_eval"])
+    add_mde_nums(nums, "xsBlend", xs["ext_softmax_blended"]["multi_domain_eval"])
+    add_mde_nums(nums, "drThreePure", xs["dr_vectors_3term_pure_eq7"]["multi_domain_eval"])
+    add_mde_nums(nums, "drOneBlend", xs["dr_vectors_1term_blended"]["multi_domain_eval"])
+    if "dr_vector_terms_and_contrast_ablation" in st:
+        dvc = st["dr_vector_terms_and_contrast_ablation"]
+        add_mde_nums(nums, "drThreeSymBlend", dvc["dr_vector_3term_sym_skip"]["multi_domain_eval"])
+    if "pfas_sn_attention_and_anchor_ablation" in st:
+        pfa = st["pfas_sn_attention_and_anchor_ablation"]
+        add_mde_nums(nums, "pfasMlpAnchor", pfa["pfas_sn_mlp_with_anchor"]["multi_domain_eval"])
+        add_mde_nums(nums, "pfasMlpNoAnchor", pfa["pfas_sn_mlp_no_anchor"]["multi_domain_eval"])
+        add_mde_nums(nums, "pfasDotAnchor", pfa["pfas_sn_dot_with_anchor"]["multi_domain_eval"])
+        add_mde_nums(nums, "pfasMaxpoolAnchor", pfa["pfas_sn_maxpool_with_anchor"]["multi_domain_eval"])
+
+    vl = abl["variable_length_ablation"]
+    for k, tag in (("variable_length_true", "vlVar"), ("variable_length_false", "vlFixed")):
+        add_mde_nums(nums, tag + "Full", vl[k]["full_seq_eval"])
+        add_mde_nums(nums, tag + "Short", vl[k]["short_1s_eval"])
+
+    own_h = r2.get("own_schedule_horizon", {})
+    for k, tag in (
+        ("steps_400", "ownFour"),
+        ("steps_800", "ownEight"),
+        ("steps_1200", "ownTwelve"),
+        ("steps_2400", "ownTwentyFour"),
+        ("steps_4600", "ownFortySix"),
+    ):
+        if k in own_h:
+            add_mde_nums(nums, tag, own_h[k]["multi_domain_eval"])
+
+    m_ls = abl["mamba_directionality_ablation"]
+    for k, tag in (("unidirectional", "mambaUni"), ("bidirectional", "mambaBi")):
+        add_mde_nums(nums, tag, m_ls[k]["multi_domain_eval"])
+    if "mamba_direction_ablation" in st:
+        m_u = st["mamba_direction_ablation"]
+        add_mde_nums(nums, "mambaUnivUni", m_u["mamba_unidirectional"]["multi_domain_eval"])
+        add_mde_nums(nums, "mambaUnivBi", m_u["mamba_bidirectional"]["multi_domain_eval"])
+
+    if "ecapa_norm_order_ablation" in st:
+        ec = st["ecapa_norm_order_ablation"]
+        add_mde_nums(nums, "ecapaLnBefore", ec["ecapa_ln_before_act"]["multi_domain_eval"])
+        add_mde_nums(nums, "ecapaLnAfter", ec["ecapa_bn_style_after_act"]["multi_domain_eval"])
+
+    if "vad_and_agc_ablation" in st:
+        va = st["vad_and_agc_ablation"]
+        add_mde_nums(nums, "vadDefault", va["vad_26db_with_agc"]["multi_domain_eval"])
+        add_mde_nums(nums, "vadNoAgc", va["vad_26db_no_agc"]["multi_domain_eval"])
+        add_mde_nums(nums, "vadTwentyNoAgc", va["vad_20db_no_agc"]["multi_domain_eval"])
+
+    if "paper_faithful_presets_smoke_test" in st:
+        pf = st["paper_faithful_presets_smoke_test"]
+        add_mde_nums(nums, "pfGe", pf["icassp2018_ge2e_pure_paper"]["multi_domain_eval"])
+        add_mde_nums(nums, "pfDr", pf["interspeech2021_dr_vectors_pure_paper"]["multi_domain_eval"])
+        add_mde_nums(nums, "pfAtp", pf["odyssey2022_conformer_atp_pure_paper"]["multi_domain_eval"])
+        add_mde_nums(nums, "pfPfas", pf["odyssey2022_pfas_pure_paper"]["multi_domain_eval"])
+
     # Step-0 fingerprint histogram.
     fp_ck = fps.get("checkpoints", {})
-    nums.append(macro_def("fpAvailable", "1" if fp_ck else "0"))
-    if fp_ck:
-        hist = {}
-        for v in fp_ck.values():
-            hist[v["match"]] = hist.get(v["match"], 0) + 1
-        nums.append(macro_def("fpTotal", str(len(fp_ck))))
-        nums.append(macro_def("fpNumFixed", str(hist.get("fixed", 0))))
-        nums.append(macro_def("fpNumFixedApprox", str(hist.get("fixed_approx", 0))))
-        nums.append(macro_def("fpNumFixedAll", str(hist.get("fixed", 0) + hist.get("fixed_approx", 0))))
-        nums.append(macro_def("fpNumVariable", str(hist.get("variable", 0) + hist.get("variable_approx", 0))))
-        nums.append(macro_def("fpNumBoth", str(hist.get("both", 0))))
-        nums.append(macro_def("fpNumNeither", str(hist.get("neither", 0))))
-        nums.append(macro_def("fpCommit", tex_escape(str(fps.get("code_commit", "")))))
-        nums.append(macro_def("fpNeitherList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] == "neither")))
-        nums.append(macro_def("fpBothList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] == "both")))
-        nums.append(macro_def("fpVariableList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] in ("variable", "variable_approx"))))
-        nums.append(macro_def("fpFixedApproxList", ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] == "fixed_approx")))
+    hist = fps.get("histogram", {})
+    nums.append(macro_def("fpTotal", str(len(fp_ck))))
+    nums.append(macro_def("fpNumVariable", str(hist.get("variable", 0) + hist.get("variable_approx", 0))))
+    nums.append(macro_def("fpNumBoth", str(hist.get("both", 0))))
+    nums.append(macro_def("fpNumFixedAll", str(hist.get("fixed", 0) + hist.get("fixed_approx", 0))))
+    nums.append(macro_def("fpNumNeither", str(hist.get("neither", 0))))
+    nums.append(macro_def("fpCommit", tex_escape(str(fps.get("code_commit", "")))))
+    nums.append(
+        macro_def(
+            "fpBothList",
+            ", ".join("\\texttt{" + tex_escape(k) + "}" for k, v in sorted(fp_ck.items()) if v["match"] == "both"),
+        )
+    )
 
     # TFLite.
     tf = bench["tflite_exports"]
     ratios, fp32_mb, int8_mb, cos = [], [], [], []
     for k, v in tf.items():
         if k.endswith("_int8"):
-            base = k[: -len("_int8")]
+            base = k[:-len("_int8")]
             fp = tf[base + "_fp32"]["size_bytes"]
             ratios.append(fp / v["size_bytes"])
             fp32_mb.append(fp / 1e6)
@@ -391,95 +462,93 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def("tfliteEerDeltaMax", f2(max(tfl_eer_deltas))))
         nums.append(macro_def("tfliteTruncMin", f2(min(tfl_trunc))))
         nums.append(macro_def("tfliteTruncMax", f2(max(tfl_trunc))))
-        lat_ratio = ex["univ_lstm_small_ge2e"]["tflite_eval"]
-        nums.append(macro_def("tfliteLstmSpeedup", f"{lat_ratio['latency_ms_fp32_mean_50runs'] / lat_ratio['latency_ms_int8_mean_50runs']:.1f}"))
+        lat_u = ex["univ_lstm_small_ge2e"]["tflite_eval"]
+        lat_l = ex["ls_lstm_small_ge2e"]["tflite_eval"]
+        sp_u = lat_u["latency_ms_fp32_mean_50runs"] / lat_u["latency_ms_int8_mean_50runs"]
+        sp_l = lat_l["latency_ms_fp32_mean_50runs"] / lat_l["latency_ms_int8_mean_50runs"]
+        nums.append(macro_def("tfliteLstmSpeedupMin", f"{min(sp_u, sp_l):.1f}"))
+        nums.append(macro_def("tfliteLstmSpeedupMax", f"{max(sp_u, sp_l):.1f}"))
 
-    # Round-2 controls.
-    seed_rows = []
-    if r2.get("seed_noise_floor"):
-        for mid, entry in r2["seed_noise_floor"].items():
-            if "mean_std_over_seeds" not in entry:
-                continue
-            ms = entry["mean_std_over_seeds"]
-            tag = "univSeed" if mid.startswith("univ") else "lsSeed"
-            nums.append(macro_def(tag + "N", str(len(entry["per_seed"]))))
-            nums.append(macro_def(tag + "Seeds", ", ".join(str(s) for s in entry["seeds"])))
-            for key, ktag in (("pooled_1utt_eer", "PooledOne"), ("macro_1utt_eer", "MacroOne"), ("pooled_3utt_eer", "PooledThree"), ("macro_3utt_eer", "MacroThree"), ("ls_1utt_eer", "LsOne")):
-                nums.append(macro_def(tag + ktag + "Mean", f2(ms[key]["mean"])))
-                nums.append(macro_def(tag + ktag + "Std", f2(ms[key]["std"])))
-                nums.append(macro_def(tag + ktag + "Min", f2(ms[key]["min"])))
-                nums.append(macro_def(tag + ktag + "Max", f2(ms[key]["max"])))
-            seed_rows.append((mid, entry))
-    nums.append(macro_def("seedFloorAvailable", "1" if seed_rows else "0"))
-    # Seed-42 re-run under the current code (Round-3 reviewer check): the released
-    # checkpoints were trained by earlier code revisions, so this measures whether
-    # HEAD reproduces them.
-    rerun = r2.get("seed42_rerun_current_code", {})
-    nums.append(macro_def("seedFortyTwoRerunAvailable", "1" if rerun.get("models") else "0"))
-    if rerun.get("models"):
-        nums.append(macro_def("seedFortyTwoRerunCommit", tex_escape(str(rerun.get("code_commit", "")))))
-        for mid, rec in rerun["models"].items():
-            tag = "univSeedRerun" if mid.startswith("univ") else "lsSeedRerun"
-            sm = rec["summary"]
-            nums.append(macro_def(tag + "PooledOne", f2(sm["pooled_1utt_eer"])))
-            nums.append(macro_def(tag + "MacroOne", f2(sm["macro_1utt_eer"])))
-            nums.append(macro_def(tag + "PooledThree", f2(sm["pooled_3utt_eer"])))
-            nums.append(macro_def(tag + "MacroThree", f2(sm["macro_3utt_eer"])))
-            nums.append(macro_def(tag + "InitLoss", f"{float(rec['initial_loss']):.4f}"))
-            nums.append(macro_def(tag + "FinalLoss", f"{float(rec['final_loss']):.4f}"))
-            prr = rec["multi_domain_eval"]["domains_1utt"]["universal_pooled"]
-            nums.append(macro_def(tag + "PooledOneLo", f2(prr["eer_ci95_low_percent"])))
-            nums.append(macro_def(tag + "PooledOneHi", f2(prr["eer_ci95_high_percent"])))
-    h800 = r2.get("training_horizon_800_own_schedule", {}).get("steps_800_own_schedule")
-    nums.append(macro_def("horizonEightOwnAvailable", "1" if h800 else "0"))
-    if h800:
-        sm = h800["summary"]
-        nums.append(macro_def("horizonEightOwnMacroOne", f2(sm["macro_1utt_eer"])))
-        nums.append(macro_def("horizonEightOwnPooledOne", f2(sm["pooled_1utt_eer"])))
-        nums.append(macro_def("horizonEightOwnMacroThree", f2(sm["macro_3utt_eer"])))
-        nums.append(macro_def("horizonEightOwnPooledThree", f2(sm["pooled_3utt_eer"])))
-        nums.append(macro_def("horizonEightOwnInitLoss", f"{h800['initial_loss']:.4f}"))
-        nums.append(macro_def("horizonEightOwnFinalLoss", f"{h800['final_loss']:.4f}"))
-    md = r2.get("matched_data_control", {}).get("univ_subsampled_5788")
-    nums.append(macro_def("matchedDataAvailable", "1" if md else "0"))
-    if md:
-        sm = md["summary"]
-        nums.append(macro_def("matchedUtts", f"{md['num_train_utterances']:,}"))
-        nums.append(macro_def("matchedSpeakers", str(md["num_train_speakers"])))
-        for key, ktag in (("pooled_1utt_eer", "PooledOne"), ("macro_1utt_eer", "MacroOne"), ("ls_1utt_eer", "LsOne"), ("cn_1utt_eer", "CnOne"), ("vox_1utt_eer", "VoxOne"), ("pooled_3utt_eer", "PooledThree"), ("macro_3utt_eer", "MacroThree")):
-            nums.append(macro_def("matched" + ktag, f2(sm[key])))
+    # Multi-seed stability (all 3 models in r2["multi_seed_stability"]).
+    ms_all = r2.get("multi_seed_stability", {})
+    seed_tag_map = {
+        "univ_conformer_small_ge2e": "univSeed",
+        "univ_ecapa_tdnn_small_ge2e": "ecapaSeed",
+        "ls_conformer_small_ge2e": "lsSeed",
+    }
+    for mid, stag in seed_tag_map.items():
+        if mid not in ms_all:
+            continue
+        mv = ms_all[mid]
+        s1, s3 = mv["summary_1utt"], mv["summary_3utt"]
+        per = sorted(mv["per_seed"], key=lambda r: int(r["seed"]))
+        nums.append(macro_def(stag + "N", str(len(per))))
+        nums.append(macro_def(stag + "Seeds", ", ".join(str(r["seed"]) for r in per)))
+        nums.append(macro_def(stag + "PooledOneList", " / ".join(f2(r["summary"]["pooled_1utt_eer"]) for r in per)))
+        for dom_k, sum_k, ktag in (
+            ("universal_pooled", "pooled_1utt_eer", "PooledOne"),
+            ("macro_avg", "macro_1utt_eer", "MacroOne"),
+            ("librispeech", "ls_1utt_eer", "LsOne"),
+        ):
+            s_vals = [float(r["summary"][sum_k]) for r in per]
+            nums.append(macro_def(stag + ktag + "Mean", f2(s1[dom_k]["mean"])))
+            nums.append(macro_def(stag + ktag + "Std", f2(s1[dom_k]["std"])))
+            nums.append(macro_def(stag + ktag + "Min", f2(min(s_vals))))
+            nums.append(macro_def(stag + ktag + "Max", f2(max(s_vals))))
+        for dom_k, ktag in (("universal_pooled", "PooledThree"), ("macro_avg", "MacroThree")):
+            nums.append(macro_def(stag + ktag + "Mean", f2(s3[dom_k]["mean"])))
+            nums.append(macro_def(stag + ktag + "Std", f2(s3[dom_k]["std"])))
+
+    # Matched-data controls (2,400 steps and 4,600 steps).
+    md_ctrl = r2.get("matched_data_control", {})
+    if "univ_subsampled_5788_2400steps" in md_ctrl:
+        m24 = md_ctrl["univ_subsampled_5788_2400steps"]
+        nums.append(macro_def("matchedUtts", f"{m24['num_train_utterances']:,}"))
+        nums.append(macro_def("matchedSpeakers", str(m24["num_train_speakers"])))
+        add_mde_nums(nums, "matchedTwentyFour", m24["multi_domain_eval"])
+    if "univ_subsampled_5788_4600steps" in md_ctrl:
+        m46 = md_ctrl["univ_subsampled_5788_4600steps"]
+        add_mde_nums(nums, "matchedFortySix", m46["multi_domain_eval"])
+
     emit(os.path.join(out_dir, "numbers.tex"), "".join(nums))
 
     # ------------------------------------------------------------ Table: highlights
+    highlight_order = HIGHLIGHT_SPEC_ORDER + HIGHLIGHT_UNIV_ORDER
     rows = []
-    for mid in HIGHLIGHT_ORDER:
+    for mid in highlight_order:
         e = ex[mid]
-        bb_names = {"conformer": "Conf", "transformer": "Trans", "mamba": "Mamba", "lstm": "LSTM",
-                    "ecapa_tdnn": "ECAPA", "resnet": "ResNet"}
-        bb = bb_names[e["backbone"]] + {"tiny": "-T", "small": "-S", "base": "-B"}[e["size_variant"]]
-        desc = f"{bb} / {LOSS_SHORT[e['loss_type']]} / {SCORE_SHORT[e['scoring_type']]}"
-        rows.append((mid, e["train_dataset"], desc, int(e["num_parameters"]) / 1e6,
-                     d1(e, "librispeech")["eer_percent"], d3(e, "librispeech")["eer_percent"],
-                     d1(e, "cnceleb2")["eer_percent"], d3(e, "cnceleb2")["eer_percent"],
-                     d1(e, "voxceleb1")["eer_percent"], d3(e, "voxceleb1")["eer_percent"],
-                     macro(e, 1)["eer_percent"], macro(e, 3)["eer_percent"],
-                     d1(e, "universal_pooled")["eer_percent"], d3(e, "universal_pooled")["eer_percent"]))
+        rows.append((
+            mid,
+            int(e["num_steps"]),
+            int(e["num_parameters"]) / 1e6,
+            d1(e, "librispeech")["eer_percent"],
+            d3(e, "librispeech")["eer_percent"],
+            d1(e, "cnceleb2")["eer_percent"],
+            d3(e, "cnceleb2")["eer_percent"],
+            d1(e, "voxceleb1")["eer_percent"],
+            d3(e, "voxceleb1")["eer_percent"],
+            macro(e, 1)["eer_percent"],
+            macro(e, 3)["eer_percent"],
+            d1(e, "universal_pooled")["eer_percent"],
+            d3(e, "universal_pooled")["eer_percent"],
+        ))
     cols = list(zip(*rows))
-    bolded = {i: bold_min(list(cols[i])) for i in range(4, 14)}
+    bolded = {i: bold_min(list(cols[i])) for i in range(3, 13)}
     lines = []
     for r_i, r in enumerate(rows):
-        cells = [f"\\texttt{{{tex_escape(r[0])}}}", f"{r[3]:.2f}"]
-        for i in (4, 6, 8):  # 1-utt only for the three domains
+        cells = [f"\\texttt{{{tex_escape(r[0])}}}", f"{r[1]:,}", f"{r[2]:.2f}"]
+        for i in (3, 5, 7):
             cells.append(bolded[i][r_i])
-        for i in (10, 12):  # macro / pooled 1-utt / 3-utt
+        for i in (9, 11):
             cells.append(f"{bolded[i][r_i]} / {bolded[i + 1][r_i]}")
         lines.append(" & ".join(cells) + " \\\\")
-        if r_i == 2:
+        if r_i == len(HIGHLIGHT_SPEC_ORDER) - 1:
             lines.append("\\midrule")
     tbl = (
-        "\\begin{tabular}{@{}lrccccc@{}}\n\\toprule\n"
-        "\\textbf{Model ID (\\texttt{wq2012/*})} & \\textbf{M par.} & "
-        "\\textbf{LS 1-utt} & \\textbf{CN 1-utt} & \\textbf{VOX 1-utt} & \\textbf{Macro 1 / 3-utt} & \\textbf{Pooled 1 / 3-utt} \\\\\n\\midrule\n"
+        "\\begin{tabular}{@{}lrrccccc@{}}\n\\toprule\n"
+        "\\textbf{Model ID (\\texttt{wq2012/*})} & \\textbf{Steps} & \\textbf{M par.} & "
+        "\\textbf{LS 1-utt} & \\textbf{CN 1-utt} & \\textbf{VOX 1-utt} & "
+        "\\textbf{Macro 1 / 3-utt} & \\textbf{Pooled 1 / 3-utt} \\\\\n\\midrule\n"
         + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n"
     )
     emit(os.path.join(out_dir, "table_highlights.tex"), tbl)
@@ -489,16 +558,26 @@ def main(paper_dir: str) -> None:
         rows = []
         for mid in mids:
             e = ex[mid]
-            rows.append((mid, e["train_dataset"], f"{e['backbone']} ({e['size_variant']})",
-                         f"{e['pooling_type']} / {LOSS_SHORT[e['loss_type']]} / {SCORE_SHORT[e['scoring_type']]}",
-                         int(e["num_parameters"]),
-                         d1(e, "librispeech")["eer_percent"], d3(e, "librispeech")["eer_percent"],
-                         d1(e, "cnceleb2")["eer_percent"], d3(e, "cnceleb2")["eer_percent"],
-                         d1(e, "voxceleb1")["eer_percent"], d3(e, "voxceleb1")["eer_percent"],
-                         macro(e, 1)["eer_percent"], macro(e, 3)["eer_percent"],
-                         d1(e, "universal_pooled")["eer_percent"], d3(e, "universal_pooled")["eer_percent"]))
+            rows.append((
+                mid,
+                e["train_dataset"],
+                int(e["num_steps"]),
+                f"{e['backbone']} ({e['size_variant']})",
+                f"{e['pooling_type']} / {LOSS_SHORT[e['loss_type']]} / {SCORE_SHORT[e['scoring_type']]}",
+                int(e["num_parameters"]),
+                d1(e, "librispeech")["eer_percent"],
+                d3(e, "librispeech")["eer_percent"],
+                d1(e, "cnceleb2")["eer_percent"],
+                d3(e, "cnceleb2")["eer_percent"],
+                d1(e, "voxceleb1")["eer_percent"],
+                d3(e, "voxceleb1")["eer_percent"],
+                macro(e, 1)["eer_percent"],
+                macro(e, 3)["eer_percent"],
+                d1(e, "universal_pooled")["eer_percent"],
+                d3(e, "universal_pooled")["eer_percent"],
+            ))
         cols = list(zip(*rows))
-        bolded = {i: bold_min(list(cols[i])) for i in range(5, 15)}
+        bolded = {i: bold_min(list(cols[i])) for i in range(6, 16)}
         lines = []
         prev_ds = None
         for r_i, r in enumerate(rows):
@@ -510,30 +589,43 @@ def main(paper_dir: str) -> None:
                 name += "$^{\\dagger}$"
             cells = [name]
             if with_train:
-                cells.append(f"\\texttt{{{r[1]}}}")
-            cells += [f"\\texttt{{{tex_escape(r[2])}}}", f"\\texttt{{{tex_escape(r[3])}}}", f"{r[4]:,}"]
-            for i in range(5, 15, 2):
+                cells.append(f"\\texttt{{{r[1]}}} ({r[2]:,})")
+            else:
+                cells.append(f"{r[2]:,}")
+            cells += [f"\\texttt{{{tex_escape(r[3])}}}", f"{r[4]}", f"{r[5]:,}"]
+            for i in range(6, 16, 2):
                 cells.append(f"{bolded[i][r_i]} / {bolded[i + 1][r_i]}")
             lines.append(" & ".join(cells) + " \\\\")
-        head = "\\textbf{Hugging Face repo (\\texttt{wq2012/\\ldots})} & " + ("\\textbf{Train} & " if with_train else "") + \
-            "\\textbf{Backbone (size)} & \\textbf{Pool / objective / scorer} & \\textbf{Params} & " \
-            "\\textbf{LS 1/3-utt} & \\textbf{CN 1/3-utt} & \\textbf{VOX 1/3-utt} & \\textbf{Macro 1/3-utt} & \\textbf{Pooled 1/3-utt} \\\\"
-        spec = "@{}l" + ("l" if with_train else "") + "llrccccc@{}"
+        step_col = "\\textbf{Train (steps)} & " if with_train else "\\textbf{Steps} & "
+        head = (
+            "\\textbf{Hugging Face repo (\\texttt{wq2012/\\ldots})} & "
+            + step_col
+            + "\\textbf{Backbone (size)} & \\textbf{Pool / objective / scorer} & \\textbf{Params} & "
+            "\\textbf{LS 1/3-utt} & \\textbf{CN 1/3-utt} & \\textbf{VOX 1/3-utt} & "
+            "\\textbf{Macro 1/3-utt} & \\textbf{Pooled 1/3-utt} \\\\"
+        )
+        spec = "@{}l" + ("l" if with_train else "r") + "llrccccc@{}"
         return f"\\begin{{tabular}}{{{spec}}}\n\\toprule\n{head}\n\\midrule\n" + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n"
 
-    emit(os.path.join(out_dir, "table_univ_all.tex"), zoo_table(UNIV_ORDER, with_train=False))
-    single = [k for k in ex if not k.startswith("univ_")]
-    single.sort(key=lambda k: ({"librispeech": 0, "cnceleb2": 1, "voxceleb1": 2}[ex[k]["train_dataset"]], d1(ex[k], ex[k]["train_dataset"])["eer_percent"]))
-    emit(os.path.join(out_dir, "table_single_all.tex"), zoo_table(single, with_train=True))
+    emit(os.path.join(out_dir, "table_univ_all.tex"), zoo_table(univ_order, with_train=False))
+    emit(os.path.join(out_dir, "table_single_all.tex"), zoo_table(single_order, with_train=True))
 
     # ------------------------------- Table: minDCF / AUC / Vox1-O subset for all 44
     rows = []
-    for mid in UNIV_ORDER + single:
+    for mid in univ_order + single_order:
         e = ex[mid]
         v = e["cross_dataset_eval"]["vox1_o_10spk_subset"]
-        rows.append((mid, macro(e, 1)["min_dcf_001"], macro(e, 3)["min_dcf_001"],
-                     d1(e, "universal_pooled")["roc_auc"], d3(e, "universal_pooled")["roc_auc"],
-                     v["eer_percent"], v["eer_ci95_low_percent"], v["eer_ci95_high_percent"], v["min_dcf_001"]))
+        rows.append((
+            mid,
+            macro(e, 1)["min_dcf_001"],
+            macro(e, 3)["min_dcf_001"],
+            d1(e, "universal_pooled")["roc_auc"],
+            d3(e, "universal_pooled")["roc_auc"],
+            v["eer_percent"],
+            v["eer_ci95_low_percent"],
+            v["eer_ci95_high_percent"],
+            v["min_dcf_001"],
+        ))
     cols = list(zip(*rows))
     b1 = bold_min(list(cols[1]), f4)
     b2 = bold_min(list(cols[2]), f4)
@@ -543,13 +635,18 @@ def main(paper_dir: str) -> None:
     bvd = bold_min(list(cols[8]), f4)
     lines = []
     for i, r in enumerate(rows):
-        if i == len(UNIV_ORDER):
+        if i == len(univ_order):
             lines.append("\\midrule")
-        lines.append(f"\\texttt{{{tex_escape(r[0])}}} & {b1[i]} / {b2[i]} & {a1[i]} / {a2[i]} & {bv[i]} [{f2(r[6])}, {f2(r[7])}] & {bvd[i]} \\\\")
-    tbl = ("\\begin{tabular}{@{}lccc c@{}}\n\\toprule\n"
-           "\\textbf{Model} & \\textbf{Macro minDCF 1/3} & \\textbf{Pooled AUC 1/3} & "
-           "\\textbf{Vox1-O subset EER [95\\% CI]} & \\textbf{Subset minDCF} \\\\\n\\midrule\n"
-           + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
+        lines.append(
+            f"\\texttt{{{tex_escape(r[0])}}} & {b1[i]} / {b2[i]} & {a1[i]} / {a2[i]} & "
+            f"{bv[i]} [{f2(r[6])}, {f2(r[7])}] & {bvd[i]} \\\\"
+        )
+    tbl = (
+        "\\begin{tabular}{@{}lcccc@{}}\n\\toprule\n"
+        "\\textbf{Model} & \\textbf{Macro minDCF 1/3} & \\textbf{Pooled AUC 1/3} & "
+        "\\textbf{Vox1-O subset EER [95\\% CI]} & \\textbf{Subset minDCF} \\\\\n\\midrule\n"
+        + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
     emit(os.path.join(out_dir, "table_dcf_auc_vox.tex"), tbl)
 
     # --------------------------------------------------------------- Table: ablations
@@ -563,51 +660,97 @@ def main(paper_dir: str) -> None:
         cells.append(f"{f2(p1['eer_percent'])} [{f2(p1['eer_ci95_low_percent'])}, {f2(p1['eer_ci95_high_percent'])}] / {f2(d_3['universal_pooled']['eer_percent'])}")
         return " & ".join(cells) + " \\\\"
 
-    rr_u_abl = rerun.get("models", {}).get("univ_conformer_small_ge2e")
-    n_s1 = 1 + 2 + (1 if rr_u_abl else 0) + (3 if fc_mix else 0)
-    lines = [f"\\multirow{{{n_s1}}}{{*}}{{\\textbf{{1. Stratified batching}}}}"]
-    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$, fixed $T{=}180$ (released)", dm["p_within_0.75"]["multi_domain_eval"], copied=True))
-    if fc_mix:
-        lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.00$, fixed $T{=}180$ (\\texttt{HEAD})", fc_mix["p_within_0.0"]["multi_domain_eval"]))
-        lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$, fixed $T{=}180$ (\\texttt{HEAD})", vl["variable_length_false"]["full_seq_eval"]))
-        lines.append(" & " + row_from_md("$p_{\\text{within}} = 1.00$, fixed $T{=}180$ (\\texttt{HEAD})", fc_mix["p_within_1.0"]["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.00$, $T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD})", dm["p_within_0.0"]["multi_domain_eval"]))
-    if rr_u_abl:
-        lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$, $T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD})", rr_u_abl["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("$p_{\\text{within}} = 1.00$, $T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD})", dm["p_within_1.0"]["multi_domain_eval"]))
+    lines = ["\\multirow{3}{*}{\\textbf{1. Stratified batching}}"]
+    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.00$ (pure cross-domain, 4,600 steps)", dm["p_within_0.0"]["multi_domain_eval"]))
+    lines.append(" & " + row_from_md("$p_{\\text{within}} = 0.75$ (default hybrid, 4,600 steps)", dm["p_within_0.75"]["multi_domain_eval"], copied=True))
+    lines.append(" & " + row_from_md("$p_{\\text{within}} = 1.00$ (pure within-domain, 4,600 steps)", dm["p_within_1.0"]["multi_domain_eval"]))
     lines.append("\\midrule")
-    lines.append("\\multirow{4}{*}{\\textbf{2. Ext.-set softmax \\& Dr-Vectors}}")
-    lines.append(" & " + row_from_md("Pure ext.-set softmax (paper Eq.~2), cosine", xs["ext_softmax_pure_eq3"]["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("Blended ext.-set softmax (BXS$^{*}$), cosine", xs["ext_softmax_blended"]["multi_domain_eval"], copied=True))
-    lines.append(" & " + row_from_md("3-term Dr-Vector variant$^{*}$ + pure ext.-set", xs["dr_vectors_3term_pure_eq7"]["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("1-term Dr-Vector variant$^{*}$ + BXS$^{*}$", xs["dr_vectors_1term_blended"]["multi_domain_eval"], copied=True))
+
+    s2_rows = [
+        ("Pure ext.-set softmax (paper Eq.~2), cosine", xs["ext_softmax_pure_eq3"]["multi_domain_eval"], False),
+        ("Blended ext.-set softmax (BXS$^{*}$), cosine", xs["ext_softmax_blended"]["multi_domain_eval"], True),
+        ("3-term Dr-Vec$^{*}$ + pure ext.-set (Eq.~2)", xs["dr_vectors_3term_pure_eq7"]["multi_domain_eval"], False),
+        ("1-term down-scaled Dr-Vec$^{*}$ + BXS$^{*}$", xs["dr_vectors_1term_blended"]["multi_domain_eval"], True),
+    ]
+    if "dr_vector_terms_and_contrast_ablation" in st:
+        dvc = st["dr_vector_terms_and_contrast_ablation"]
+        s2_rows.append(("3-term Dr-Vec$^{*}$ sym.\\ skip + BXS$^{*}$", dvc["dr_vector_3term_sym_skip"]["multi_domain_eval"], False))
+        s2_rows.append(("Hybrid \\texttt{ge2e\\_contrast} surrogate$^{*}$", dvc["ge2e_contrast_stabilized"]["multi_domain_eval"], True))
+    if "pfas_sn_attention_and_anchor_ablation" in st:
+        pfa = st["pfas_sn_attention_and_anchor_ablation"]
+        s2_rows.append(("PFAS-SN$^{*}$ \\texttt{shared\\_nonlinear} + ATP anchor", pfa["pfas_sn_mlp_with_anchor"]["multi_domain_eval"], True))
+        s2_rows.append(("PFAS-SN$^{*}$ \\texttt{shared\\_nonlinear}, no anchor", pfa["pfas_sn_mlp_no_anchor"]["multi_domain_eval"], False))
+        s2_rows.append(("PFAS-SN$^{*}$ \\texttt{dot} attention + ATP anchor", pfa["pfas_sn_dot_with_anchor"]["multi_domain_eval"], False))
+        s2_rows.append(("PFAS-SN$^{*}$ \\texttt{maxpool} + ATP anchor", pfa["pfas_sn_maxpool_with_anchor"]["multi_domain_eval"], False))
+    lines.append(f"\\multirow{{{len(s2_rows)}}}{{*}}{{\\textbf{{2. Objectives \\& heads}}}}")
+    for lbl, mde, cp in s2_rows:
+        lines.append(" & " + row_from_md(lbl, mde, copied=cp))
     lines.append("\\midrule")
-    n_s3 = 4 + (1 if rr_u_abl else 0)
-    lines.append(f"\\multirow{{{n_s3}}}{{*}}{{\\textbf{{3. Fixed vs.\\ variable-length crops}}}}")
-    lines.append(" & " + row_from_md("fixed $T{=}180$ (released), full-sequence eval", vl["variable_length_true"]["full_seq_eval"], copied=True))
-    lines.append(" & " + row_from_md("fixed $T{=}180$ (\\texttt{HEAD}), full-sequence eval", vl["variable_length_false"]["full_seq_eval"]))
-    if rr_u_abl:
-        lines.append(" & " + row_from_md("$T \\sim \\mathcal{U}(90,180)$ (\\texttt{HEAD}), full-sequence eval", rr_u_abl["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("fixed $T{=}180$ (released), 1.0\\,s (100-frame) eval", vl["variable_length_true"]["short_1s_eval"], copied=True))
-    lines.append(" & " + row_from_md("fixed $T{=}180$ (\\texttt{HEAD}), 1.0\\,s (100-frame) eval", vl["variable_length_false"]["short_1s_eval"]))
+
+    lines.append("\\multirow{4}{*}{\\textbf{3. Training crops}}")
+    lines.append(" & " + row_from_md("$T \\sim \\mathcal{U}(90,180)$, full-seq ($\\le 500$f) eval", vl["variable_length_true"]["full_seq_eval"], copied=True))
+    lines.append(" & " + row_from_md("Fixed $T{=}180$, full-seq ($\\le 500$f) eval", vl["variable_length_false"]["full_seq_eval"]))
+    lines.append(" & " + row_from_md("$T \\sim \\mathcal{U}(90,180)$, short 1.0\\,s (100f) eval", vl["variable_length_true"]["short_1s_eval"], copied=True))
+    lines.append(" & " + row_from_md("Fixed $T{=}180$, short 1.0\\,s (100f) eval", vl["variable_length_false"]["short_1s_eval"]))
     lines.append("\\midrule")
-    n_h = 3 + (1 if h800 else 0) + (1 if rr_u_abl else 0)
-    lines.append(f"\\multirow{{{n_h}}}{{*}}{{\\textbf{{4. Training horizon}}}}")
-    lines.append(" & " + row_from_md("400 steps (released)", h["steps_400"]["multi_domain_eval"], copied=True))
-    if rr_u_abl:
-        lines.append(" & " + row_from_md("400 steps, same revision as ablations (\\texttt{HEAD})", rr_u_abl["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("1,200-step run, snapshot at step 800 (LR mid-schedule)", h["steps_800"]["multi_domain_eval"]))
-    if h800:
-        lines.append(" & " + row_from_md("800 steps, own 800-step schedule (\\texttt{HEAD})", h800["multi_domain_eval"]))
-    lines.append(" & " + row_from_md("1,200 steps (3$\\times$ budget)", h["steps_1200"]["multi_domain_eval"]))
+
+    h_rows = []
+    for k, lbl, cp in (
+        ("steps_400", "400 steps (own 400-step cosine schedule)", False),
+        ("steps_800", "800 steps (own 800-step cosine schedule)", False),
+        ("steps_1200", "1,200 steps (own 1,200-step cosine schedule)", False),
+        ("steps_2400", "2,400 steps (own 2,400-step cosine schedule)", False),
+        ("steps_4600", "4,600 steps ($S_{\\text{safe}}$, own 4,600-step schedule)", True),
+    ):
+        if k in own_h:
+            h_rows.append((lbl, own_h[k]["multi_domain_eval"], cp))
+    lines.append(f"\\multirow{{{len(h_rows)}}}{{*}}{{\\textbf{{4. Horizon (own LR)}}}}")
+    for lbl, mde, cp in h_rows:
+        lines.append(" & " + row_from_md(lbl, mde, copied=cp))
     lines.append("\\midrule")
-    lines.append("\\multirow{2}{*}{\\textbf{5. Mamba directionality}}")
-    lines.append(" & " + row_from_md("unidirectional (\\texttt{bidirectional=False})", m["unidirectional"]["multi_domain_eval"], copied=True))
-    lines.append(" & " + row_from_md("bidirectional (\\texttt{bidirectional=True})$^{\\ddagger}$", m["bidirectional"]["multi_domain_eval"]))
-    tbl = ("\\begin{tabular}{@{}l>{\\raggedright\\arraybackslash}p{6.1cm}ccccc@{}}\n\\toprule\n"
-           "\\textbf{Study} & \\textbf{Variant} & \\textbf{LS 1/3-utt} & \\textbf{CN 1/3-utt} & \\textbf{VOX 1/3-utt} & "
-           "\\textbf{Macro 1/3-utt} & \\textbf{Pooled 1-utt [95\\% CI] / 3-utt} \\\\\n\\midrule\n"
-           + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
+
+    s5_rows = [
+        ("Mamba unidirectional on LibriSpeech (2,400 steps)", m_ls["unidirectional"]["multi_domain_eval"], True),
+        ("Mamba bidirectional on LibriSpeech (2,400 steps)", m_ls["bidirectional"]["multi_domain_eval"], False),
+    ]
+    if "mamba_direction_ablation" in st:
+        m_u = st["mamba_direction_ablation"]
+        s5_rows.append(("Mamba unidirectional on Universal (4,600 steps)", m_u["mamba_unidirectional"]["multi_domain_eval"], True))
+        s5_rows.append(("Mamba bidirectional on Universal (4,600 steps)", m_u["mamba_bidirectional"]["multi_domain_eval"], False))
+    lines.append(f"\\multirow{{{len(s5_rows)}}}{{*}}{{\\textbf{{5. Mamba direction}}}}")
+    for lbl, mde, cp in s5_rows:
+        lines.append(" & " + row_from_md(lbl, mde, copied=cp))
+    lines.append("\\midrule")
+
+    s6_rows = []
+    if "ecapa_norm_order_ablation" in st:
+        ec = st["ecapa_norm_order_ablation"]
+        s6_rows.append(("ECAPA-TDNN LayerNorm before activation (default)", ec["ecapa_ln_before_act"]["multi_domain_eval"], True))
+        s6_rows.append(("ECAPA-TDNN LayerNorm after activation (BN-style)", ec["ecapa_bn_style_after_act"]["multi_domain_eval"], False))
+    if "vad_and_agc_ablation" in st:
+        va = st["vad_and_agc_ablation"]
+        s6_rows.append(("Frontend VAD 26\\,dB + peak AGC (default)", va["vad_26db_with_agc"]["multi_domain_eval"], True))
+        s6_rows.append(("Frontend VAD 26\\,dB, no peak AGC", va["vad_26db_no_agc"]["multi_domain_eval"], False))
+        s6_rows.append(("Frontend VAD 20\\,dB, no peak AGC", va["vad_20db_no_agc"]["multi_domain_eval"], False))
+    lines.append(f"\\multirow{{{len(s6_rows)}}}{{*}}{{\\textbf{{6. Norm \\& VAD/AGC}}}}")
+    for lbl, mde, cp in s6_rows:
+        lines.append(" & " + row_from_md(lbl, mde, copied=cp))
+
+    if "paper_faithful_presets_smoke_test" in st:
+        pf = st["paper_faithful_presets_smoke_test"]
+        lines.append("\\midrule")
+        lines.append("\\multirow{4}{*}{\\textbf{7. Paper presets}}")
+        lines.append(" & " + row_from_md("\\texttt{icassp2018\\_ge2e} ($3{\\times}768$ LSTM + 256 proj)", pf["icassp2018_ge2e_pure_paper"]["multi_domain_eval"]))
+        lines.append(" & " + row_from_md("\\texttt{interspeech2021\\_dr\\_vectors} ($200{+}56$, $3{\\times}256$ LReLU)", pf["interspeech2021_dr_vectors_pure_paper"]["multi_domain_eval"]))
+        lines.append(" & " + row_from_md("\\texttt{odyssey2022\\_conformer\\_atp} (conv-1st, sin PE, $\\times 2$ sub)", pf["odyssey2022_conformer_atp_pure_paper"]["multi_domain_eval"]))
+        lines.append(" & " + row_from_md("\\texttt{odyssey2022\\_pfas} (\\texttt{atp\\_ffn}, $32{\\times}(16{+}48)$)", pf["odyssey2022_pfas_pure_paper"]["multi_domain_eval"]))
+
+    tbl = (
+        "\\begin{tabular}{@{}l>{\\raggedright\\arraybackslash}p{6.5cm}ccccc@{}}\n\\toprule\n"
+        "\\textbf{Study} & \\textbf{Variant} & \\textbf{LS 1/3-utt} & \\textbf{CN 1/3-utt} & "
+        "\\textbf{VOX 1/3-utt} & \\textbf{Macro 1/3-utt} & \\textbf{Pooled 1-utt [95\\% CI] / 3-utt} \\\\\n\\midrule\n"
+        + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
     emit(os.path.join(out_dir, "table_ablations.tex"), tbl)
 
     # ------------------------------------------------------------- Table: TFLite
@@ -616,17 +759,15 @@ def main(paper_dir: str) -> None:
         te = ex[tmid].get("tflite_eval", {})
         if not te:
             continue
-        variant = "fp32"
         prim = te["primary_domain"]
         rec32 = te["domains_1utt_fp32"][prim]
         rec8 = te["domains_1utt_int8"][prim]
 
-        def eer_ci(rec):
+        def eer_ci(rec: dict) -> str:
             if "eer_ci95_low" in rec:
                 return f"{f2(rec['eer_percent'])} [{f2(rec['eer_ci95_low'])}, {f2(rec['eer_ci95_high'])}]"
             return f2(rec["eer_percent"])
 
-        del variant
         tfl_lines.append(
             f"\\texttt{{{tex_escape(tmid)}}} & \\texttt{{{tex_escape(prim)}}} & {f2(te['jax_full_seq_eer_percent'])} & "
             f"{eer_ci(rec32)} & {eer_ci(rec8)} & {te['eer_percent_int8'] - te['eer_percent']:+.2f} & "
@@ -634,13 +775,19 @@ def main(paper_dir: str) -> None:
             f"{te['cos_fp32_int8_mean']:.6f} / {te['cos_fp32_int8_min']:.6f} & "
             f"{f2(te['latency_ms_fp32_mean_50runs'])} / {f2(te['latency_ms_int8_mean_50runs'])} \\\\"
         )
-    has_ci = any("eer_ci95_low" in ex[tmid]["tflite_eval"]["domains_1utt_fp32"][ex[tmid]["tflite_eval"]["primary_domain"]] for _, tmid in tfl_tags if ex[tmid].get("tflite_eval"))
+    has_ci = any(
+        "eer_ci95_low" in ex[tmid]["tflite_eval"]["domains_1utt_fp32"][ex[tmid]["tflite_eval"]["primary_domain"]]
+        for _, tmid in tfl_tags
+        if ex[tmid].get("tflite_eval")
+    )
     ci_hdr = " [95\\% CI]" if has_ci else ""
-    tbl = ("\\begin{tabular}{@{}llccccccc@{}}\n\\toprule\n"
-           "\\textbf{Model} & \\textbf{Eval set} & \\textbf{JAX EER} & "
-           f"\\textbf{{FP32 EER{ci_hdr}}} & \\textbf{{INT8 EER{ci_hdr}}} & \\textbf{{$\\Delta$}} & "
-           "\\textbf{minDCF FP32/INT8} & \\textbf{cos mean/min} & \\textbf{Lat.\\ FP32/INT8 (ms)} \\\\\n\\midrule\n"
-           + "\n".join(tfl_lines) + "\n\\bottomrule\n\\end{tabular}\n")
+    tbl = (
+        "\\begin{tabular}{@{}llccccccc@{}}\n\\toprule\n"
+        "\\textbf{Model} & \\textbf{Eval set} & \\textbf{JAX EER} & "
+        f"\\textbf{{FP32 EER{ci_hdr}}} & \\textbf{{INT8 EER{ci_hdr}}} & \\textbf{{$\\Delta$}} & "
+        "\\textbf{minDCF FP32/INT8} & \\textbf{cos mean/min} & \\textbf{Lat.\\ FP32/INT8 (ms)} \\\\\n\\midrule\n"
+        + "\n".join(tfl_lines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
     emit(os.path.join(out_dir, "table_tflite.tex"), tbl)
 
     # ------------------------------------------- Table: universal vs. specialist deltas
@@ -652,71 +799,79 @@ def main(paper_dir: str) -> None:
         dl.append((pair_label(m_id), pl, pu, pu - pl, mu - ml, p3u - p3l))
     dl.sort(key=lambda r: r[3])
     dlines = [f"{r[0]} & {f2(r[1])} & {f2(r[2])} & {r[3]:+.2f} & {r[4]:+.2f} & {r[5]:+.2f} \\\\" for r in dl]
-    tbl = ("\\begin{tabular}{@{}lccccc@{}}\n\\toprule\n"
-           "\\textbf{Backbone / objective} & \\textbf{\\texttt{ls\\_*} pooled 1-utt} & \\textbf{\\texttt{univ\\_*} pooled 1-utt} & "
-           "\\textbf{$\\Delta$ pooled 1-utt} & \\textbf{$\\Delta$ macro 1-utt} & \\textbf{$\\Delta$ pooled 3-utt} \\\\\n\\midrule\n"
-           + "\n".join(dlines) + "\n\\bottomrule\n\\end{tabular}\n")
+    tbl = (
+        "\\begin{tabular}{@{}lccccc@{}}\n\\toprule\n"
+        "\\textbf{Backbone / objective} & \\textbf{\\texttt{ls\\_*} pooled 1-utt} & \\textbf{\\texttt{univ\\_*} pooled 1-utt} & "
+        "\\textbf{$\\Delta$ pooled 1-utt} & \\textbf{$\\Delta$ macro 1-utt} & \\textbf{$\\Delta$ pooled 3-utt} \\\\\n\\midrule\n"
+        + "\n".join(dlines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
     emit(os.path.join(out_dir, "table_univ_vs_ls.tex"), tbl)
 
     # ------------------------------------------------------------ Table: seed floor
-    if seed_rows:
-        lines = []
-        for mid, entry in seed_rows:
-            ms = entry["mean_std_over_seeds"]
-            per = entry["per_seed"]
-            seeds = sorted(per.keys(), key=int)
-            vals = " / ".join(f2(per[s]["summary"]["pooled_1utt_eer"]) for s in seeds)
-            main_e = ex[mid]
-            rr_rec = rerun.get("models", {}).get(mid)
-            rr_cell = (
-                f"{f2(rr_rec['summary']['pooled_1utt_eer'])} / {f2(rr_rec['summary']['macro_1utt_eer'])}"
-                if rr_rec else "---"
-            )
-            lines.append(
-                f"\\texttt{{{tex_escape(mid)}}} & {', '.join(seeds)} & {vals} & "
-                f"{f2(ms['pooled_1utt_eer']['mean'])} $\\pm$ {f2(ms['pooled_1utt_eer']['std'])} & "
-                f"{f2(ms['macro_1utt_eer']['mean'])} $\\pm$ {f2(ms['macro_1utt_eer']['std'])} & "
-                f"{f2(ms['pooled_3utt_eer']['mean'])} $\\pm$ {f2(ms['pooled_3utt_eer']['std'])} & "
-                f"{f2(ms['macro_3utt_eer']['mean'])} $\\pm$ {f2(ms['macro_3utt_eer']['std'])} & "
-                f"{f2(d1(main_e, 'universal_pooled')['eer_percent'])} / {f2(macro(main_e, 1)['eer_percent'])} $\\mid$ "
-                f"{rr_cell} \\\\"
-            )
-        tbl = ("\\begin{tabular}{@{}llcccccc@{}}\n\\toprule\n"
-               "\\textbf{Model} & \\textbf{Seeds} & \\textbf{Pooled 1-utt per seed} & \\textbf{Pooled 1-utt} & "
-               "\\textbf{Macro 1-utt} & \\textbf{Pooled 3-utt} & \\textbf{Macro 3-utt} & "
-               "\\textbf{Seed 42: released $\\mid$ re-trained} \\\\\n"
-               " & & & \\multicolumn{4}{c}{mean $\\pm$ sd over seeds} & pooled / macro 1-utt \\\\\n\\midrule\n" + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
-        emit(os.path.join(out_dir, "table_seed_floor.tex"), tbl)
+    seed_lines = []
+    for mid in ("univ_conformer_small_ge2e", "univ_ecapa_tdnn_small_ge2e", "ls_conformer_small_ge2e"):
+        if mid not in ms_all:
+            continue
+        mv = ms_all[mid]
+        s1, s3 = mv["summary_1utt"], mv["summary_3utt"]
+        per = sorted(mv["per_seed"], key=lambda r: int(r["seed"]))
+        seeds_str = ", ".join(str(r["seed"]) for r in per)
+        vals = " / ".join(f2(r["summary"]["pooled_1utt_eer"]) for r in per)
+        main_e = ex[mid]
+        seed_lines.append(
+            f"\\texttt{{{tex_escape(mid)}}} ({int(main_e['num_steps']):,}) & {seeds_str} & {vals} & "
+            f"{f2(s1['universal_pooled']['mean'])} $\\pm$ {f2(s1['universal_pooled']['std'])} & "
+            f"{f2(s1['macro_avg']['mean'])} $\\pm$ {f2(s1['macro_avg']['std'])} & "
+            f"{f2(s1['librispeech']['mean'])} $\\pm$ {f2(s1['librispeech']['std'])} & "
+            f"{f2(s3['universal_pooled']['mean'])} $\\pm$ {f2(s3['universal_pooled']['std'])} & "
+            f"{f2(d1(main_e, 'universal_pooled')['eer_percent'])} / {f2(macro(main_e, 1)['eer_percent'])} \\\\"
+        )
+    tbl = (
+        "\\begin{tabular}{@{}llcccccc@{}}\n\\toprule\n"
+        "\\textbf{Model (steps)} & \\textbf{Seeds} & \\textbf{Pooled 1-utt per seed} & \\textbf{Pooled 1-utt} & "
+        "\\textbf{Macro 1-utt} & \\textbf{LS 1-utt} & \\textbf{Pooled 3-utt} & "
+        "\\textbf{Released seed 42} \\\\\n"
+        " & & & \\multicolumn{4}{c}{mean $\\pm$ sd over seeds} & pooled / macro 1-utt \\\\\n\\midrule\n"
+        + "\n".join(seed_lines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
+    emit(os.path.join(out_dir, "table_seed_floor.tex"), tbl)
 
     # ---------------------------------------------------- Table: matched-data control
-    if md:
-        e_u, e_l = ex["univ_conformer_small_ge2e"], ex["ls_conformer_small_ge2e"]
-        smd = md["summary"]
+    def mrow(label: str, steps: int, spk: int, utt: int, mde: dict) -> str:
+        p1 = mde["domains_1utt"]["universal_pooled"]
+        return (
+            f"{label} & {steps:,} & {spk} / {utt:,} & "
+            f"{f2(mde['domains_1utt']['librispeech']['eer_percent'])} & "
+            f"{f2(mde['domains_1utt']['cnceleb2']['eer_percent'])} & "
+            f"{f2(mde['domains_1utt']['voxceleb1']['eer_percent'])} & "
+            f"{f2(mde['universal_macro_avg_1utt']['eer_percent'])} & "
+            f"{f2(p1['eer_percent'])} [{f2(p1['eer_ci95_low_percent'])}, {f2(p1['eer_ci95_high_percent'])}] & "
+            f"{f2(mde['universal_macro_avg_3utt']['eer_percent'])} & "
+            f"{f2(mde['domains_3utt']['universal_pooled']['eer_percent'])} \\\\"
+        )
 
-        def rr(label, ls, cn, vx, mac, pool, m3, p3, n_utt, n_spk):
-            return f"{label} & {n_spk} / {n_utt:,} & {f2(ls)} & {f2(cn)} & {f2(vx)} & {f2(mac)} & {f2(pool)} & {f2(m3)} & {f2(p3)} \\\\"
-
-        lines = [
-            rr("\\texttt{ls\\_conformer\\_small\\_ge2e} (released; earlier code)", d1(e_l, "librispeech")["eer_percent"], d1(e_l, "cnceleb2")["eer_percent"], d1(e_l, "voxceleb1")["eer_percent"], macro(e_l, 1)["eer_percent"], d1(e_l, "universal_pooled")["eer_percent"], macro(e_l, 3)["eer_percent"], d3(e_l, "universal_pooled")["eer_percent"], 5788, 232),
-        ]
-        rr_ls = rerun.get("models", {}).get("ls_conformer_small_ge2e")
-        if rr_ls:
-            s = rr_ls["summary"]
-            lines.append(rr("\\texttt{ls\\_conformer\\_small\\_ge2e} (seed 42 re-trained; current code)", s["ls_1utt_eer"], s["cn_1utt_eer"], s["vox_1utt_eer"], s["macro_1utt_eer"], s["pooled_1utt_eer"], s["macro_3utt_eer"], s["pooled_3utt_eer"], 5788, 232))
-        lines.append(rr("universal, subsampled to the LibriSpeech count (seed 42; current code)", smd["ls_1utt_eer"], smd["cn_1utt_eer"], smd["vox_1utt_eer"], smd["macro_1utt_eer"], smd["pooled_1utt_eer"], smd["macro_3utt_eer"], smd["pooled_3utt_eer"], md["num_train_utterances"], md["num_train_speakers"]))
-        rr_u = rerun.get("models", {}).get("univ_conformer_small_ge2e")
-        if rr_u:
-            s = rr_u["summary"]
-            lines.append(rr("\\texttt{univ\\_conformer\\_small\\_ge2e} (seed 42 re-trained; current code)", s["ls_1utt_eer"], s["cn_1utt_eer"], s["vox_1utt_eer"], s["macro_1utt_eer"], s["pooled_1utt_eer"], s["macro_3utt_eer"], s["pooled_3utt_eer"], 9447, 381))
-        lines.append(rr("\\texttt{univ\\_conformer\\_small\\_ge2e} (released; earlier code)", d1(e_u, "librispeech")["eer_percent"], d1(e_u, "cnceleb2")["eer_percent"], d1(e_u, "voxceleb1")["eer_percent"], macro(e_u, 1)["eer_percent"], d1(e_u, "universal_pooled")["eer_percent"], macro(e_u, 3)["eer_percent"], d3(e_u, "universal_pooled")["eer_percent"], 9447, 381))
-        tbl = ("\\begin{tabular}{@{}lccccccc c@{}}\n\\toprule\n"
-               "\\textbf{Training set} & \\textbf{Spk / utts} & \\textbf{LS} & \\textbf{CN} & \\textbf{VOX} & \\textbf{Macro 1} & \\textbf{Pooled 1} & \\textbf{Macro 3} & \\textbf{Pooled 3} \\\\\n\\midrule\n"
-               + "\n".join(lines) + "\n\\bottomrule\n\\end{tabular}\n")
-        emit(os.path.join(out_dir, "table_matched_data.tex"), tbl)
+    mlines = [
+        mrow("\\texttt{ls\\_conformer\\_small\\_ge2e} (LibriSpeech specialist)$^{\\S}$", 2400, 232, 5788, ex["ls_conformer_small_ge2e"]["multi_domain_eval"]),
+    ]
+    if "univ_subsampled_5788_2400steps" in md_ctrl:
+        m24 = md_ctrl["univ_subsampled_5788_2400steps"]
+        mlines.append(mrow("Universal subsampled to LibriSpeech count (matched utts \\& steps)", 2400, m24["num_train_speakers"], m24["num_train_utterances"], m24["multi_domain_eval"]))
+    if "univ_subsampled_5788_4600steps" in md_ctrl:
+        m46 = md_ctrl["univ_subsampled_5788_4600steps"]
+        mlines.append(mrow("Universal subsampled to LibriSpeech count ($S_{\\text{safe}}$ 4,600-step schedule)", 4600, m46["num_train_speakers"], m46["num_train_utterances"], m46["multi_domain_eval"]))
+    mlines.append(mrow("\\texttt{univ\\_conformer\\_small\\_ge2e} (full Universal 3-domain mix)$^{\\S}$", 4600, 381, 9447, ex["univ_conformer_small_ge2e"]["multi_domain_eval"]))
+    tbl = (
+        "\\begin{tabular}{@{}lrcccccccc@{}}\n\\toprule\n"
+        "\\textbf{Training configuration} & \\textbf{Steps} & \\textbf{Spk / utts} & "
+        "\\textbf{LS} & \\textbf{CN} & \\textbf{VOX} & \\textbf{Macro 1} & "
+        "\\textbf{Pooled 1 [95\\% CI]} & \\textbf{Macro 3} & \\textbf{Pooled 3} \\\\\n\\midrule\n"
+        + "\n".join(mlines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
+    emit(os.path.join(out_dir, "table_matched_data.tex"), tbl)
 
     print(f"Wrote generated LaTeX to {out_dir}")
-    print(f"  seed floor rows: {len(seed_rows)}; 800-step own schedule: {bool(h800)}; matched data: {bool(md)}")
-    print(f"  Spearman(pooled, Vox1-O subset) = {rho:.3f} (p={pval:.3f}); univ worse macro-1 in {len(worse_macro1)}/{len(pairs)} pairs")
+    print(f"  Spearman(pooled, Vox1-O subset) = {rho:.3f} (p={pval:.3e}); Spearman(in-VOX, Vox1-O) = {rho_v:.3f} (p={pval_v:.3e})")
+    print(f"  univ wins pooled-1 in {len(pairs) - len(worse_pool1)}/{len(pairs)} pairs; macro-1 in {len(pairs) - len(worse_macro1)}/{len(pairs)} pairs")
 
 
 if __name__ == "__main__":

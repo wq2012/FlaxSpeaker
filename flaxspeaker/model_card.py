@@ -16,6 +16,33 @@ from flaxspeaker import configs
 VOX1_SUBSET_KEY = "vox1_o_10spk_subset"
 LEGACY_VOX1_KEY = "voxceleb1_o_official"
 
+DOMAIN_TRAIN_STATS: dict[str, dict[str, Any]] = {
+    "universal": {
+        "utts": 9447,
+        "spks": 381,
+        "safety_margin_steps": 600,
+        "label": "3-domain training pool",
+    },
+    "librispeech": {
+        "utts": 5788,
+        "spks": 232,
+        "safety_margin_steps": 400,
+        "label": "LibriSpeech training pool",
+    },
+    "cnceleb2": {
+        "utts": 2909,
+        "spks": 119,
+        "safety_margin_steps": 200,
+        "label": "CN-Celeb2 training pool",
+    },
+    "voxceleb1": {
+        "utts": 750,
+        "spks": 30,
+        "safety_margin_steps": 100,
+        "label": "VoxCeleb1 training pool",
+    },
+}
+
 VOX1_SUBSET_CAVEAT = (
     "VoxCeleb1-O **10-speaker subset**: the official `veri_test2.txt` list filtered to "
     "trials whose enrollment and test speakers are both among the 10 held-out "
@@ -27,9 +54,12 @@ VOX1_SUBSET_CAVEAT = (
 SOTA_ANCHOR = (
     "For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reach "
     "about 0.9% EER on the full VoxCeleb1-O list (Desplanques et al., 2020), and "
-    "sub-1M-parameter systems about 2% (Wang et al., EfficientTDNN, 2022). The 400-step "
-    "checkpoints released here are 10-30x worse than that and are intended for relative "
-    "comparisons within the FlaxSpeaker benchmark, not as state-of-the-art models."
+    "sub-1M-parameter systems about 2% (Wang et al., EfficientTDNN, 2022). The "
+    "checkpoints released here are trained to convergence (including a +2-epoch safety "
+    "margin) on the self-contained 381-speaker (<=25 utterances/speaker) benchmark "
+    "corpus rather than VoxCeleb2-dev (5,994 speakers, ~1.1M utterances), and are "
+    "intended for controlled relative comparisons within the FlaxSpeaker benchmark, "
+    "not as state-of-the-art models trained on thousand-speaker corpora."
 )
 
 
@@ -60,12 +90,21 @@ def _provenance_paragraph(save_directory: str, exp_cfg: configs.ExperimentConfig
     prov = _load_training_provenance(save_directory)
     seq_len = int(exp_cfg.model.seq_len)
     min_len = int(exp_cfg.model.min_seq_len)
-    common = (
-        " Evaluating the released weights with the current code reproduces the archived "
-        "metrics in `eval_results.json`. The seed-to-seed standard deviation of pooled "
-        "1-utt EER at this budget is about 0.7-0.8 % absolute, so sub-1.5 % differences "
-        "between checkpoints are not rankings."
-    )
+    if int(exp_cfg.train.num_steps) <= 400:
+        common = (
+            " Evaluating the released weights with the current code reproduces the archived "
+            "metrics in `eval_results.json`. The seed-to-seed standard deviation of pooled "
+            "1-utt EER at 400 steps is about 0.7-0.8 % absolute, so sub-1.5 % differences "
+            "between checkpoints are not rankings."
+        )
+    else:
+        common = (
+            " Evaluating the released weights with the current code reproduces the archived "
+            "metrics in `eval_results.json`. At the converged `S_safe` budget, the "
+            "seed-to-seed standard deviation of pooled 1-utt EER across seeds 0-2 is "
+            "0.08-0.41 % absolute (`pretrained_models/r2_seed_and_control_results.json`), "
+            "while the 8,000-trial 95 % bootstrap CI half-width is ~0.8 %."
+        )
     if prov is None:
         return (
             "**Training-crop provenance.** No `training_provenance` block is recorded in "
@@ -192,17 +231,27 @@ def scorer_label(exp_cfg: configs.ExperimentConfig) -> str:
     return "Cosine similarity"
 
 
-def deviations_from_papers(exp_cfg: configs.ExperimentConfig) -> list[str]:
+def deviations_from_papers(
+    exp_cfg: configs.ExperimentConfig, train_ds: str = "universal"
+) -> list[str]:
     """Checkpoint-specific list of known deviations from the cited source papers."""
     out: list[str] = []
     loss = exp_cfg.train.loss
     lt = str(getattr(loss.loss_type, "value", loss.loss_type))
     st = str(getattr(loss.scoring_type, "value", loss.scoring_type))
     bb = str(getattr(exp_cfg.model.backbone, "value", exp_cfg.model.backbone))
+    num_steps = int(exp_cfg.train.num_steps)
+    batch_size = int(exp_cfg.train.batch_size)
+    ds_info = DOMAIN_TRAIN_STATS.get(str(train_ds), DOMAIN_TRAIN_STATS["universal"])
+    train_utts = int(ds_info["utts"])
+    train_spks = int(ds_info["spks"])
+    epochs = (num_steps * batch_size) / max(train_utts, 1)
     out.append(
-        "**Training regime**: 400 gradient steps x 32 utterances (N = 8 speakers x M = 4) "
-        "on <= 25 utterances/speaker from 381 (universal) or fewer speakers; the source "
-        "papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers."
+        f"**Training regime**: {num_steps:,} gradient steps x {batch_size} utterances "
+        f"(N = {int(exp_cfg.train.num_spks_per_batch)} speakers x "
+        f"M = {int(exp_cfg.train.num_utts_per_spk)}, ~{epochs:.2f} epochs) "
+        f"on <= 25 utterances/speaker from {train_spks} speakers ({train_utts:,} utterances); "
+        "the source papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers."
     )
     out.append(
         "**Augmentation**: synthetic log-Mel-domain noise + one-tap smoothing "
@@ -299,6 +348,13 @@ def build_model_card(
         if isinstance(metrics, dict)
         else int(exp_cfg.train.num_steps)
     )
+    batch_size = int(exp_cfg.train.batch_size)
+    ds_info = DOMAIN_TRAIN_STATS.get(str(train_ds), DOMAIN_TRAIN_STATS["universal"])
+    train_utts = int(ds_info["utts"])
+    train_spks = int(ds_info["spks"])
+    corpus_label = str(ds_info["label"])
+    epochs = (num_steps * batch_size) / max(train_utts, 1)
+    margin_warmup_steps = int(getattr(exp_cfg.train.loss, "margin_warmup_steps", 0))
     has_tflite = os.path.exists(
         os.path.join(save_directory, "model_fp32.tflite")
     ) or os.path.exists(os.path.join(save_directory, "model_int8.tflite"))
@@ -306,11 +362,101 @@ def build_model_card(
     export_window = export_seq if export_seq > 0 else int(m_cfg.seq_len)
 
     train_domain_desc = {
-        "universal": "LibriSpeech + CN-Celeb2 + VoxCeleb1 (universal multi-domain, 381 speakers)",
-        "librispeech": "LibriSpeech only (232 speakers)",
-        "cnceleb2": "CN-Celeb2 only (119 speakers)",
-        "voxceleb1": "VoxCeleb1 only (30 speakers from the VoxCeleb1 test partition)",
+        "universal": "LibriSpeech + CN-Celeb2 + VoxCeleb1 (universal multi-domain, 381 speakers, 9,447 utterances)",
+        "librispeech": "LibriSpeech only (232 speakers, 5,788 utterances)",
+        "cnceleb2": "CN-Celeb2 only (119 speakers, 2,909 utterances)",
+        "voxceleb1": "VoxCeleb1 only (30 speakers, 750 utterances from the VoxCeleb1 test partition)",
     }.get(str(train_ds), str(train_ds))
+
+    if num_steps <= 400:
+        disclaimer_tail = (
+            "> The experiments in those papers were run on Google-internal infrastructure "
+            "and data, not with this library. **This is a 400-step demonstration checkpoint, "
+            "not a reproduction of the papers' results** -- see *Training budget* and "
+            "*Deviations from the source papers* below."
+        )
+        budget_paragraph = (
+            f"This model was trained for **{num_steps:,} gradient steps** with mini-batches of "
+            f"{batch_size} utterances (8 speakers x 4 utterances), i.e. about {epochs:.2f} epochs over the "
+            f"{train_utts:,}-utterance {corpus_label}, on a CPU workstation, with a single seed (42). "
+            "Losses are not converged at this budget. All EERs below are therefore far from "
+            "state of the art and are only meaningful for *relative* comparisons between "
+            "FlaxSpeaker checkpoints trained under the same budget."
+        )
+    else:
+        disclaimer_tail = (
+            "> The experiments in those papers were run on Google-internal infrastructure "
+            f"and data, not with this library. **This is a converged small-corpus benchmark checkpoint "
+            f"({num_steps:,} steps / ~{epochs:.2f} epochs on {train_utts:,} utterances from "
+            f"{train_spks} speakers), not a full-corpus reproduction of the papers' large-scale results** "
+            "-- see *Training budget* and *Deviations from the source papers* below."
+        )
+        margin_note = (
+            f" Angular margin warmup is linearly ramped over the first `{margin_warmup_steps}` steps "
+            "(`margin_warmup_steps`) before holding the target margin."
+            if margin_warmup_steps > 0
+            else ""
+        )
+        conv_note = ""
+        if isinstance(metrics, dict) and isinstance(
+            metrics.get("convergence_checkpoints"), dict
+        ):
+            cc = metrics["convergence_checkpoints"]
+            s400 = cc.get("step_400", {})
+            sknee = cc.get("step_X_knee", {})
+            sfin = cc.get("step_S_safe_final", {})
+            if str(train_ds) == "universal":
+                k1, k3, e_lbl = (
+                    "pooled_1utt_eer_percent",
+                    "pooled_3utt_eer_percent",
+                    "Universal Pooled EER",
+                )
+            else:
+                dom_lbl = {
+                    "librispeech": "LibriSpeech",
+                    "cnceleb2": "CN-Celeb2",
+                    "voxceleb1": "VoxCeleb1",
+                }.get(str(train_ds), str(train_ds))
+                k1, k3, e_lbl = (
+                    "in_domain_1utt_eer_percent",
+                    "in_domain_3utt_eer_percent",
+                    f"in-domain {dom_lbl} EER",
+                )
+            if k1 in s400 and k1 in sfin:
+                knee_str = (
+                    f" -> step `{sknee.get('step')}` (knee): "
+                    f"**{sknee[k1]:.2f}%** (1-utt) / "
+                    f"**{(sknee.get(k3) or 0.0):.2f}%** (3-utt)"
+                    if k1 in sknee
+                    else ""
+                )
+                pooled_tail = (
+                    f" (Universal Pooled final: "
+                    f"**{sfin['pooled_1utt_eer_percent']:.2f}%** 1-utt / "
+                    f"**{(sfin.get('pooled_3utt_eer_percent') or 0.0):.2f}%** 3-utt)"
+                    if str(train_ds) != "universal"
+                    and "pooled_1utt_eer_percent" in sfin
+                    else ""
+                )
+                conv_note = (
+                    f" Across the training trajectory, {e_lbl} progressed from "
+                    f"step `400`: **{s400[k1]:.2f}%** (1-utt) / "
+                    f"**{(s400.get(k3) or 0.0):.2f}%** (3-utt)"
+                    f"{knee_str} -> step `{sfin.get('step', num_steps)}` (final): "
+                    f"**{sfin[k1]:.2f}%** (1-utt) / "
+                    f"**{(sfin.get(k3) or 0.0):.2f}%** (3-utt){pooled_tail}."
+                )
+        budget_paragraph = (
+            f"This model was trained to convergence for **{num_steps:,} gradient steps** "
+            f"(`S_safe = X + 2 epochs` safety margin, warmup `{int(exp_cfg.train.warmup_steps)}` steps) "
+            f"with mini-batches of {batch_size} utterances (8 speakers x 4 utterances), i.e. "
+            f"**~{epochs:.2f} epochs** over the {train_utts:,}-utterance {corpus_label} "
+            f"({train_spks} speakers), on a CPU workstation with seed 42.{margin_note}{conv_note} "
+            f"While training loss and validation EER have reached their small-corpus convergence "
+            f"plateau on this {train_spks}-speaker open split (<= 25 utterances/speaker), absolute EERs "
+            "remain bounded by training speaker diversity compared to industrial benchmarks trained on "
+            "thousands of speakers (see below)."
+        )
 
     lines = [
         "---",
@@ -368,23 +514,11 @@ def build_model_card(
             "([arXiv:2203.05642](https://arxiv.org/abs/2203.05642))"
         ),
         ">",
-        (
-            "> The experiments in those papers were run on Google-internal infrastructure "
-            "and data, not with this library. **This is a 400-step demonstration checkpoint, "
-            "not a reproduction of the papers' results** -- see *Training budget* and "
-            "*Deviations from the source papers* below."
-        ),
+        disclaimer_tail,
         "",
         "## Training Budget (read this first)",
         "",
-        (
-            f"This model was trained for **{num_steps:,} gradient steps** with mini-batches of "
-            "32 utterances (8 speakers x 4 utterances), i.e. about 1.35 epochs over the "
-            "9,447-utterance universal corpus, on a CPU workstation, with a single seed (42). "
-            "Losses are not converged at this budget. All EERs below are therefore far from "
-            "state of the art and are only meaningful for *relative* comparisons between "
-            "FlaxSpeaker checkpoints trained under the same budget."
-        ),
+        budget_paragraph,
         "",
         _provenance_paragraph(save_directory, exp_cfg),
         "",
@@ -416,7 +550,10 @@ def build_model_card(
             f"excludes training-only classifier weights)** | `{num_parameters:,}` |"
         ),
         f"| **Training Data** | {train_domain_desc} |",
-        f"| **Training Steps / Batch** | `{num_steps:,}` steps x 32 utterances, seed 42 |",
+        (
+            f"| **Training Steps / Batch** | `{num_steps:,}` steps x {batch_size} "
+            f"utterances (~{epochs:.2f} epochs), seed 42 |"
+        ),
         (
             f"| **Audio Frontend** | `{exp_cfg.frontend.n_mels}`-dim natural-log Mel "
             f"@ `{exp_cfg.frontend.sample_rate}` Hz + frame-level energy VAD + CMVN "
@@ -476,8 +613,9 @@ def build_model_card(
         "",
         "### Python API (from Hugging Face Hub or Local Directory)",
         "",
-        "Requires `flaxspeaker >= 0.3.0` (`pip install -U flaxspeaker`); the `0.2.0` wheel on PyPI "
-        "predates the released checkpoints and cannot load them.",
+        "Requires `flaxspeaker >= 0.4.0` (`pip install -U flaxspeaker`) for full `margin_warmup_steps` "
+        "config compatibility with the v0.4.0 converged checkpoints (`>= 0.3.0` introduced `load_pretrained`; "
+        "the legacy `0.2.0` wheel cannot load Hub checkpoints).",
         "",
         "```python",
         "from flaxspeaker import load_pretrained",
@@ -585,7 +723,7 @@ def build_model_card(
             ),
         ]
     lines += ["", "## Deviations from the Source Papers", ""]
-    lines += [f"- {d}" for d in deviations_from_papers(exp_cfg)]
+    lines += [f"- {d}" for d in deviations_from_papers(exp_cfg, train_ds=str(train_ds))]
     lines += [
         "",
         "## Citation",

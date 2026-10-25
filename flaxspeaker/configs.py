@@ -18,6 +18,11 @@ class _StrEnum(str, enum.Enum):
         return str(self.value)
 
 
+yaml.SafeDumper.add_multi_representer(
+    _StrEnum, yaml.representer.SafeRepresenter.represent_str
+)
+
+
 class VadMode(_StrEnum):
     """Supported Voice Activity Detection (VAD) modes."""
 
@@ -423,6 +428,7 @@ class LossConfig:
     sphereface_lambda_base: float = 1000.0
     sphereface_lambda_gamma: float = 0.12
     sphereface_lambda_power: float = 1.0
+    margin_warmup_steps: int = 0
 
 
 @dataclasses.dataclass

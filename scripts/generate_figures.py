@@ -181,8 +181,8 @@ def draw_architecture_diagram(
             "Domain temp: $p_d \\propto |\\mathcal{S}_d|^{0.35}$",
             "Mutually exclusive feature aug:",
             "  35% noise | 32.5% SpecAug | 32.5% clean",
-            "Crop: fixed $T{=}180$ (released zoo) /",
-            "  $T \\sim \\mathcal{U}(90, 180)$ (pipeline default)",
+            "Variable crop: $T \\sim \\mathcal{U}(90, 180)$ + mask",
+            "Converged $S_{\\mathrm{safe}}{=}X{+}2$ ep (1k–4.6k st)",
         ],
         "#F0FDF4",
         "#22C55E",
@@ -213,7 +213,7 @@ def draw_architecture_diagram(
         y_top,
         2.75,
         h_top,
-        "4. Pooling (7 + PFAS-SN) & Bottleneck",
+        "4. Pooling Heads & Bottleneck",
         "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS-SN: 640-D)",
         [
             "7 heads: ATP ($N_h{=}4$ subspace), ASP,",
@@ -243,7 +243,7 @@ def draw_architecture_diagram(
         "Batch ($N{=}8$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
         [
             "Losses: GE2E softmax / contrast (+ hybrid surrogate) | extended-set softmax (pure Eq. 2 or blended)",
-            "  + ArcFace, CosFace, SphereFace, Triplet (benchmarked) + Softmax, Pairwise (tested only)",
+            "  + ArcFace, CosFace, SphereFace (linear margin warm-up), Triplet + Softmax, Pairwise (tested only)",
             (
                 "Scoring: cosine | Dr-Vector decision net "
                 "($\\lambda_{res}{=}0.25$ variant / paper preset) | PFAS (global $L_2$)"
@@ -434,11 +434,11 @@ def draw_benchmark_charts(
     ax.set_xticklabels([b[0] for b in backbones], fontsize=8.8)
     ax.set_ylabel("1-Utterance EER (%) [Lower is Better]", fontsize=9.2)
     ax.set_title(
-        "(a) Universal backbones (Small, GE2E softmax); 95% bootstrap CIs",
+        "(a) Universal backbones (Small, GE2E, 4,600 steps); 95% CIs",
         fontsize=10.0,
         fontweight="bold",
     )
-    ax.set_ylim(0, 36.5)
+    ax.set_ylim(0, 32.0)
     ax.legend(fontsize=7.8, ncol=2, loc="upper left", framealpha=0.92)
     ax.grid(axis="y", alpha=0.25)
 
@@ -546,11 +546,11 @@ def draw_benchmark_charts(
     ax.set_xticklabels([item[0] for item in losses], fontsize=6.9)
     ax.set_ylabel("Universal Pooled EER (%)", fontsize=9.2)
     ax.set_title(
-        "(b) Objective × pool+scorer (Conformer-Small); $^*$ = FlaxSpeaker variant",
+        "(b) Objective × pool+scorer (Conformer-Small, 4,600 st); $^*$ = variant",
         fontsize=10.0,
         fontweight="bold",
     )
-    ax.set_ylim(0, 39.5)
+    ax.set_ylim(0, 29.5)
     ax.legend(fontsize=8.0, loc="upper left", framealpha=0.92)
     ax.grid(axis="y", alpha=0.25)
 
@@ -560,11 +560,12 @@ def draw_benchmark_charts(
         ("LibriSpeech\nOnly", "ls_conformer_small_ge2e"),
         ("CN-Celeb2\nOnly", "cn_conformer_small_ge2e"),
         ("VoxCeleb1\nOnly", "vox_conformer_small_ge2e"),
-        ("Universal Mix\n(GE2E)", "univ_conformer_small_ge2e"),
-        ("Universal Mix\n(Dr-Vectors)", "univ_conformer_small_dr_vectors"),
+        ("Univ Mix\n(GE2E)", "univ_conformer_small_ge2e"),
+        ("Univ Mix\n(Dr-Vec)", "univ_conformer_small_dr_vectors"),
+        ("Univ Mix\n(ArcFace)", "univ_conformer_small_arcface"),
     ]
     x3 = np.arange(len(train_sets))
-    w3 = 0.20
+    w3 = 0.19
     ls3 = [
         by_name[k]["multi_domain_eval"]["domains_1utt"]["librispeech"][
             "eer_percent"
@@ -642,7 +643,7 @@ def draw_benchmark_charts(
             color="#5B21B6",
         )
     ax.set_xticks(x3)
-    ax.set_xticklabels([t[0] for t in train_sets], fontsize=8.3)
+    ax.set_xticklabels([t[0] for t in train_sets], fontsize=8.0)
     ax.set_ylabel("1-Utterance EER (%)", fontsize=9.2)
     ax.set_title(
         "(c) Single-domain specialists vs. universal training\n"
@@ -650,7 +651,7 @@ def draw_benchmark_charts(
         fontsize=10.0,
         fontweight="bold",
     )
-    ax.set_ylim(0, 35.5)
+    ax.set_ylim(0, 34.5)
     ax.legend(fontsize=7.8, ncol=2, loc="upper right", framealpha=0.92)
     ax.grid(axis="y", alpha=0.25)
 
@@ -662,6 +663,12 @@ def draw_benchmark_charts(
         ("Univ LSTM-S", "univ_lstm_small_ge2e"),
     ]
     t_by_name = data["tflite_exports"]
+    all_ratios = [
+        t_by_name[k]["size_bytes"] / t_by_name[k.replace("_fp32", "_int8")]["size_bytes"]
+        for k in t_by_name
+        if k.endswith("_fp32")
+    ]
+    r_min, r_max = min(all_ratios), max(all_ratios)
     x4 = np.arange(len(tflite_models))
     w4 = 0.30
     fp32_mb = [
@@ -695,7 +702,7 @@ def draw_benchmark_charts(
         x4 + w4 / 2,
         int8_mb,
         w4,
-        label="TFLite INT8 (MB, 3.44–3.62× smaller)",
+        label=f"TFLite INT8 (MB, {r_min:.2f}–{r_max:.2f}× smaller)",
         color="#0891B2",
     )
     for idx, b in enumerate(bf):

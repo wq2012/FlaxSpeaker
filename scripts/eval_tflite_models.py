@@ -315,17 +315,41 @@ def main() -> None:
     with open(bench_path, "r", encoding="utf-8") as f:
         bench = json.load(f)
 
+    import datetime
+
     for mid in TFLITE_MODEL_IDS:
         tfl_eval = results[mid]
         ev_path = os.path.join(args.models_dir, mid, "eval_results.json")
         with open(ev_path, "r", encoding="utf-8") as f:
             ev = json.load(f)
         ev["tflite_eval"] = tfl_eval
+        ev_exports = ev.get("tflite_exports", {})
+        if isinstance(ev_exports, dict):
+            for suffix, lat_key in (
+                ("fp32", "latency_ms_fp32_mean_50runs"),
+                ("int8", "latency_ms_int8_mean_50runs"),
+            ):
+                exp_key = f"{mid}_{suffix}"
+                if exp_key in ev_exports:
+                    ev_exports[exp_key]["latency_ms"] = tfl_eval[lat_key]
+                    ev_exports[exp_key]["latency_ms_source"] = (
+                        "scripts/eval_tflite_models.py: mean of 50 sequential calls "
+                        "after 5 warm-up calls"
+                    )
+                    ev_exports[exp_key]["tflite_eval"] = {
+                        "eer_percent": tfl_eval[
+                            "eer_percent" if suffix == "fp32" else "eer_percent_int8"
+                        ],
+                        "eer_ci95": tfl_eval[f"eer_ci95_{suffix}"],
+                        "primary_domain": tfl_eval["primary_domain"],
+                    }
         with open(ev_path, "w", encoding="utf-8") as f:
             json.dump(ev, f, indent=2)
 
         if mid in bench.get("experiments", {}):
             bench["experiments"][mid]["tflite_eval"] = tfl_eval
+            if isinstance(ev_exports, dict):
+                bench["experiments"][mid]["tflite_exports"] = ev_exports
         # `tflite_exports` is keyed `<model_id>_fp32` / `<model_id>_int8`; overwrite the
         # export-time single-call `latency_ms` with the 50-run mean measured above.
         exports = bench.setdefault("tflite_exports", {})
@@ -350,7 +374,22 @@ def main() -> None:
 
     with open(bench_path, "w", encoding="utf-8") as f:
         json.dump(bench, f, indent=2)
-    print("Updated eval_results.json and benchmark_results.json with tflite_eval.")
+
+    tfl_json_path = os.path.join(args.models_dir, "tflite_eval_results.json")
+    with open(tfl_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "window_frames": 180,
+                "num_models": len(results),
+                "models": results,
+            },
+            f,
+            indent=2,
+        )
+    print(
+        f"Updated eval_results.json, benchmark_results.json, and {tfl_json_path} with tflite_eval."
+    )
 
 
 if __name__ == "__main__":

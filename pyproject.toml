@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flaxspeaker"
-version = "0.3.0"
+version = "0.4.0"
 description = "A modernized, research- and production-ready speaker recognition library in JAX and Flax."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,7 +15,7 @@ authors = [
 # Single source of truth for runtime dependencies (setup.py defers to this file).
 # Lower bounds are the oldest releases exercised by the test-suite / CI matrix;
 # the released wheel was built and smoke-tested with the versions listed in
-# CHANGELOG.md (0.3.0).
+# CHANGELOG.md (0.4.0).
 dependencies = [
     "numpy>=1.26",
     "jax>=0.4.30",

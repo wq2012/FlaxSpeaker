@@ -829,6 +829,7 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
         x_pad = jnp.pad(x_short, ((0, 0), (0, 28), (0, 0)))
         m_pad = jnp.pad(m_short, ((0, 0), (0, 28)))
 
+        seen_param_keys: dict[str, set[str]] = {}
         for attn_type in ("mlp", "dot", "maxpool"):
             for use_anchor in (True, False):
                 head = pooling.PfasRepresentationHead(
@@ -840,6 +841,8 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
                     use_global_anchor=use_anchor,
                 )
                 params = head.init(rng, x_short, mask=m_short)["params"]
+                if use_anchor:
+                    seen_param_keys[attn_type] = set(params.keys())
                 out_short = head.apply(
                     {"params": params}, x_short, mask=m_short
                 )
@@ -850,6 +853,22 @@ class TestAlgorithmicFidelityFixes(unittest.TestCase):
                     1e-5,
                     msg=f"PFAS padding invariance failed for {attn_type} (anchor={use_anchor}): {max_diff}",
                 )
+
+        self.assertIn("pfas_att_dot", seen_param_keys["dot"])
+        self.assertNotIn("pfas_att_hid", seen_param_keys["dot"])
+        self.assertIn("pfas_att_hid", seen_param_keys["mlp"])
+        self.assertNotIn("pfas_att_dot", seen_param_keys["mlp"])
+
+        bad_head = pooling.PfasRepresentationHead(
+            num_keys=4,
+            key_dim=32,
+            value_dim=128,
+            attention_dim=64,
+            attention_type="nonexistent_mode",
+            use_global_anchor=True,
+        )
+        with self.assertRaises(ValueError):
+            bad_head.init(rng, x_short, mask=m_short)
 
     def test_ge2e_contrast_non_saturating_grad_and_unclamped_w(self):
         rng = jax.random.PRNGKey(99)
@@ -1631,25 +1650,73 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
             # The block round-trips through FlaxSpeakerConfig.
             hf_cfg = hf_compat.FlaxSpeakerConfig.from_pretrained(os.path.join(pm, mid))
             self.assertEqual(hf_cfg.training_provenance, prov)
-        # Every checkpoint reproduces its archived step-0 loss under exactly one crop regime,
-        # except the two unseeded triplet runs.
+        # All 44 Phase-2 converged checkpoints were trained at HEAD with seeded RNGs and
+        # variable_length_training=True, so zero checkpoints are unknown or fixed-only.
         unknown = sorted(m for m, v in fps.items() if v["match"] == "neither")
-        self.assertEqual(unknown, ["ls_conformer_small_triplet", "univ_conformer_small_triplet"])
+        self.assertEqual(unknown, [])
+        fixed_only = sorted(
+            m for m, v in fps.items() if v["match"] in ("fixed", "fixed_approx")
+        )
+        self.assertEqual(fixed_only, [])
 
     def test_model_card_provenance_paragraph(self):
+        import json
         from flaxspeaker import model_card
 
         pm = os.path.join(self.REPO, "pretrained_models")
         for mid, needle in (
-            ("univ_conformer_small_ge2e", "fixed 180-frame"),
-            ("ls_conformer_small_ge2e_contrast", "variable-length crops"),
-            ("univ_conformer_small_triplet", "cannot be established"),
+            ("univ_conformer_small_ge2e", "variable-length crops"),
+            ("univ_conformer_small_ge2e_contrast", "Both crop regimes reproduce"),
+            ("univ_conformer_small_triplet", "variable-length crops"),
         ):
             exp_cfg = hf_compat.FlaxSpeakerModel.load_exp_config(os.path.join(pm, mid))
             text = model_card._provenance_paragraph(os.path.join(pm, mid), exp_cfg)
             self.assertIn(needle, text, mid)
             self.assertIn("step0_fingerprints.json", text)
             self.assertNotIn("2026-10", text)  # no date-based reasoning
+
+        # Also unit-test the legacy fixed-crop and unknown provenance rendering branches.
+        with tempfile.TemporaryDirectory() as tmp:
+            exp_cfg = configs.ExperimentConfig()
+            exp_cfg.model.seq_len = 180
+            exp_cfg.model.min_seq_len = 90
+            for sub, prov, needle in (
+                (
+                    "fixed_case",
+                    {
+                        "variable_length_training_actual": False,
+                        "step0_fingerprint_match": "fixed",
+                        "released_initial_loss": 2.05,
+                        "head_fixed_step0_loss": 2.05,
+                        "head_variable_step0_loss": 2.12,
+                    },
+                    "fixed 180-frame",
+                ),
+                (
+                    "unknown_case",
+                    {
+                        "variable_length_training_actual": "unknown",
+                        "step0_fingerprint_match": "neither",
+                        "released_initial_loss": 0.09,
+                        "head_fixed_step0_loss": 0.10,
+                        "head_variable_step0_loss": 0.08,
+                    },
+                    "cannot be established",
+                ),
+            ):
+                d = os.path.join(tmp, sub)
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "experiment_dict": exp_cfg.to_dict(),
+                            "training_provenance": prov,
+                        },
+                        f,
+                    )
+                rendered = model_card._provenance_paragraph(d, exp_cfg)
+                self.assertIn(needle, rendered, sub)
+                self.assertIn("step0_fingerprints.json", rendered)
 
     def test_feature_cache_signature_and_legacy_fallback(self):
         cfg = configs.ExperimentConfig()
@@ -1724,6 +1791,217 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
         self.assertIs(model.resolve_frontend(), model.frontend)
         # The private alias used by older scripts still works.
         self.assertIs(model._resolve_frontend(), model.frontend)
+
+    def test_angular_margin_warmup_steps(self):
+        x = jnp.ones((4, 30, 80), dtype=jnp.float32)
+        labels = jnp.array([0, 1, 2, 3], dtype=jnp.int32)
+        mask = jnp.ones((4, 30), dtype=jnp.float32)
+
+        def _make_cls_cfg(
+            loss_type: str,
+            margin: float = 0.2,
+            sphere_m: float = 1.35,
+            warmup: int = 0,
+        ):
+            cfg = configs.ExperimentConfig()
+            cfg.model.backbone = configs.BackboneType.CONFORMER
+            cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+            cfg.train.loss.loss_type = loss_type
+            cfg.train.loss.margin = margin
+            cfg.train.loss.sphereface_m = sphere_m
+            cfg.train.loss.margin_warmup_steps = warmup
+            cfg.train.batch_size = 4
+            return cfg
+
+        # 1. Additive angular margins (ArcFace & CosFace): 0.0 -> 0.1 -> 0.2
+        for loss_name in (
+            configs.LossType.ARCFACE.value,
+            configs.LossType.COSFACE.value,
+        ):
+            cfg_zero = _make_cls_cfg(loss_name, margin=0.0, warmup=0)
+            cfg_half = _make_cls_cfg(loss_name, margin=0.1, warmup=0)
+            cfg_full = _make_cls_cfg(loss_name, margin=0.2, warmup=0)
+            cfg_warm = _make_cls_cfg(loss_name, margin=0.2, warmup=10)
+
+            _, state0 = neural_net.get_speaker_encoder(cfg_zero, num_classes=8)
+            step_zero = neural_net.make_modern_train_step(cfg_zero)
+            step_half = neural_net.make_modern_train_step(cfg_half)
+            step_full = neural_net.make_modern_train_step(cfg_full)
+            step_warm = neural_net.make_modern_train_step(cfg_warm)
+
+            # Step 0: warmup_frac = 0.0 -> matches margin=0.0 and is strictly < full margin
+            _, l_zero = step_zero(state0, x, labels, mask)
+            _, l_full = step_full(state0, x, labels, mask)
+            _, l_warm0 = step_warm(state0, x, labels, mask)
+            self.assertAlmostEqual(float(l_warm0), float(l_zero), places=5)
+            self.assertLess(float(l_warm0), float(l_full) - 1e-2)
+
+            # Step 5: warmup_frac = 0.5 -> matches constant margin=0.1
+            state5 = state0.replace(step=jnp.array(5, dtype=jnp.int32))
+            _, l_half5 = step_half(state5, x, labels, mask)
+            _, l_warm5 = step_warm(state5, x, labels, mask)
+            self.assertAlmostEqual(float(l_warm5), float(l_half5), places=5)
+            self.assertGreater(float(l_warm5), float(l_zero))
+            self.assertLess(float(l_warm5), float(l_full))
+
+            # Step 10 (>= margin_warmup_steps): warmup_frac = 1.0 -> matches full margin
+            state10 = state0.replace(step=jnp.array(10, dtype=jnp.int32))
+            _, l_full10 = step_full(state10, x, labels, mask)
+            _, l_warm10 = step_warm(state10, x, labels, mask)
+            self.assertAlmostEqual(float(l_warm10), float(l_full10), places=5)
+
+        # 2. Multiplicative angular margin (SphereFace): 1.0 -> 1.175 -> 1.35
+        sf_one = _make_cls_cfg(
+            configs.LossType.SPHEREFACE.value, sphere_m=1.0, warmup=0
+        )
+        sf_mid = _make_cls_cfg(
+            configs.LossType.SPHEREFACE.value, sphere_m=1.175, warmup=0
+        )
+        sf_full = _make_cls_cfg(
+            configs.LossType.SPHEREFACE.value, sphere_m=1.35, warmup=0
+        )
+        sf_warm = _make_cls_cfg(
+            configs.LossType.SPHEREFACE.value, sphere_m=1.35, warmup=10
+        )
+        # Set sphereface_lambda_base = sphereface_lambda_min = 0.0 so psi(theta) isn't diluted by 1000x lambda at step 0
+        for c in (sf_one, sf_mid, sf_full, sf_warm):
+            c.train.loss.sphereface_lambda_base = 0.0
+            c.train.loss.sphereface_lambda_min = 0.0
+
+        _, sf_state0 = neural_net.get_speaker_encoder(sf_one, num_classes=8)
+        sf_step_one = neural_net.make_modern_train_step(sf_one)
+        sf_step_mid = neural_net.make_modern_train_step(sf_mid)
+        sf_step_full = neural_net.make_modern_train_step(sf_full)
+        sf_step_warm = neural_net.make_modern_train_step(sf_warm)
+
+        _, l_sf_one = sf_step_one(sf_state0, x, labels, mask)
+        _, l_sf_full = sf_step_full(sf_state0, x, labels, mask)
+        _, l_sf_warm0 = sf_step_warm(sf_state0, x, labels, mask)
+        self.assertAlmostEqual(float(l_sf_warm0), float(l_sf_one), places=5)
+        self.assertLess(float(l_sf_warm0), float(l_sf_full) - 1e-2)
+
+        sf_state5 = sf_state0.replace(step=jnp.array(5, dtype=jnp.int32))
+        _, l_sf_mid5 = sf_step_mid(sf_state5, x, labels, mask)
+        _, l_sf_warm5 = sf_step_warm(sf_state5, x, labels, mask)
+        self.assertAlmostEqual(float(l_sf_warm5), float(l_sf_mid5), places=5)
+
+        sf_state10 = sf_state0.replace(step=jnp.array(10, dtype=jnp.int32))
+        _, l_sf_full10 = sf_step_full(sf_state10, x, labels, mask)
+        _, l_sf_warm10 = sf_step_warm(sf_state10, x, labels, mask)
+        self.assertAlmostEqual(float(l_sf_warm10), float(l_sf_full10), places=5)
+
+        # 3. Config YAML / dict round-trip for margin_warmup_steps
+        rt_cfg = configs.ExperimentConfig.from_yaml(sf_warm.to_yaml())
+        self.assertEqual(rt_cfg.train.loss.margin_warmup_steps, 10)
+        self.assertEqual(rt_cfg.loss.margin_warmup_steps, 10)
+
+
+class TestPhase2ConvergedDeliverables(unittest.TestCase):
+    """Phase-2 checks: converged schedules, model cards, exact subsampling, and ablation schemas."""
+
+    REPO = os.path.dirname(os.path.abspath(__file__))
+
+    def test_subsample_spk_map_redistributes_when_some_speakers_below_quota(self):
+        from scripts import run_r2_controls as r2
+
+        # 3 speakers have <15 utterances (8, 10, 12); remaining 7 have 25 utterances.
+        spk_map = {
+            "s0": [f"s0_{i}" for i in range(8)],
+            "s1": [f"s1_{i}" for i in range(10)],
+            "s2": [f"s2_{i}" for i in range(12)],
+        }
+        for k in range(3, 10):
+            spk_map[f"s{k}"] = [f"s{k}_{i}" for i in range(25)]
+
+        sub = r2.subsample_spk_map(spk_map, target_total_utts=150, seed=42)
+        self.assertEqual(len(sub), 10)
+        self.assertEqual(sum(len(v) for v in sub.values()), 150)
+        self.assertEqual(len(sub["s0"]), 8)
+        self.assertEqual(len(sub["s1"]), 10)
+        self.assertEqual(len(sub["s2"]), 12)
+        # Determinism check
+        sub2 = r2.subsample_spk_map(spk_map, target_total_utts=150, seed=42)
+        self.assertEqual(sub, sub2)
+
+    def test_all_44_model_cards_and_benchmark_results_converged_invariants(self):
+        import json
+
+        pm = os.path.join(self.REPO, "pretrained_models")
+        with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
+            bench = json.load(f)
+
+        self.assertEqual(len(bench["experiments"]), 44)
+        self.assertEqual(len(bench.get("tflite_exports", {})), 12)
+
+        vox_ds = bench["datasets"]["voxceleb1"]
+        self.assertIn("vox1_o_10spk_subset_note", vox_ds)
+        self.assertNotIn("official_trials_file", vox_ds)
+        self.assertNotIn("num_official_veri_test2_trials", vox_ds)
+
+        for mid in hf_compat.PRETRAINED_MODEL_IDS:
+            readme_path = os.path.join(pm, mid, "README.md")
+            with open(readme_path, "r", encoding="utf-8") as f:
+                card = f.read()
+            self.assertNotIn("400-step demonstration checkpoint", card, mid)
+            self.assertNotIn("Losses are not converged at this budget", card, mid)
+            self.assertIn("trained to convergence", card, mid)
+            self.assertIn("S_safe = X + 2 epochs", card, mid)
+            self.assertIn("10-speaker subset", card, mid)
+            if mid.startswith("univ_"):
+                self.assertIn("Universal Pooled EER progressed from", card, mid)
+            else:
+                self.assertIn("in-domain ", card, mid)
+                self.assertIn("EER progressed from", card, mid)
+
+    def test_converged_r1_and_r2_json_schemas_complete(self):
+        import json
+
+        pm = os.path.join(self.REPO, "pretrained_models")
+        ab_path = os.path.join(pm, "ablation_results.json")
+        r2_path = os.path.join(pm, "r2_seed_and_control_results.json")
+
+        with open(ab_path, "r", encoding="utf-8") as f:
+            ab = json.load(f)
+        self.assertEqual(ab["default_num_steps"], 4600)
+        for req_key in (
+            "domain_mixing_ablation",
+            "extended_set_and_dr_ablation",
+            "variable_length_ablation",
+            "training_horizon_ablation",
+            "mamba_directionality_ablation",
+            "studies",
+        ):
+            self.assertIn(req_key, ab)
+        for step_key in ("steps_400", "steps_800", "steps_1200", "steps_2400", "steps_4600"):
+            self.assertIn(step_key, ab["training_horizon_ablation"])
+            self.assertIsNotNone(ab["training_horizon_ablation"][step_key])
+            self.assertIn("multi_domain_eval", ab["training_horizon_ablation"][step_key])
+        self.assertEqual(
+            ab["mamba_directionality_ablation"]["bidirectional"]["num_steps"],
+            2400,
+        )
+        self.assertEqual(
+            ab["mamba_directionality_ablation"]["unidirectional"]["num_steps"],
+            2400,
+        )
+
+        with open(r2_path, "r", encoding="utf-8") as f:
+            r2_data = json.load(f)
+        for req_key in (
+            "seed_noise_floor",
+            "training_horizon_800_own_schedule",
+            "multi_seed_stability",
+            "matched_data_control",
+            "own_schedule_horizon",
+        ):
+            self.assertIn(req_key, r2_data)
+        mc_2400 = r2_data["matched_data_control"]["univ_subsampled_5788_2400steps"]
+        mc_4600 = r2_data["matched_data_control"]["univ_subsampled_5788_4600steps"]
+        self.assertEqual(mc_2400["num_train_utterances"], 5788)
+        self.assertEqual(mc_2400["num_train_speakers"], 381)
+        self.assertEqual(mc_4600["num_train_utterances"], 5788)
+        self.assertIn("multi_domain_eval", mc_2400)
+        self.assertIn("multi_domain_eval", mc_4600)
 
 
 if __name__ == "__main__":

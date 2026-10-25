@@ -74,10 +74,12 @@ def provenance_for(mid: str, fp: dict) -> tuple[dict, object]:
         crop = f"{fp['min_seq_len']}-{fp['seq_len']}"
         code = TRAINING_CODE_VARIABLE
     elif match == "both":
-        if mid.endswith("_ge2e_contrast"):
+        if mid.endswith("_ge2e_contrast") or bool(
+            fp.get("yaml_variable_length_training", True)
+        ):
             actual = True
             crop = f"{fp['min_seq_len']}-{fp['seq_len']}"
-            code = TRAINING_CODE_VARIABLE + " (retrained at 9accf95; see git log)"
+            code = TRAINING_CODE_VARIABLE
         else:
             actual = False
             crop = int(fp["seq_len"])

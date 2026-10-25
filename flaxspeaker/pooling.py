@@ -400,7 +400,18 @@ class PfasRepresentationHead(nn.Module):
                 alpha = jax.nn.softmax(logits, axis=1)
                 keys = jnp.einsum("btm,btmd->bmd", alpha, frame_keys)
                 local_vals = jnp.einsum("btm,btmd->bmd", alpha, frame_values)
-            else:
+            elif att_mode == "dot":
+                scale = 1.0 / jnp.sqrt(float(x.shape[-1]))
+                logits = (
+                    nn.Dense(self.num_keys, use_bias=False, name="pfas_att_dot")(x)
+                    * scale
+                )
+                if mask is not None:
+                    logits = jnp.where(mask[..., None] > 0, logits, -1e9)
+                alpha = jax.nn.softmax(logits, axis=1)
+                keys = jnp.einsum("btm,btmd->bmd", alpha, frame_keys)
+                local_vals = jnp.einsum("btm,btmd->bmd", alpha, frame_values)
+            elif att_mode in ("shared_nonlinear", "mlp"):
                 h = jnp.tanh(nn.Dense(self.attention_dim, name="pfas_att_hid")(x))
                 logits = nn.Dense(self.num_keys, name="pfas_att_out")(h)
                 if mask is not None:
@@ -408,6 +419,12 @@ class PfasRepresentationHead(nn.Module):
                 alpha = jax.nn.softmax(logits, axis=1)
                 keys = jnp.einsum("btm,btmd->bmd", alpha, frame_keys)
                 local_vals = jnp.einsum("btm,btmd->bmd", alpha, frame_values)
+            else:
+                raise ValueError(
+                    f"Unsupported PfasPooling attention_type={self.attention_type!r}. "
+                    "Expected one of: 'shared_nonlinear' ('mlp'), 'unshared_nonlinear', "
+                    "'shared_linear', 'dot', 'maxpool', 'atp_ffn'."
+                )
 
             if global_val is not None:
                 vals = global_val[:, None, :] + self.local_value_scale * local_vals

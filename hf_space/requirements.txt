@@ -1,7 +1,6 @@
 audioop-lts; python_version >= "3.13"
 gradio==5.50.0
-# The library itself (pulls jax/flax/optax/librosa/... as dependencies). Pinned to the
-# GitHub main branch so the Space always runs the code the model cards describe.
-flaxspeaker @ git+https://github.com/wq2012/FlaxSpeaker.git@main
+# Pulls the v0.4.0 release from PyPI (jax, flax, optax, librosa, safetensors, etc.).
+flaxspeaker>=0.4.0
 matplotlib>=3.7.0
 huggingface-hub>=0.20.0

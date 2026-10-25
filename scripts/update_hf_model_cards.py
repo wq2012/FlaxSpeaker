@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Regenerate and (optionally) push model cards + metadata for all 44 Hugging Face repos.
+"""Regenerate and (optionally) push model cards, metadata, and weights for all 44 HF repos.
 
 For every `pretrained_models/<model_id>/`:
   1. regenerates `README.md` from `config.json` + `eval_results.json` via
-     `flaxspeaker.model_card.build_model_card` (no weights are touched);
-  2. with `--push`, uploads `README.md`, `config.json`, `eval_results.json` to
-     `wq2012/<model_id>` and deletes the stale `preprocessor_config.json` from the Hub.
-
-Weights (`model.safetensors`, `flax_model.msgpack`, `*.tflite`) are not touched by this
-script; they were uploaded once with `huggingface_hub.upload_folder(repo_id=..., folder_path=
-"pretrained_models/<model_id>")` after `scripts/export_model.py` produced the directory.
+     `flaxspeaker.model_card.build_model_card` (local weights are untouched);
+  2. with `--push`, uploads `README.md`, `config.json`, `eval_results.json` (plus
+     `model.safetensors`, `flax_model.msgpack`, `model_fp32.tflite`, `model_int8.tflite`
+     when `--include_weights` is passed) to `wq2012/<model_id>` and deletes any stale
+     `preprocessor_config.json` from the Hub.
 
 Usage:
-    python scripts/update_hf_model_cards.py            # regenerate locally only
-    python scripts/update_hf_model_cards.py --push     # also push to the Hub
+    python scripts/update_hf_model_cards.py                           # regenerate locally only
+    python scripts/update_hf_model_cards.py --push                    # push cards + metadata
+    python scripts/update_hf_model_cards.py --push --include_weights  # push full release artifacts
 """
 
 import argparse
@@ -30,6 +29,14 @@ from flaxspeaker import configs  # noqa: E402
 from flaxspeaker import model_card  # noqa: E402
 
 PM = os.path.join(REPO_ROOT, "pretrained_models")
+
+METADATA_FILES = ("README.md", "config.json", "eval_results.json")
+WEIGHT_FILES = (
+    "model.safetensors",
+    "flax_model.msgpack",
+    "model_fp32.tflite",
+    "model_int8.tflite",
+)
 
 
 def regenerate(model_dir: str) -> str:
@@ -54,14 +61,17 @@ def regenerate(model_dir: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--push", action="store_true")
+    parser.add_argument(
+        "--include_weights",
+        action="store_true",
+        help="Also upload model.safetensors, flax_model.msgpack, and *.tflite when present.",
+    )
     parser.add_argument("--only", nargs="*", default=None, help="subset of model ids")
     parser.add_argument(
         "--commit_message",
         default=(
-            "v0.3.0: training-crop provenance (fixed T=180 crops for the released weights; "
-            "step-0 loss fingerprint; training_provenance block; variable_length_training "
-            "aligned with the weights), TFLite EER CIs and re-measured latencies, "
-            "flaxspeaker>=0.3.0 quickstart"
+            "v0.4.0: full-convergence checkpoints (S_safe = X + 2 epochs), "
+            "TFLite exports, and updated evaluation archives"
         ),
     )
     args = parser.parse_args()
@@ -77,26 +87,39 @@ def main() -> None:
 
     if not args.push:
         return
-    from huggingface_hub import HfApi  # pytype: disable=import-error
+    from huggingface_hub import (  # pytype: disable=import-error
+        CommitOperationAdd,
+        CommitOperationDelete,
+        HfApi,
+    )
 
     api = HfApi()
-    for d in model_dirs:
+    for idx, d in enumerate(model_dirs, 1):
         model_id = os.path.basename(d)
         repo_id = f"wq2012/{model_id}"
+        api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
         ops = []
-        from huggingface_hub import CommitOperationAdd, CommitOperationDelete  # pytype: disable=import-error
-
-        for fname in ("README.md", "config.json", "eval_results.json"):
-            ops.append(CommitOperationAdd(path_in_repo=fname, path_or_fileobj=os.path.join(d, fname)))
+        upload_candidates = list(METADATA_FILES)
+        if args.include_weights:
+            upload_candidates.extend(WEIGHT_FILES)
+        uploaded_names = []
+        for fname in upload_candidates:
+            fpath = os.path.join(d, fname)
+            if os.path.exists(fpath):
+                ops.append(CommitOperationAdd(path_in_repo=fname, path_or_fileobj=fpath))
+                uploaded_names.append(fname)
         existing = set(api.list_repo_files(repo_id))
         if "preprocessor_config.json" in existing:
             ops.append(CommitOperationDelete(path_in_repo="preprocessor_config.json"))
-        api.create_commit(
+        commit_info = api.create_commit(
             repo_id=repo_id,
             operations=ops,
             commit_message=args.commit_message,
         )
-        print(f"pushed {repo_id}")
+        print(
+            f"[{idx}/{len(model_dirs)}] pushed {repo_id} "
+            f"({len(uploaded_names)} files: {', '.join(uploaded_names)}) -> {commit_info.oid[:8]}"
+        )
 
 
 if __name__ == "__main__":

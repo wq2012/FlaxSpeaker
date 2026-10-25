@@ -173,7 +173,13 @@ def classify(released: float, fixed: float, variable: float, tol: float = TOLERA
     return "neither"
 
 
-def main(data_root: str, output_root: str, output_json: str, only: list[str]) -> None:
+def main(
+    data_root: str,
+    output_root: str,
+    output_json: str,
+    only: list[str],
+    overwrite: bool = False,
+) -> None:
     if not output_json:
         output_json = os.path.join(output_root, "step0_fingerprints.json")
     with open(os.path.join(data_root, "splits", "dataset_summary.json"), "r", encoding="utf-8") as f:
@@ -197,7 +203,7 @@ def main(data_root: str, output_root: str, output_json: str, only: list[str]) ->
         "checkpoints": {},
         "histogram": {},
     }
-    if os.path.exists(output_json):
+    if os.path.exists(output_json) and not (overwrite and not only):
         with open(output_json, "r", encoding="utf-8") as f:
             prev = json.load(f)
         results["checkpoints"] = prev.get("checkpoints", {})
@@ -222,7 +228,7 @@ def main(data_root: str, output_root: str, output_json: str, only: list[str]) ->
                 fe, cache_dir=os.path.join(data_root, "feature_cache", dname)
             )
         spk = dataset.get_csv_spk_to_utts(ds[dname]["train_csv"])
-        cache.precompute_dataset(spk, num_workers=16)
+        cache.precompute_dataset(spk, num_workers=8)
         caches[dname] = cache
         spk_sets[dname] = spk
         return cache, spk
@@ -237,7 +243,7 @@ def main(data_root: str, output_root: str, output_json: str, only: list[str]) ->
             json.dump(results, f, indent=2)
 
     for i, mid in enumerate(model_ids):
-        if mid in results["checkpoints"]:
+        if not overwrite and mid in results["checkpoints"]:
             continue
         cfg = configs.ExperimentConfig.from_yaml(os.path.join(REPO_ROOT, "configs", f"{mid}.yml"))
         with open(os.path.join(output_root, mid, "eval_results.json"), "r", encoding="utf-8") as f:
@@ -281,9 +287,11 @@ def main(data_root: str, output_root: str, output_json: str, only: list[str]) ->
             out[f"{key}_probe_sec"] = round(time.time() - t0, 1)
             print(f"    {key:28s} loss={loss:.4f}  valid frames {valid}  ({out[f'{key}_probe_sec']} s)")
         cfg.train.loss.sphereface_lambda_base = released_lambda_base
-        out["legacy_lambda_used"] = bool(is_sphereface)
-        fixed_key = "head_fixed_legacy_lambda" if is_sphereface else "head_fixed"
-        var_key = "head_variable_legacy_lambda" if is_sphereface else "head_variable"
+        m_head = classify(released, out["head_fixed"], out["head_variable"])
+        use_legacy_lambda = bool(is_sphereface and m_head == "neither")
+        out["legacy_lambda_used"] = use_legacy_lambda
+        fixed_key = "head_fixed_legacy_lambda" if use_legacy_lambda else "head_fixed"
+        var_key = "head_variable_legacy_lambda" if use_legacy_lambda else "head_variable"
         out["abs_diff_fixed"] = round(abs(out[fixed_key] - released), 4)
         out["abs_diff_variable"] = round(abs(out[var_key] - released), 4)
         out["match"] = classify(released, out[fixed_key], out[var_key])
@@ -301,5 +309,6 @@ if __name__ == "__main__":
     parser.add_argument("--output_root", type=str, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--output_json", type=str, default="")
     parser.add_argument("--only", type=str, nargs="*", default=[], help="Subset of model ids.")
+    parser.add_argument("--overwrite", action="store_true", help="Recompute and overwrite existing fingerprints.")
     args = parser.parse_args()
-    main(args.data_root, args.output_root, args.output_json, args.only)
+    main(args.data_root, args.output_root, args.output_json, args.only, overwrite=args.overwrite)
