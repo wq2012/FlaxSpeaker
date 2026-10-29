@@ -158,8 +158,8 @@ def draw_architecture_diagram(
         "1. Multi-Domain & VAD",
         "Waveform (B, L) @ 16 kHz",
         [
-            "LibriSpeech + CN-Celeb2 + Vox1",
-            "Namespace <dom>:<spk> (381 spk)",
+            "Tier-1 (381 spk) + Tier-2 (12,193 spk)",
+            "Vox1+Vox2+CN1+CN2+LibriSpeech",
             "Peak AGC (1.0) + 80-d log-Mel",
             "Energy VAD: max($-42$ dB,",
             "  $P_{95}-26$ dB, $P_{10}+4.5$ dB) + CMVN",
@@ -179,10 +179,9 @@ def draw_architecture_diagram(
         [
             "75% Within / 25% Cross-Domain",
             "Domain temp: $p_d \\propto |\\mathcal{S}_d|^{0.35}$",
-            "Mutually exclusive aug: 35% noise,",
-            "  32.5% SpecAug, 32.5% clean",
-            "Variable crop: $T \\sim \\mathcal{U}(90, 180)$ + mask",
-            "Converged $S_{\\mathrm{safe}}{=}X{+}2$ ep (1k–4.6k st)",
+            "MUSAN + RIR + 3x speed perturb,",
+            "  SpecAug + crop $T \\sim \\mathcal{U}(90, 180)$",
+            "Tier-1 $S_{\\mathrm{safe}}$ + Tier-2 3.6s LMFT",
         ],
         "#F0FDF4",
         "#22C55E",
@@ -197,11 +196,11 @@ def draw_architecture_diagram(
         "3. Masked Backbones (x6)",
         "Frame states $\\mathbf{H} \\in \\mathbb{R}^{B \\times T \\times D}$",
         [
-            "Conformer (linear + Conv1D stem,",
+            "Conformer (Small–Large, Conv1D stem,",
             "  GroupNorm $G{=}2$, MFA)",
             "Mamba SSM (associative scan)",
             "Transformer (pre-LN + MFA)",
-            "ECAPA-TDNN | ResNet-18 | (Bi)LSTM",
+            "ECAPA-TDNN (BN) | ResNet-18 | LSTM",
         ],
         "#FEFCE8",
         "#EAB308",
@@ -214,13 +213,13 @@ def draw_architecture_diagram(
         2.75,
         h_top,
         "4. Pooling Heads & Bottleneck",
-        "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS-SN: 640-D)",
+        "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS: 640/1536-D)",
         [
             "7 heads: ATP ($N_h{=}4$ subspace), ASP,",
             "  SAP, Stats, Mean, Last, CumStats",
             "  → LN → FC(256) → LN → ReLU → $L_2$",
-            "PFAS-SN (bypasses FC(256)): $K{=}4$ keys",
-            "  (32-D) + values (128-D) = 640-D",
+            "PFAS: $K{=}4$ (640-D) & $K{=}16$ `atp_ffn`",
+            "  ($d_k{=}32, d_v{=}64$, 1536-D)",
         ],
         "#FAF5FF",
         "#A855F7",
@@ -240,13 +239,13 @@ def draw_architecture_diagram(
         6.60,
         h_bot,
         "5. Nine Losses (7 Benchmarked + 2 Reference) & Three Scorers",
-        "Batch ($N{=}8$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
+        "Batch ($N{=}8/16$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
         [
             "Losses: GE2E softmax / contrast (+ hybrid surrogate) | extended-set softmax (pure Eq. 2 or blended)",
-            "  + ArcFace, CosFace, SphereFace (linear margin warm-up), Triplet + Softmax, Pairwise (tested only)",
+            "  + Sub-Center ArcFace ($K{=}3$), CosFace, SphereFace (margin warm-up), Triplet + Softmax",
             (
-                "Scoring: cosine | Dr-Vector decision net "
-                "($\\lambda_{res}{=}0.25$ variant / paper preset) | PFAS (global $L_2$)"
+                "Scoring: cosine (+ Top-300 AS-Norm & 4-feat QMF) | Dr-Vector "
+                "| PFAS (frame-level attention)"
             ),
         ],
         "#FFF1F2",
@@ -260,9 +259,9 @@ def draw_architecture_diagram(
         4.35,
         h_bot,
         "6. Edge Export & Open-Source Ecosystem",
-        "44 HF Hub Models + TFLite FP32/INT8",
+        "48 HF Hub Models + 16 TFLite FP32/INT8",
         [
-            "Hugging Face Hub (wq2012/*): SafeTensors + config.json",
+            "Hugging Face Hub (wq2012/*): 44 Tier-1 + 4 Tier-2 Flagships",
             "jax2tf → SavedModel → TFLite FP32 / INT8 (1.8 s window)",
             "Gradio demo (real inference) + tests.py CI (flake8 / pytype)",
         ],

@@ -6,7 +6,6 @@ import unittest
 
 import jax
 import jax.numpy as jnp
-import munch
 import numpy as np
 
 from flaxspeaker import configs
@@ -18,9 +17,12 @@ from flaxspeaker import hf_compat
 from flaxspeaker import losses
 from flaxspeaker import neural_net
 from flaxspeaker import pooling
+from flaxspeaker import resources
 from flaxspeaker import scoring
+from flaxspeaker import shard_cache
 from flaxspeaker import specaug
 from flaxspeaker import vad
+from flaxspeaker import waveform_aug
 
 
 EPS = 1e-5
@@ -52,9 +54,9 @@ class TestBase(unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        with open("myconfig.yml") as f:
-            self.config = munch.Munch.fromYAML(f.read())
-
+        self.config = configs.ExperimentConfig.from_yaml("myconfig.yml")
+        self.config.model.seq_len = 100
+        self.config.model.sliding_window_step = 50
         self.config.data.train_librispeech_dir = (
             "testdata/LibriSpeech/train-clean-100"
         )
@@ -508,15 +510,21 @@ class TestNeuralNet(TestBase):
         )
 
     def test_train_lstm_last_network(self):
-        self.config.model.use_transformer = False
-        self.config.model.frame_aggregation_mean = False
+        self.config.model.backbone = configs.BackboneType.LSTM
+        self.config.model.apply_size_variant(configs.SizeVariant.TINY)
+        self.config.model.pooling.pooling_type = configs.PoolingType.LAST
+        self.config.train.loss.loss_type = configs.LossType.TRIPLET
+        self.config.train.batch_size = 2
         self.config.train.num_steps = 2
         losses_out = neural_net.train_network(self.spk_to_utts, self.config)
         self.assertEqual(len(losses_out), 2)
 
     def test_train_lstm_mean_network(self):
-        self.config.model.use_transformer = False
-        self.config.model.frame_aggregation_mean = True
+        self.config.model.backbone = configs.BackboneType.LSTM
+        self.config.model.apply_size_variant(configs.SizeVariant.TINY)
+        self.config.model.pooling.pooling_type = configs.PoolingType.MEAN
+        self.config.train.loss.loss_type = configs.LossType.TRIPLET
+        self.config.train.batch_size = 2
         self.config.train.num_steps = 2
         with mp_pool.ThreadPool(self.config.train.num_processes) as pool:
             losses_out = neural_net.train_network(
@@ -525,7 +533,11 @@ class TestNeuralNet(TestBase):
         self.assertEqual(len(losses_out), 2)
 
     def test_train_transformer_network(self):
-        self.config.model.use_transformer = True
+        self.config.model.backbone = configs.BackboneType.TRANSFORMER
+        self.config.model.apply_size_variant(configs.SizeVariant.TINY)
+        self.config.model.pooling.pooling_type = configs.PoolingType.ATP
+        self.config.train.loss.loss_type = configs.LossType.ARCFACE
+        self.config.train.batch_size = 2
         self.config.train.num_steps = 2
         with mp_pool.ThreadPool(self.config.train.num_processes) as pool:
             losses_out = neural_net.train_network(
@@ -538,77 +550,80 @@ class TestEvaluation(TestBase):
 
     def setUp(self):
         super().setUp()
-        self.config.model.frame_aggregation_mean = False
-        self.config.model.use_transformer = False
         self.spk_to_utts = dataset.get_librispeech_spk_to_utts(
             self.config.data.test_librispeech_dir
         )
 
     def test_run_lstm_inference(self):
-        self.config.model.frame_aggregation_mean = False
-        self.config.model.use_transformer = False
+        self.config.model.backbone = configs.BackboneType.LSTM
+        self.config.model.apply_size_variant(configs.SizeVariant.TINY)
+        self.config.model.pooling.pooling_type = configs.PoolingType.LAST
         self.config.model.full_sequence_inference = False
-        features = feature_extraction.extract_features(
+        frontend = feature_extraction.AudioFrontend(
+            self.config.frontend, self.config.vad
+        )
+        features = frontend.extract_from_file(
             os.path.join(
                 self.config.data.test_librispeech_dir,
                 "61/70968/61-70968-0000.flac",
-            ),
-            self.config.model.n_mfcc,
+            )
         )
-        _, self.state = neural_net.get_speaker_encoder(
-            self.config, load_from="testdata/lstm_model.msgpack"
-        )
+        _, self.state = neural_net.get_speaker_encoder(self.config)
         embedding = evaluation.run_inference(features, self.state, self.config)
         self.assertTupleEqual(
-            embedding.shape, (self.config.model.lstm.hidden_size,)
+            embedding.shape, (self.config.model.output_embedding_dim,)
         )
 
     def test_run_lstm_full_sequence_inference(self):
-        self.config.model.frame_aggregation_mean = True
-        self.config.model.use_transformer = False
+        self.config.model.backbone = configs.BackboneType.LSTM
+        self.config.model.apply_size_variant(configs.SizeVariant.TINY)
+        self.config.model.pooling.pooling_type = configs.PoolingType.MEAN
         self.config.model.full_sequence_inference = True
-        features = feature_extraction.extract_features(
+        frontend = feature_extraction.AudioFrontend(
+            self.config.frontend, self.config.vad
+        )
+        features = frontend.extract_from_file(
             os.path.join(
                 self.config.data.test_librispeech_dir,
                 "61/70968/61-70968-0000.flac",
-            ),
-            self.config.model.n_mfcc,
+            )
         )
-        _, self.state = neural_net.get_speaker_encoder(
-            self.config, load_from="testdata/lstm_model.msgpack"
-        )
+        _, self.state = neural_net.get_speaker_encoder(self.config)
         embedding = evaluation.run_inference(features, self.state, self.config)
         self.assertTupleEqual(
-            embedding.shape, (self.config.model.lstm.hidden_size,)
+            embedding.shape, (self.config.model.output_embedding_dim,)
         )
 
     def test_run_transformer_inference(self):
-        self.config.model.use_transformer = True
-        features = feature_extraction.extract_features(
+        self.config.model.backbone = configs.BackboneType.TRANSFORMER
+        self.config.model.apply_size_variant(configs.SizeVariant.TINY)
+        frontend = feature_extraction.AudioFrontend(
+            self.config.frontend, self.config.vad
+        )
+        features = frontend.extract_from_file(
             os.path.join(
                 self.config.data.test_librispeech_dir,
                 "61/70968/61-70968-0000.flac",
-            ),
-            self.config.model.n_mfcc,
+            )
         )
-        _, self.state = neural_net.get_speaker_encoder(
-            self.config, load_from="testdata/transformer_model.msgpack"
-        )
+        _, self.state = neural_net.get_speaker_encoder(self.config)
         embedding = evaluation.run_inference(features, self.state, self.config)
         self.assertTupleEqual(
-            embedding.shape, (self.config.model.transformer.dim,)
+            embedding.shape, (self.config.model.output_embedding_dim,)
         )
 
-    def test_compute_scores(self):
-        self.config.eval.num_triplets = 3
-        _, self.state = neural_net.get_speaker_encoder(
-            self.config, load_from="testdata/lstm_model.msgpack"
+    def test_evaluate_verification_trials(self):
+        self.config.model.backbone = configs.BackboneType.LSTM
+        self.config.model.apply_size_variant(configs.SizeVariant.TINY)
+        _, self.state = neural_net.get_speaker_encoder(self.config)
+        trials = dataset.generate_verification_trials(
+            self.spk_to_utts, num_trials=6, seed=42
         )
-        labels, scores = evaluation.compute_scores(
-            self.state, self.spk_to_utts, self.config
+        metrics = evaluation.evaluate_verification_trials(
+            self.state, trials, self.config
         )
-        self.assertListEqual(labels, [1, 0, 1, 0, 1, 0])
-        self.assertEqual(len(scores), 6)
+        self.assertEqual(metrics["num_trials"], 6)
+        self.assertTrue(0.0 <= metrics["eer"] <= 1.0)
 
     def test_compute_eer(self):
         labels = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
@@ -666,7 +681,9 @@ class TestExportAndHuggingFaceCompat(TestBase):
     def test_hf_pretrained_model_ids_and_hub_resolution(self):
         from unittest import mock
 
-        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 44)
+        self.assertEqual(len(hf_compat.CONTROLLED_ABLATION_MODEL_IDS), 44)
+        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 4)
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 48)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
             "https://huggingface.co/collections/wq2012/flaxspeaker",
@@ -1631,7 +1648,7 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
         fp_path = os.path.join(pm, "step0_fingerprints.json")
         with open(fp_path, "r", encoding="utf-8") as f:
             fps = json.load(f)["checkpoints"]
-        self.assertEqual(len(fps), 44)
+        self.assertEqual(len(fps), 48)
         for mid in hf_compat.PRETRAINED_MODEL_IDS:
             with open(os.path.join(pm, mid, "config.json"), "r", encoding="utf-8") as f:
                 cfg_json = json.load(f)
@@ -1650,7 +1667,7 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
             # The block round-trips through FlaxSpeakerConfig.
             hf_cfg = hf_compat.FlaxSpeakerConfig.from_pretrained(os.path.join(pm, mid))
             self.assertEqual(hf_cfg.training_provenance, prov)
-        # All 44 Phase-2 converged checkpoints were trained at HEAD with seeded RNGs and
+        # All 48 v0.5.0 checkpoints were trained at HEAD with seeded RNGs and
         # variable_length_training=True, so zero checkpoints are unknown or fixed-only.
         unknown = sorted(m for m, v in fps.items() if v["match"] == "neither")
         self.assertEqual(unknown, [])
@@ -1666,8 +1683,9 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
         pm = os.path.join(self.REPO, "pretrained_models")
         for mid, needle in (
             ("univ_conformer_small_ge2e", "variable-length crops"),
-            ("univ_conformer_small_ge2e_contrast", "Both crop regimes reproduce"),
+            ("univ_conformer_small_ge2e_contrast", "variable-length crops"),
             ("univ_conformer_small_triplet", "variable-length crops"),
+            ("univ_full_conformer_large_arcface", "variable-length crops"),
         ):
             exp_cfg = hf_compat.FlaxSpeakerModel.load_exp_config(os.path.join(pm, mid))
             text = model_card._provenance_paragraph(os.path.join(pm, mid), exp_cfg)
@@ -1675,12 +1693,23 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
             self.assertIn("step0_fingerprints.json", text)
             self.assertNotIn("2026-10", text)  # no date-based reasoning
 
-        # Also unit-test the legacy fixed-crop and unknown provenance rendering branches.
+        # Also unit-test the both-crop, fixed-crop, and unknown provenance rendering branches.
         with tempfile.TemporaryDirectory() as tmp:
             exp_cfg = configs.ExperimentConfig()
             exp_cfg.model.seq_len = 180
             exp_cfg.model.min_seq_len = 90
             for sub, prov, needle in (
+                (
+                    "both_case",
+                    {
+                        "variable_length_training_actual": True,
+                        "step0_fingerprint_match": "both",
+                        "released_initial_loss": 1.0005,
+                        "head_fixed_step0_loss": 1.0005,
+                        "head_variable_step0_loss": 1.0005,
+                    },
+                    "Both crop regimes reproduce",
+                ),
                 (
                     "fixed_case",
                     {
@@ -1930,15 +1959,15 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
             bench = json.load(f)
 
-        self.assertEqual(len(bench["experiments"]), 44)
-        self.assertEqual(len(bench.get("tflite_exports", {})), 12)
+        self.assertIn(len(bench["experiments"]), (44, 48))
+        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16))
 
         vox_ds = bench["datasets"]["voxceleb1"]
         self.assertIn("vox1_o_10spk_subset_note", vox_ds)
         self.assertNotIn("official_trials_file", vox_ds)
         self.assertNotIn("num_official_veri_test2_trials", vox_ds)
 
-        for mid in hf_compat.PRETRAINED_MODEL_IDS:
+        for mid in hf_compat.CONTROLLED_ABLATION_MODEL_IDS:
             readme_path = os.path.join(pm, mid, "README.md")
             with open(readme_path, "r", encoding="utf-8") as f:
                 card = f.read()
@@ -2002,6 +2031,461 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         self.assertEqual(mc_4600["num_train_utterances"], 5788)
         self.assertIn("multi_domain_eval", mc_2400)
         self.assertIn("multi_domain_eval", mc_4600)
+
+
+class TestV050SotaFeatures(unittest.TestCase):
+    """Comprehensive v0.5.0 SOTA engine tests (BatchNorm, Large presets, Sub-Center ArcFace,
+    SGD/warm-start/LMFT, MUSAN+RIR+speed-perturb, float16 memmap shards, AS-Norm/QMF/fusion,
+    full-utterance bucketed inference, and CN-Celeb-E loader).
+    """
+
+    def test_polite_resource_limiter(self):
+        old_omp = os.environ.get("OMP_NUM_THREADS")
+        old_xla = os.environ.get("XLA_FLAGS")
+        try:
+            info = resources.configure_polite_resources(max_threads=8, nice_level=0)
+            self.assertEqual(info["max_threads"], 8)
+            self.assertEqual(os.environ.get("OMP_NUM_THREADS"), "8")
+            self.assertIn("intra_op_parallelism_threads=8", info["xla_flags"])
+        finally:
+            if old_omp is None:
+                os.environ.pop("OMP_NUM_THREADS", None)
+            else:
+                os.environ["OMP_NUM_THREADS"] = old_omp
+            if old_xla is None:
+                os.environ.pop("XLA_FLAGS", None)
+            else:
+                os.environ["XLA_FLAGS"] = old_xla
+
+    def test_ecapa_masked_batchnorm_ema_hf_and_tflite_parity(self):
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.ECAPA_TDNN
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.ecapa_tdnn.use_batch_norm = True
+        cfg.model.ecapa_tdnn.norm_after_activation = True
+        cfg.model.seq_len = 48
+        cfg.model.embedding_dim = 64
+        cfg.train.loss.loss_type = configs.LossType.ARCFACE
+        cfg.train.batch_size = 4
+
+        _, state = neural_net.get_speaker_encoder(cfg, num_classes=6)
+        self.assertTrue(bool(state.batch_stats))
+
+        rng = jax.random.PRNGKey(2026)
+        x_valid = jax.random.normal(rng, (4, 32, 80)) * 3.0 + 1.5
+        m_valid = jnp.ones((4, 32), dtype=jnp.float32)
+        x_pad = jnp.pad(x_valid, ((0, 0), (0, 16), (0, 0)), constant_values=99.0)
+        m_pad = jnp.pad(m_valid, ((0, 0), (0, 16)), constant_values=0.0)
+
+        # Training-mode BatchNorm must ignore masked padding frames (even with 99.0 garbage)
+        vars_in = {"params": state.params, "batch_stats": state.batch_stats}
+        out_v, upd_v = state.apply_fn(
+            vars_in, x_valid, deterministic=False, mask=m_valid, mutable=["batch_stats"]
+        )
+        out_p, upd_p = state.apply_fn(
+            vars_in, x_pad, deterministic=False, mask=m_pad, mutable=["batch_stats"]
+        )
+        self.assertLess(float(jnp.max(jnp.abs(out_v - out_p))), 1e-4)
+        bs_diff = jax.tree_util.tree_leaves(
+            jax.tree_util.tree_map(
+                lambda a, b: jnp.max(jnp.abs(a - b)),
+                upd_v["batch_stats"],
+                upd_p["batch_stats"],
+            )
+        )
+        self.assertLess(max(float(v) for v in bs_diff), 1e-4)
+
+        # Run 3 training steps so running_mean / running_var move away from (0, 1)
+        step_fn = neural_net.make_modern_train_step(cfg)
+        labels = jnp.array([0, 1, 2, 3], dtype=jnp.int32)
+        init_bs_leaves = jax.tree_util.tree_leaves(state.batch_stats)
+        for _ in range(3):
+            state, _ = step_fn(state, x_pad, labels, m_pad)
+        updated_bs_leaves = jax.tree_util.tree_leaves(state.batch_stats)
+        moved = max(
+            float(jnp.max(jnp.abs(a - b)))
+            for a, b in zip(init_bs_leaves, updated_bs_leaves)
+        )
+        self.assertGreater(moved, 1e-2)
+
+        # Round-trip through save_model / load_model (.safetensors & .msgpack), HF, and TFLite
+        with tempfile.TemporaryDirectory() as tmpdir:
+            st_path = os.path.join(tmpdir, "ecapa.safetensors")
+            mp_path = os.path.join(tmpdir, "ecapa.msgpack")
+            neural_net.save_model(st_path, state.params, batch_stats=state.batch_stats)
+            neural_net.save_model(mp_path, state.params, batch_stats=state.batch_stats)
+
+            _, loaded_st = neural_net.get_speaker_encoder(cfg, load_from=st_path, num_classes=6)
+            _, loaded_mp = neural_net.get_speaker_encoder(cfg, load_from=mp_path, num_classes=6)
+            test_feat = np.asarray(jax.random.normal(rng, (48, 80)), dtype=np.float32)
+            emb_orig = np.asarray(evaluation.run_inference(test_feat, state, cfg))
+            emb_st = np.asarray(evaluation.run_inference(test_feat, loaded_st, cfg))
+            emb_mp = np.asarray(evaluation.run_inference(test_feat, loaded_mp, cfg))
+            self.assertTrue(np.allclose(emb_orig, emb_st, atol=1e-5))
+            self.assertTrue(np.allclose(emb_orig, emb_mp, atol=1e-5))
+
+            hf_dir = os.path.join(tmpdir, "hf_ecapa")
+            hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(cfg)
+            hf_model = hf_compat.FlaxSpeakerModel(
+                config=hf_cfg, params=state.params, batch_stats=state.batch_stats
+            )
+            hf_model.save_pretrained(hf_dir)
+            hf_loaded = hf_compat.FlaxSpeakerModel.from_pretrained(hf_dir)
+            out_hf1 = np.asarray(hf_model(jnp.asarray(test_feat[None, ...])))
+            out_hf2 = np.asarray(hf_loaded(jnp.asarray(test_feat[None, ...])))
+            self.assertTrue(np.allclose(out_hf1, out_hf2, atol=1e-5))
+
+            tflite_path = os.path.join(tmpdir, "ecapa.tflite")
+            export.export_to_tflite(state, cfg, tflite_path, seq_len=48, quantize_int8=False)
+            runner = export.TFLiteSpeakerRunner(tflite_path)
+            emb_tfl = runner(test_feat)
+            cos_parity = float(np.sum(out_hf1[0] * emb_tfl))
+            self.assertGreater(cos_parity, 0.9999)
+
+    def test_large_flagship_presets_conformer_and_ecapa(self):
+        rng = jax.random.PRNGKey(12)
+        x = jnp.ones((1, 80, 80), dtype=jnp.float32)
+
+        c_cfg = configs.ExperimentConfig()
+        c_cfg.model.backbone = configs.BackboneType.CONFORMER
+        c_cfg.model.apply_size_variant(configs.SizeVariant.LARGE)
+        c_enc = neural_net.build_modern_encoder_from_config(c_cfg)
+        c_vars = c_enc.init(rng, x)
+        c_n = neural_net.count_parameters(c_vars["params"])
+        self.assertGreater(c_n, 6_000_000)
+        self.assertLess(c_n, 10_000_000)
+        self.assertEqual(c_cfg.model.conformer.subsample_factor, 1)
+        self.assertEqual(c_enc.apply(c_vars, x).shape, (1, 256))
+
+        e_cfg = configs.ExperimentConfig()
+        e_cfg.model.backbone = configs.BackboneType.ECAPA_TDNN
+        e_cfg.model.apply_size_variant(configs.SizeVariant.LARGE)
+        e_enc = neural_net.build_modern_encoder_from_config(e_cfg)
+        e_vars = e_enc.init(rng, x)
+        e_n = neural_net.count_parameters(e_vars["params"])
+        self.assertGreater(e_n, 14_000_000)
+        self.assertLess(e_n, 18_000_000)
+        self.assertEqual(e_enc.apply(e_vars, x).shape, (1, 256))
+
+    def test_subcenter_arcface_sgd_warm_start_and_lmft(self):
+        rng = jax.random.PRNGKey(33)
+        embs = jax.random.normal(rng, (6, 32))
+        w_k1 = jax.random.normal(rng, (32, 8))
+        w_k3 = jax.random.normal(rng, (32, 8 * 3))
+        lbl = jnp.array([0, 1, 2, 3, 4, 5], dtype=jnp.int32)
+        l_arc = losses.arcface_loss(embs, w_k1, lbl, scale=30.0, margin=0.2)
+        l_sc1 = losses.subcenter_arcface_loss(
+            embs, w_k1, lbl, scale=30.0, margin=0.2, subcenter_k=1
+        )
+        l_sc3 = losses.subcenter_arcface_loss(
+            embs, w_k3, lbl, scale=30.0, margin=0.2, subcenter_k=3
+        )
+        self.assertAlmostEqual(float(l_arc), float(l_sc1), places=5)
+        self.assertGreater(float(l_sc3), 0.0)
+
+        # SGD + Nesterov + warm_start_from_checkpoint + freeze_trunk + run_lmft_stage
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shard_dir = os.path.join(tmpdir, "shards")
+            writer = shard_cache.ShardedFeatureWriter(shard_dir, feat_dim=80)
+            np_rng = np.random.default_rng(7)
+            for s_idx in range(6):
+                for _ in range(3):
+                    feat = np_rng.standard_normal((70, 80)).astype(np.float32)
+                    writer.add(feat, speaker=f"vox:spk_{s_idx}", domain="vox")
+            writer.close()
+            store = shard_cache.ShardedFeatureStore(shard_dir)
+
+            trunk_cfg = configs.ExperimentConfig()
+            trunk_cfg.model.backbone = configs.BackboneType.CONFORMER
+            trunk_cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+            trunk_cfg.model.seq_len = 40
+            trunk_cfg.train.optimizer = "sgd"
+            trunk_cfg.train.momentum = 0.9
+            trunk_cfg.train.nesterov = True
+            trunk_cfg.train.learning_rate = 0.05
+            trunk_cfg.train.loss.loss_type = configs.LossType.SUBCENTER_ARCFACE
+            trunk_cfg.train.loss.subcenter_k = 3
+            trunk_cfg.train.batch_size = 4
+            _, trunk_state = neural_net.get_speaker_encoder(trunk_cfg, num_classes=6)
+            self.assertEqual(
+                trunk_state.params["_aux_class_weights"].shape,
+                (trunk_cfg.model.output_embedding_dim, 6 * 3),
+            )
+
+            ckpt_path = os.path.join(tmpdir, "trunk.safetensors")
+            neural_net.save_model(ckpt_path, trunk_state.params)
+
+            # Warm-start a PFAS head with freeze_trunk=True -> backbone weights stay identical
+            pfas_cfg = configs.ExperimentConfig()
+            pfas_cfg.model.backbone = configs.BackboneType.CONFORMER
+            pfas_cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+            pfas_cfg.model.seq_len = 40
+            pfas_cfg.model.pooling.pooling_type = configs.PoolingType.PFAS
+            pfas_cfg.model.scoring_type = configs.ScoringType.PFAS
+            pfas_cfg.train.loss.scoring_type = configs.ScoringType.PFAS
+            pfas_cfg.train.loss.loss_type = configs.LossType.EXTENDED_SET_SOFTMAX
+            pfas_cfg.train.loss.num_speakers_per_batch = 3
+            pfas_cfg.train.loss.num_utts_per_speaker = 2
+            pfas_cfg.train.init_from_checkpoint = ckpt_path
+            pfas_cfg.train.freeze_trunk = True
+            pfas_cfg.train.learning_rate = 1e-2
+
+            _, pfas_state = neural_net.get_speaker_encoder(pfas_cfg)
+            bb_before = jax.tree_util.tree_leaves(pfas_state.params["backbone"])
+            pfas_step = neural_net.make_modern_train_step(pfas_cfg)
+            b_in, b_lbl, b_m = store.sample_nm_batch(3, 2, max_seq_len=40, min_seq_len=32, rng=np_rng)
+            pfas_state_after, _ = pfas_step(pfas_state, b_in, b_lbl, b_m)
+            bb_after = jax.tree_util.tree_leaves(pfas_state_after.params["backbone"])
+            max_bb_delta = max(
+                float(jnp.max(jnp.abs(a - b))) for a, b in zip(bb_before, bb_after)
+            )
+            self.assertEqual(max_bb_delta, 0.0)
+            head_before = jax.tree_util.tree_leaves(pfas_state.params["pfas_head"])
+            head_after = jax.tree_util.tree_leaves(pfas_state_after.params["pfas_head"])
+            max_head_delta = max(
+                float(jnp.max(jnp.abs(a - b))) for a, b in zip(head_before, head_after)
+            )
+            self.assertGreater(max_head_delta, 1e-6)
+
+            # LMFT stage runs cleanly on classification state
+            lmft_state, lmft_losses = neural_net.run_lmft_stage(
+                trunk_state,
+                trunk_cfg,
+                store,
+                lmft_steps=2,
+                lmft_seq_len=60,
+                lmft_batch_size=4,
+                lmft_lr=1e-4,
+                lmft_margin=0.5,
+            )
+            self.assertEqual(len(lmft_losses), 2)
+            self.assertEqual(int(lmft_state.step), 2)
+
+    def test_waveform_aug_and_speed_perturbation(self):
+        import soundfile as sf
+
+        sr = 16000
+        t = np.linspace(0.0, 1.0, sr, endpoint=False, dtype=np.float32)
+        clean = 0.25 * np.sin(2.0 * np.pi * 220.0 * t)
+        slow = waveform_aug.apply_speed_perturbation(clean, sample_rate=sr, speed_factor=0.9)
+        fast = waveform_aug.apply_speed_perturbation(clean, sample_rate=sr, speed_factor=1.1)
+        self.assertGreater(slow.shape[0], clean.shape[0])
+        self.assertLess(fast.shape[0], clean.shape[0])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            musan = os.path.join(tmpdir, "musan")
+            rirs = os.path.join(tmpdir, "RIRS_NOISES", "simulated_rirs")
+            for sub in ("noise", "music", "speech"):
+                os.makedirs(os.path.join(musan, sub), exist_ok=True)
+            os.makedirs(rirs, exist_ok=True)
+            np_rng = np.random.default_rng(10)
+            sf.write(
+                os.path.join(musan, "noise", "n0.wav"),
+                (0.1 * np_rng.standard_normal(sr)).astype(np.float32),
+                sr,
+            )
+            sf.write(
+                os.path.join(musan, "music", "m0.wav"),
+                (0.1 * np.sin(2.0 * np.pi * 440.0 * t)).astype(np.float32),
+                sr,
+            )
+            for i in range(4):
+                sf.write(
+                    os.path.join(musan, "speech", f"s{i}.wav"),
+                    (0.1 * np_rng.standard_normal(sr)).astype(np.float32),
+                    sr,
+                )
+            rir_imp = np.zeros((2000,), dtype=np.float32)
+            rir_imp[10] = 1.0
+            rir_imp[250] = 0.35
+            sf.write(os.path.join(rirs, "rir0.wav"), rir_imp, sr)
+
+            aug = waveform_aug.MusanRirAugmenter(musan_dir=musan, rirs_dir=rirs, sample_rate=sr)
+            self.assertTrue(aug.is_ready)
+            for mode in ("reverb", "noise", "music", "babble", "reverb_noise"):
+                self.assertIn(mode, aug.available_modes)
+                out_w, used = aug.augment(clean, rng=np_rng, mode=mode)
+                self.assertEqual(used, mode)
+                self.assertEqual(out_w.shape, clean.shape)
+                self.assertFalse(np.allclose(out_w, clean))
+
+    def test_sharded_feature_store_speed_collapsing_and_training(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            writer = shard_cache.ShardedFeatureWriter(
+                tmpdir, feat_dim=80, max_shard_bytes=32 * 1024
+            )
+            rng = np.random.default_rng(99)
+            for base_spk in ("ls:s1", "ls:s2", "cn:s3", "vox:s4"):
+                for suffix in ("", "@sp0.9", "@sp1.1"):
+                    for _ in range(2):
+                        feat = rng.standard_normal((55, 80)).astype(np.float32)
+                        writer.add(feat, speaker=f"{base_spk}{suffix}")
+            meta = writer.close()
+            self.assertEqual(meta["num_speakers"], 12)
+            self.assertGreaterEqual(meta["num_shards"], 2)
+
+            cls_store = shard_cache.ShardedFeatureStore(tmpdir, base_speakers_only=False)
+            nm_store = shard_cache.ShardedFeatureStore(tmpdir, base_speakers_only=True)
+            self.assertEqual(cls_store.num_speakers, 12)
+            self.assertEqual(nm_store.num_speakers, 4)
+
+            cfg = configs.ExperimentConfig()
+            cfg.model.backbone = configs.BackboneType.CONFORMER
+            cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+            cfg.model.seq_len = 40
+            cfg.data.sharded_cache_dir = tmpdir
+            cfg.train.loss.loss_type = configs.LossType.SUBCENTER_ARCFACE
+            cfg.train.batch_size = 4
+            cfg.train.num_steps = 2
+            losses_cls = neural_net.train_network(None, cfg)
+            self.assertEqual(len(losses_cls), 2)
+
+    def test_as_norm_topk_qmf_fusion_bucketed_eval_and_cnceleb_loader(self):
+        rng = np.random.default_rng(1234)
+        cohort = rng.standard_normal((50, 16)).astype(np.float32)
+        e_embs = rng.standard_normal((10, 16)).astype(np.float32)
+        t_embs = rng.standard_normal((10, 16)).astype(np.float32)
+        e_n = e_embs / np.linalg.norm(e_embs, axis=-1, keepdims=True)
+        t_n = t_embs / np.linalg.norm(t_embs, axis=-1, keepdims=True)
+        raw = np.sum(e_n * t_n, axis=-1)
+        normed_1 = scoring.apply_as_norm(raw, e_embs, t_embs, cohort, top_k=15, chunk_size=3)
+        normed_2 = scoring.apply_as_norm(raw, e_embs, t_embs, cohort, top_k=15, chunk_size=100)
+        self.assertTrue(np.allclose(normed_1, normed_2, atol=1e-6))
+
+        # QMF + fuse_scores
+        labels = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+        s_a = np.array([-0.5, -0.3, -0.2, 0.0, 0.1, 0.2, 0.4, 0.6, 0.7, 0.9])
+        s_b = np.array([-0.4, -0.4, -0.1, -0.1, 0.05, 0.25, 0.35, 0.55, 0.8, 0.85])
+        fused = scoring.fuse_scores([s_a, s_b], weights=[0.6, 0.4], z_normalize=True)
+        self.assertEqual(fused.shape, (10,))
+        qmf = scoring.QualityMeasureCalibrator(c_reg=1.0)
+        dur = np.full((10,), 300.0)
+        nrm = np.full((10,), 10.0)
+        qmf.fit(fused, labels, enroll_frames=dur, test_frames=dur, enroll_norms=nrm, test_norms=nrm)
+        cal = qmf.predict(
+            fused, enroll_frames=dur, test_frames=dur, enroll_norms=nrm, test_norms=nrm
+        )
+        self.assertEqual(cal.shape, (10,))
+        self.assertGreater(float(np.mean(cal[5:])), float(np.mean(cal[:5])))
+
+        # Full-utterance bucketed prepare_eval_input (max_eval_seq_len=0) + include_as_norm_breakdown
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.CONFORMER
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.max_eval_seq_len = 0
+        cfg.model.max_eval_frames_cap = 3000
+        p300, m300 = evaluation.prepare_eval_input(np.ones((300, 80), dtype=np.float32), cfg)
+        self.assertEqual(p300.shape, (512, 80))
+        self.assertEqual(int(m300.sum()), 300)
+
+        _, state = neural_net.get_speaker_encoder(cfg)
+        emb_dict = {
+            f"u{i}": rng.standard_normal(cfg.model.output_embedding_dim).astype(np.float32)
+            for i in range(8)
+        }
+        trials = [(1, "u0", "u1"), (0, "u2", "u3"), (1, "u4", "u5"), (0, "u6", "u7")]
+        cohort_spk_map = {
+            f"c_spk_{k}": [f"cu_{k}_0", f"cu_{k}_1"] for k in range(12)
+        }
+        cohort_precomp = {
+            u: rng.standard_normal(cfg.model.output_embedding_dim).astype(np.float32)
+            for u_list in cohort_spk_map.values()
+            for u in u_list
+        }
+        cohort_d = evaluation.compute_speaker_centroid_cohort(
+            state,
+            cohort_spk_map,
+            cfg,
+            max_utts_per_speaker=2,
+            precomputed_embeddings=cohort_precomp,
+        )
+        self.assertEqual(cohort_d.shape, (12, cfg.model.output_embedding_dim))
+        self.assertTrue(
+            np.allclose(np.linalg.norm(cohort_d, axis=-1), 1.0, atol=1e-4)
+        )
+        res = evaluation.evaluate_verification_trials(
+            state,
+            trials,
+            cfg,
+            cohort_embeddings=cohort_d,
+            precomputed_embeddings=emb_dict,
+            include_as_norm_breakdown=True,
+        )
+        self.assertIn("as_norm", res)
+        self.assertEqual(res["as_norm"]["top_k"], 300)
+
+        # Official CN-Celeb-E loader test
+        with tempfile.TemporaryDirectory() as tmpdir:
+            eval_dir = os.path.join(tmpdir, "eval")
+            os.makedirs(os.path.join(eval_dir, "lists"), exist_ok=True)
+            os.makedirs(os.path.join(eval_dir, "enroll"), exist_ok=True)
+            os.makedirs(os.path.join(eval_dir, "test"), exist_ok=True)
+            e_wav = os.path.join(eval_dir, "enroll", "id00800-enroll.flac")
+            t1_wav = os.path.join(eval_dir, "test", "id00800-singing-01-001.flac")
+            t2_wav = os.path.join(eval_dir, "test", "id00801-speech-01-001.flac")
+            for p in (e_wav, t1_wav, t2_wav):
+                with open(p, "wb") as f:
+                    f.write(b"dummy")
+            with open(os.path.join(eval_dir, "lists", "enroll.lst"), "w", encoding="utf-8") as f:
+                f.write("id00800-enroll enroll/id00800-enroll.flac\n")
+            with open(os.path.join(eval_dir, "lists", "trials.lst"), "w", encoding="utf-8") as f:
+                f.write("id00800-enroll test/id00800-singing-01-001.flac 1\n")
+                f.write("id00800-enroll test/id00801-speech-01-001.flac 0\n")
+            multi_t, single_t = dataset.load_cnceleb_eval_trials(tmpdir)
+            self.assertEqual(len(multi_t), 2)
+            self.assertEqual(len(single_t), 2)
+            self.assertEqual([t[0] for t in single_t], [1, 0])
+
+    def test_resnet_masked_batchnorm2d_and_non_collapse(self):
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.RESNET
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.pooling.pooling_type = configs.PoolingType.ASP
+        cfg.model.seq_len = 24
+        cfg.train.loss.loss_type = "ge2e_softmax"
+        cfg.train.loss.num_speakers_per_batch = 2
+        cfg.train.loss.num_utts_per_speaker = 2
+        enc, state = neural_net.get_speaker_encoder(cfg)
+        self.assertTrue(bool(state.batch_stats))
+
+        rng_k = jax.random.PRNGKey(7)
+        x = jax.random.normal(rng_k, (4, 24, 80))
+        mask = jnp.array(
+            [
+                [1.0] * 18 + [0.0] * 6,
+                [1.0] * 24,
+                [1.0] * 16 + [0.0] * 8,
+                [1.0] * 20 + [0.0] * 4,
+            ],
+            dtype=jnp.float32,
+        )
+        step_fn = neural_net.make_modern_train_step(cfg)
+        state2, loss_v = step_fn(state, x, None, mask)
+        self.assertTrue(np.isfinite(float(loss_v)))
+        leaves1 = jax.tree_util.tree_leaves(state.batch_stats)
+        leaves2 = jax.tree_util.tree_leaves(state2.batch_stats)
+        changed = any(
+            not np.allclose(np.asarray(a), np.asarray(b))
+            for a, b in zip(leaves1, leaves2)
+        )
+        self.assertTrue(changed)
+
+        # Eval mode with updated batch_stats must be strictly zero-padding invariant
+        enc_p = {
+            k: v for k, v in state2.params.items() if not k.startswith("_aux_")
+        }
+        vars_eval = {"params": enc_p, "batch_stats": state2.batch_stats}
+        x_short = x[:2, :16, :] * 1.0
+        m_short = jnp.ones((2, 16), dtype=jnp.float32)
+        x_pad = jnp.pad(x_short, ((0, 0), (0, 8), (0, 0)))
+        m_pad = jnp.pad(m_short, ((0, 0), (0, 8)))
+        e_short = np.asarray(
+            enc.apply(vars_eval, x_short, mask=m_short, deterministic=True)
+        )
+        e_pad = np.asarray(
+            enc.apply(vars_eval, x_pad, mask=m_pad, deterministic=True)
+        )
+        self.assertTrue(np.allclose(e_short, e_pad, atol=1e-5))
 
 
 if __name__ == "__main__":

@@ -64,12 +64,20 @@ from flaxspeaker import configs  # noqa: E402
 from flaxspeaker import dataset  # noqa: E402
 from flaxspeaker import feature_extraction  # noqa: E402
 from flaxspeaker import neural_net  # noqa: E402
+from flaxspeaker import resources  # noqa: E402
+from flaxspeaker import shard_cache  # noqa: E402
 
 DEFAULT_DATA_ROOT = os.environ.get(
     "FLAXSPEAKER_DATA_ROOT", os.path.expanduser("~/Data/speaker_datasets")
 )
 DEFAULT_OUTPUT_ROOT = os.path.join(REPO_ROOT, "pretrained_models")
-CLASSIFICATION_LOSSES = ("arcface", "cosface", "sphereface", "softmax")
+CLASSIFICATION_LOSSES = (
+    "arcface",
+    "subcenter_arcface",
+    "cosface",
+    "sphereface",
+    "softmax",
+)
 TOLERANCE = 5e-5  # released initial_loss is stored with 4 decimals
 
 
@@ -98,13 +106,62 @@ def first_step_loss(
     """One training step at ``cfg.train.seed``; returns (loss, valid frames of first utts)."""
     loss_type = cfg.train.loss.loss_type
     is_cls = loss_type in CLASSIFICATION_LOSSES
-    speaker_to_id = {s: i for i, s in enumerate(sorted(spk_train.keys()))}
-    _, state = neural_net.get_speaker_encoder(
-        cfg, num_classes=len(speaker_to_id) if is_cls else 0
+    resolved_shard = (
+        dataset.resolve_data_path(cfg.data.sharded_cache_dir)
+        if getattr(cfg.data, "sharded_cache_dir", "")
+        else ""
     )
+    use_base_only = (not is_cls) and (cfg.data.dataset_name != "universal_full")
+    shard_store = (
+        shard_cache.ShardedFeatureStore(resolved_shard, base_speakers_only=use_base_only)
+        if (
+            resolved_shard
+            and os.path.isfile(os.path.join(resolved_shard, "metadata.json"))
+        )
+        else None
+    )
+    if shard_store is not None:
+        num_cls = shard_store.num_speakers if is_cls else 0
+        speaker_to_id: dict[str, int] = {}
+    else:
+        speaker_to_id = {s: i for i, s in enumerate(sorted(spk_train.keys()))}
+        num_cls = len(speaker_to_id) if is_cls else 0
+    _, state = neural_net.get_speaker_encoder(cfg, num_classes=num_cls)
     step_fn = neural_net.make_modern_train_step(cfg)
     rng = np.random.default_rng(cfg.train.seed)
-    if loss_type == "triplet":
+    if shard_store is not None:
+        if loss_type == "triplet":
+            bi, bl, bm = shard_store.sample_triplet_batch(
+                batch_size=cfg.train.batch_size,
+                max_seq_len=cfg.model.seq_len,
+                min_seq_len=cfg.model.min_seq_len,
+                variable_length=variable_length,
+                specaug_config=cfg.train.specaug,
+                rng=rng,
+            )
+        elif is_cls:
+            bi, bl, bm = shard_store.sample_classification_batch(
+                batch_size=cfg.train.batch_size,
+                max_seq_len=cfg.model.seq_len,
+                min_seq_len=cfg.model.min_seq_len,
+                variable_length=variable_length,
+                specaug_config=cfg.train.specaug,
+                rng=rng,
+                domain_temp_alpha=cfg.data.domain_temp_alpha,
+            )
+        else:
+            bi, bl, bm = shard_store.sample_nm_batch(
+                num_speakers=cfg.train.loss.num_speakers_per_batch,
+                num_utts_per_speaker=cfg.train.loss.num_utts_per_speaker,
+                max_seq_len=cfg.model.seq_len,
+                min_seq_len=cfg.model.min_seq_len,
+                variable_length=variable_length,
+                specaug_config=cfg.train.specaug,
+                rng=rng,
+                within_domain_prob=cfg.data.within_domain_prob,
+                domain_temp_alpha=cfg.data.domain_temp_alpha,
+            )
+    elif loss_type == "triplet":
         import jax.numpy as jnp
 
         triplet_rng = random.Random(int(cfg.train.seed))
@@ -180,6 +237,7 @@ def main(
     only: list[str],
     overwrite: bool = False,
 ) -> None:
+    resources.configure_polite_resources(max_threads=8, nice_level=10)
     if not output_json:
         output_json = os.path.join(output_root, "step0_fingerprints.json")
     with open(os.path.join(data_root, "splits", "dataset_summary.json"), "r", encoding="utf-8") as f:
@@ -245,14 +303,42 @@ def main(
     for i, mid in enumerate(model_ids):
         if not overwrite and mid in results["checkpoints"]:
             continue
+        eval_res_path = os.path.join(output_root, mid, "eval_results.json")
+        if not os.path.isfile(eval_res_path):
+            print(f"\n[{i + 1}/{len(model_ids)}] Skipping {mid} (no eval_results.json yet)")
+            continue
         cfg = configs.ExperimentConfig.from_yaml(os.path.join(REPO_ROOT, "configs", f"{mid}.yml"))
-        with open(os.path.join(output_root, mid, "eval_results.json"), "r", encoding="utf-8") as f:
+        with open(eval_res_path, "r", encoding="utf-8") as f:
             rec = json.load(f)
+        phase_ov = rec.get("step0_phase_overrides")
+        if isinstance(phase_ov, dict):
+            for ov_k, ov_v in phase_ov.items():
+                if hasattr(cfg.train, ov_k):
+                    setattr(cfg.train, ov_k, ov_v)
+                elif hasattr(cfg.train.loss, ov_k):
+                    setattr(cfg.train.loss, ov_k, ov_v)
+                elif hasattr(cfg.model, ov_k):
+                    setattr(cfg.model, ov_k, ov_v)
+            cfg.loss = cfg.train.loss
         dname = rec["train_dataset"]
-        cfg.data.train_csv = ds[dname]["train_csv"]
         if frontend is None:
             frontend = feature_extraction.AudioFrontend(cfg.frontend, cfg.vad)
-        cache, spk_train = _get_cache(dname, frontend)
+        resolved_shard = (
+            dataset.resolve_data_path(cfg.data.sharded_cache_dir)
+            if getattr(cfg.data, "sharded_cache_dir", "")
+            else ""
+        )
+        has_shard = bool(
+            resolved_shard
+            and os.path.isfile(os.path.join(resolved_shard, "metadata.json"))
+        )
+        if has_shard:
+            if dname in ds and "train_csv" in ds[dname]:
+                cfg.data.train_csv = ds[dname]["train_csv"]
+            cache, spk_train = None, {}
+        else:
+            cfg.data.train_csv = ds[dname]["train_csv"]
+            cache, spk_train = _get_cache(dname, frontend)
         released = float(rec["initial_loss"])
         print(f"\n[{i + 1}/{len(model_ids)}] {mid} ({dname}, {cfg.train.loss.loss_type}, "
               f"seed {cfg.train.seed}) released initial_loss={released}")

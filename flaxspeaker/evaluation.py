@@ -1,19 +1,17 @@
-"""Speaker verification evaluation metrics and trial scoring pipelines.
+"""Speaker verification evaluation metrics and trial scoring pipelines for FlaxSpeaker v0.5.0.
 
-Supports:
-1. Legacy API (`run_inference`, `compute_single_triplet_scores`, `compute_scores`,
-   `compute_eer`, `run_eval`) for 100% backward compatibility.
-2. Modernized verification evaluation:
-   - Exact Equal Error Rate (`compute_eer_exact`)
-   - NIST Minimum Detection Cost Function (`compute_min_dcf` at p_target=0.01, 0.05)
-   - Area Under ROC Curve (`compute_roc_auc`)
-   - Single-utterance and multi-utterance enrollment trial scoring with Cosine,
-     Parameter-Free Attentive Scoring (PFAS), and Decision Residual Networks (Dr-Vectors)
-   - Optional Adaptive Symmetric Score Normalization (AS-Norm)
+Provides:
+- Exact Equal Error Rate (`compute_eer_exact`) and threshold sweep (`compute_eer`)
+- NIST Minimum Detection Cost Function (`compute_min_dcf` at p_target=0.01, 0.05, 0.10)
+- Area Under ROC Curve (`compute_roc_auc`) and 95% bootstrap CIs (`compute_bootstrap_eer_ci`)
+- Full-utterance bucketed masked JAX inference (up to `eval.max_eval_frames_cap = 3000` frames = 30s)
+- Single-utterance and multi-utterance enrollment trial scoring with Cosine,
+  Parameter-Free Attentive Scoring (PFAS), and Decision Residual Networks (Dr-Vectors)
+- Vectorized `O(U * C)` Top-300 Adaptive Symmetric Score Normalization (AS-Norm)
+  and optional Quality Measure Function (QMF) calibration
 """
 
 import functools
-from multiprocessing.pool import ThreadPool
 import sys
 import time
 from typing import Any, Optional, Sequence
@@ -21,7 +19,6 @@ from typing import Any, Optional, Sequence
 from flax.training import train_state
 import jax
 import jax.numpy as jnp
-import munch
 import numpy as np
 from sklearn import metrics as sk_metrics
 
@@ -31,24 +28,59 @@ from flaxspeaker import feature_extraction
 from flaxspeaker import neural_net
 from flaxspeaker import scoring
 
+_EVAL_LENGTH_BUCKETS: tuple[int, ...] = (256, 512, 1024, 2048)
 
-def _get_full_seq_flag(myconfig: Any) -> bool:
-    eval_cfg = getattr(myconfig, "eval", None)
-    model_cfg = getattr(myconfig, "model", None)
-    if eval_cfg is not None and hasattr(eval_cfg, "full_sequence_inference"):
-        val = getattr(eval_cfg, "full_sequence_inference")
-        if val is not None:
-            return bool(val)
-    if model_cfg is not None and hasattr(model_cfg, "full_sequence_inference"):
-        return bool(getattr(model_cfg, "full_sequence_inference"))
-    return True
+
+def _get_full_seq_flag(exp_cfg: configs.ExperimentConfig) -> bool:
+    return bool(
+        exp_cfg.eval.full_sequence_inference
+        and exp_cfg.model.full_sequence_inference
+    )
+
+
+def _resolve_max_eval_len(exp_cfg: configs.ExperimentConfig) -> int:
+    raw_max = int(getattr(exp_cfg.model, "max_eval_seq_len", 0))
+    if raw_max > 0:
+        return raw_max
+    return max(64, int(getattr(exp_cfg.eval, "max_eval_frames_cap", 3000)))
+
+
+def _resolve_bucket_pad_len(
+    raw_frames: int, exp_cfg: configs.ExperimentConfig
+) -> int:
+    raw_max = int(getattr(exp_cfg.model, "max_eval_seq_len", 0))
+    if raw_max > 0:
+        return raw_max
+    cap = _resolve_max_eval_len(exp_cfg)
+    effective = min(max(32, int(raw_frames)), cap)
+    for b in _EVAL_LENGTH_BUCKETS:
+        if effective <= b and b <= cap:
+            return b
+    return cap
 
 
 @functools.partial(jax.jit, static_argnums=(0,))
 def _jit_apply_unmasked(
-    apply_fn: Any, params: Any, batch_input: jax.Array
+    apply_fn: Any, variables: dict[str, Any], batch_input: jax.Array
 ) -> jax.Array:
-    return apply_fn({"params": params}, batch_input)
+    return apply_fn(variables, batch_input)
+
+
+@functools.partial(jax.jit, static_argnums=(0,))
+def _jit_encode_eval_batch(
+    apply_fn: Any,
+    variables: dict[str, Any],
+    x_batch: jax.Array,
+    m_batch: jax.Array,
+) -> jax.Array:
+    return apply_fn(variables, x_batch, mask=m_batch)
+
+
+def _state_variables(state: train_state.TrainState) -> dict[str, Any]:
+    bs = getattr(state, "batch_stats", None) or {}
+    if bs:
+        return {"params": state.params, "batch_stats": bs}
+    return {"params": state.params}
 
 
 def run_inference(
@@ -57,105 +89,42 @@ def run_inference(
     myconfig: Any,
 ) -> Optional[jax.Array]:
     """Get the embedding of an utterance using the encoder."""
-    is_modern = neural_net._is_modern_config(myconfig)
-    seq_len = int(getattr(getattr(myconfig, "model", None), "seq_len", 160))
-    if is_modern and features.shape[0] < min(32, seq_len):
-        min_len = min(32, seq_len)
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    seq_len = int(exp_cfg.model.seq_len)
+    min_len = min(32, seq_len)
+    if features.shape[0] < min_len:
         reps = (min_len // max(1, int(features.shape[0]))) + 1
         features = jnp.tile(features, (reps, 1))[:min_len]
-    if _get_full_seq_flag(myconfig):
-        if is_modern:
-            max_eval_len = int(
-                getattr(
-                    getattr(myconfig, "model", None),
-                    "max_eval_seq_len",
-                    max(400, seq_len * 2),
-                )
-            )
-            if features.shape[0] > max_eval_len:
-                offset = (int(features.shape[0]) - max_eval_len) // 2
-                features = features[offset:offset + max_eval_len]
+
+    variables = _state_variables(state)
+    if _get_full_seq_flag(exp_cfg):
+        max_eval_len = _resolve_max_eval_len(exp_cfg)
+        if features.shape[0] > max_eval_len:
+            offset = (int(features.shape[0]) - max_eval_len) // 2
+            features = features[offset:offset + max_eval_len]
         batch_input = jnp.expand_dims(features, axis=0)
         batch_output = _jit_apply_unmasked(
-            state.apply_fn, state.params, batch_input
+            state.apply_fn, variables, batch_input
         )
         return batch_output[0, :]
-    else:
-        sliding_windows = feature_extraction.extract_sliding_windows(
-            features, myconfig
-        )
-        if not sliding_windows:
-            if is_modern and features.shape[0] > 0:
-                reps = (seq_len // max(1, int(features.shape[0]))) + 1
-                padded = jnp.tile(features, (reps, 1))[:seq_len]
-                batch_output = _jit_apply_unmasked(
-                    state.apply_fn,
-                    state.params,
-                    jnp.expand_dims(padded, axis=0),
-                )
-                return batch_output[0, :]
-            return None
-        batch_input = jnp.stack(sliding_windows)
-        batch_output = _jit_apply_unmasked(
-            state.apply_fn, state.params, batch_input
-        )
-        aggregated_output = jnp.mean(batch_output, axis=0, keepdims=False)
-        return aggregated_output
 
-
-def compute_single_triplet_scores(
-    i: int,
-    spk_to_utts: dataset.SpkToUtts,
-    state: train_state.TrainState,
-    config: Any,
-) -> tuple[list[int], list[float]]:
-    """Get the labels and scores from a single triplet."""
-    anchor, pos, neg = feature_extraction.get_triplet_features(
-        spk_to_utts, config.model.n_mfcc
+    sliding_windows = feature_extraction.extract_sliding_windows(
+        np.asarray(features), exp_cfg
     )
-    anchor_embedding = run_inference(anchor, state, config)
-    pos_embedding = run_inference(pos, state, config)
-    neg_embedding = run_inference(neg, state, config)
-    if (
-        (anchor_embedding is None)
-        or (pos_embedding is None)
-        or (neg_embedding is None)
-    ):
-        return ([], [])
-    triplet_labels = [1, 0]
-    triplet_scores = [
-        float(neural_net.cosine_similarity(anchor_embedding, pos_embedding)),
-        float(neural_net.cosine_similarity(anchor_embedding, neg_embedding)),
-    ]
-    print("triplets evaluated:", i, "/", config.eval.num_triplets)
-    return (triplet_labels, triplet_scores)
-
-
-def compute_scores(
-    state: train_state.TrainState,
-    spk_to_utts: dataset.SpkToUtts,
-    myconfig: Any,
-) -> tuple[list[int], list[float]]:
-    """Compute cosine similarity scores from testing data."""
-    labels: list[int] = []
-    scores: list[float] = []
-    score_fetcher = functools.partial(
-        compute_single_triplet_scores,
-        spk_to_utts=spk_to_utts,
-        state=state,
-        config=myconfig,
-    )
-    with ThreadPool(myconfig.train.num_processes) as pool:
-        while myconfig.eval.num_triplets > len(labels) // 2:
-            label_score_pairs = pool.map(
-                score_fetcher,
-                range(len(labels) // 2, myconfig.eval.num_triplets),
+    if not sliding_windows:
+        if features.shape[0] > 0:
+            reps = (seq_len // max(1, int(features.shape[0]))) + 1
+            padded = jnp.tile(features, (reps, 1))[:seq_len]
+            batch_output = _jit_apply_unmasked(
+                state.apply_fn,
+                variables,
+                jnp.expand_dims(padded, axis=0),
             )
-            for triplet_labels, triplet_scores in label_score_pairs:
-                labels += triplet_labels
-                scores += triplet_scores
-    print("Evaluated", len(labels) // 2, "triplets in total")
-    return (labels, scores)
+            return batch_output[0, :]
+        return None
+    batch_input = jnp.stack([jnp.asarray(w) for w in sliding_windows])
+    batch_output = _jit_apply_unmasked(state.apply_fn, variables, batch_input)
+    return jnp.mean(batch_output, axis=0, keepdims=False)
 
 
 def _validate_binary_labels(
@@ -190,8 +159,8 @@ def compute_eer(
     threshold = 0.0
     while threshold < 1.0:
         accept = [score >= threshold for score in scores]
-        fa = [a and (1 - l) for a, l in zip(accept, labels)]
-        fr = [(1 - a) and l for a, l in zip(accept, labels)]
+        fa = [a and (1 - lbl) for a, lbl in zip(accept, labels)]
+        fr = [(1 - a) and lbl for a, lbl in zip(accept, labels)]
         far = sum(fa) / (len(labels) - sum(labels))
         frr = sum(fr) / sum(labels)
         delta = abs(far - frr)
@@ -283,41 +252,39 @@ def compute_bootstrap_eer_ci(
     return low, high
 
 
-@functools.partial(jax.jit, static_argnums=(0,))
-def _jit_encode_eval_batch(
-    apply_fn: Any, params: Any, x_batch: jax.Array, m_batch: jax.Array
-) -> jax.Array:
-    return apply_fn({"params": params}, x_batch, mask=m_batch)
-
-
 def prepare_eval_input(
-    raw: np.ndarray, exp_cfg: configs.ExperimentConfig
+    raw: np.ndarray,
+    exp_cfg: configs.ExperimentConfig,
+    target_pad_override: Optional[int] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Pads / centre-crops one feature matrix to the fixed evaluation window.
+    """Pads / centre-crops one feature matrix to the evaluation window.
 
-    This is the exact pre-processing used by the benchmark evaluation
-    (`_extract_eval_embeddings`): with `eval.full_sequence_inference=True` the
-    utterance is centre-cropped to `model.max_eval_seq_len` frames (500 = 5 s for
-    every released checkpoint) and zero-padded to that length with a validity mask;
-    otherwise it is centre-cropped / tiled to `model.seq_len` with an all-ones mask.
-    Returns `(features[T_pad, F], mask[T_pad])` as float32 arrays.
+    When `model.max_eval_seq_len > 0`, pads/centre-crops to that exact frame count.
+    When `model.max_eval_seq_len <= 0` (`v0.5.0` full-utterance default), evaluates up
+    to `eval.max_eval_frames_cap` (`3000` frames = `30 s`) and pads to a power-of-two
+    length bucket (`256, 512, 1024, 2048, 3000`) so XLA compiles at most 5 shapes while
+    preserving exact padding-invariant full-utterance embeddings.
     """
     seq_len = int(exp_cfg.model.seq_len)
-    max_eval_len = int(
-        getattr(exp_cfg.model, "max_eval_seq_len", max(400, seq_len * 2))
-    )
-    full_seq = bool(getattr(exp_cfg.eval, "full_sequence_inference", True))
-    target_pad_len = max_eval_len if full_seq else seq_len
-    min_valid_len = min(32, target_pad_len)
+    full_seq = _get_full_seq_flag(exp_cfg)
     raw = np.asarray(raw, dtype=np.float32)
-    if raw.shape[0] < min_valid_len:
-        reps = (min_valid_len // max(1, raw.shape[0])) + 1
-        raw = np.tile(raw, (reps, 1))[:min_valid_len, :]
+
     if full_seq:
-        if raw.shape[0] >= target_pad_len:
-            offset = (raw.shape[0] - target_pad_len) // 2
-            seg = raw[offset:offset + target_pad_len]
-            valid_len = target_pad_len
+        max_eval_len = _resolve_max_eval_len(exp_cfg)
+        target_pad_len = (
+            int(target_pad_override)
+            if target_pad_override is not None
+            else _resolve_bucket_pad_len(raw.shape[0], exp_cfg)
+        )
+        min_valid_len = min(32, seq_len, target_pad_len)
+        if raw.shape[0] < min_valid_len:
+            reps = (min_valid_len // max(1, raw.shape[0])) + 1
+            raw = np.tile(raw, (reps, 1))[:min_valid_len, :]
+        crop_cap = min(max_eval_len, target_pad_len)
+        if raw.shape[0] > crop_cap:
+            offset = (raw.shape[0] - crop_cap) // 2
+            seg = raw[offset:offset + crop_cap]
+            valid_len = crop_cap
         else:
             seg = raw
             valid_len = raw.shape[0]
@@ -325,14 +292,19 @@ def prepare_eval_input(
         padded[:valid_len, :] = seg
         mask = np.zeros((target_pad_len,), dtype=np.float32)
         mask[:valid_len] = 1.0
+        return padded, mask
+
+    min_valid_len = min(32, seq_len)
+    if raw.shape[0] < min_valid_len:
+        reps = (min_valid_len // max(1, raw.shape[0])) + 1
+        raw = np.tile(raw, (reps, 1))[:min_valid_len, :]
+    if raw.shape[0] >= seq_len:
+        offset = (raw.shape[0] - seq_len) // 2
+        padded = raw[offset:offset + seq_len].astype(np.float32)
     else:
-        if raw.shape[0] >= seq_len:
-            offset = (raw.shape[0] - seq_len) // 2
-            padded = raw[offset:offset + seq_len].astype(np.float32)
-        else:
-            reps = (seq_len // max(1, raw.shape[0])) + 1
-            padded = np.tile(raw, (reps, 1))[:seq_len].astype(np.float32)
-        mask = np.ones((seq_len,), dtype=np.float32)
+        reps = (seq_len // max(1, raw.shape[0])) + 1
+        padded = np.tile(raw, (reps, 1))[:seq_len].astype(np.float32)
+    mask = np.ones((seq_len,), dtype=np.float32)
     return padded, mask
 
 
@@ -341,22 +313,12 @@ def encode_features(
     state: train_state.TrainState,
     exp_cfg: configs.ExperimentConfig,
 ) -> np.ndarray:
-    """Embeds one utterance through the masked fixed-window evaluation path.
-
-    Unlike `run_inference`, which traces a new XLA kernel for every distinct
-    utterance length, this pads to the fixed evaluation window with a validity mask,
-    so a single warm-up call compiles the kernel used by all subsequent inputs
-    (what an interactive demo needs for steady-state latency). Because every
-    backbone is padding-mask invariant, the embedding equals `run_inference`'s up to
-    floating-point noise for inputs of any length (tested in `tests.py`): inputs of
-    >= 32 frames are zero-padded / centre-cropped with a validity mask, and inputs
-    shorter than 32 frames are tiled and truncated to exactly 32 valid frames by
-    both paths (`prepare_eval_input` and `run_inference`).
-    """
+    """Embeds one utterance through the masked bucketed evaluation path."""
     padded, mask = prepare_eval_input(np.asarray(features), exp_cfg)
+    variables = _state_variables(state)
     emb = _jit_encode_eval_batch(
         state.apply_fn,
-        state.params,
+        variables,
         jnp.asarray(padded[None, :, :], dtype=jnp.float32),
         jnp.asarray(mask[None, :], dtype=jnp.float32),
     )
@@ -372,7 +334,7 @@ def _extract_eval_embeddings(
     batch_size: int = 64,
     precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
 ) -> tuple[dict[str, np.ndarray], float]:
-    """Extracts utterance embeddings with full/variable-length mask support."""
+    """Extracts utterance embeddings grouped by length bucket for fast masked JAX inference."""
     utt_to_emb: dict[str, np.ndarray] = (
         precomputed_embeddings if precomputed_embeddings is not None else {}
     )
@@ -380,34 +342,100 @@ def _extract_eval_embeddings(
     if not missing_utts:
         return utt_to_emb, 0.0
 
+    variables = _state_variables(state)
+    full_seq = _get_full_seq_flag(exp_cfg)
     infer_start = time.time()
-    for start in range(0, len(missing_utts), batch_size):
-        batch_utts = missing_utts[start:start + batch_size]
-        feats = []
-        masks = []
-        for u in batch_utts:
-            raw = (
-                feature_cache.get(u)
-                if feature_cache is not None
-                else frontend.extract_from_file(u)
-            )
-            padded, mask = prepare_eval_input(raw, exp_cfg)
-            feats.append(padded)
-            masks.append(mask)
 
-        batch_arr = jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32)
-        mask_arr = jnp.asarray(np.stack(masks, axis=0), dtype=jnp.float32)
-        embs = np.asarray(
-            _jit_encode_eval_batch(
-                state.apply_fn, state.params, batch_arr, mask_arr
-            )
+    # Load raw features and group by bucket length so every batch shares a single pad shape
+    buckets: dict[int, list[tuple[str, np.ndarray]]] = {}
+    for u in missing_utts:
+        raw = (
+            feature_cache.get(u)
+            if feature_cache is not None
+            else frontend.extract_from_file(u)
         )
-        for u, e in zip(batch_utts, embs):
-            utt_to_emb[u] = e
+        b_len = (
+            _resolve_bucket_pad_len(raw.shape[0], exp_cfg)
+            if full_seq
+            else int(exp_cfg.model.seq_len)
+        )
+        buckets.setdefault(b_len, []).append((u, raw))
+
+    for b_len in sorted(buckets.keys()):
+        items = buckets[b_len]
+        for start in range(0, len(items), batch_size):
+            chunk = items[start:start + batch_size]
+            feats = []
+            masks = []
+            for _, raw in chunk:
+                padded, mask = prepare_eval_input(
+                    raw, exp_cfg, target_pad_override=b_len if full_seq else None
+                )
+                feats.append(padded)
+                masks.append(mask)
+            batch_arr = jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32)
+            mask_arr = jnp.asarray(np.stack(masks, axis=0), dtype=jnp.float32)
+            embs = np.asarray(
+                _jit_encode_eval_batch(
+                    state.apply_fn, variables, batch_arr, mask_arr
+                )
+            )
+            for (u, _), e in zip(chunk, embs):
+                utt_to_emb[u] = e
 
     infer_elapsed = time.time() - infer_start
     latency_ms = (infer_elapsed * 1000.0) / max(1, len(missing_utts))
     return utt_to_emb, latency_ms
+
+
+def compute_speaker_centroid_cohort(
+    state: train_state.TrainState,
+    spk_to_utts: dataset.SpkToUtts,
+    myconfig: Any,
+    feature_cache: Optional[feature_extraction.FeatureCache] = None,
+    max_utts_per_speaker: int = 5,
+    max_speakers: Optional[int] = None,
+    seed: int = 42,
+    precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
+) -> np.ndarray:
+    """Computes L2-normalized per-speaker centroid cohort `(N_spk, D)` from disjoint speakers."""
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
+    spks = sorted(s for s, u in spk_to_utts.items() if u)
+    if max_speakers is not None and len(spks) > max_speakers:
+        rng = np.random.default_rng(seed)
+        chosen = sorted(
+            rng.choice(len(spks), size=max_speakers, replace=False).tolist()
+        )
+        spks = [spks[i] for i in chosen]
+    selected_map: dict[str, list[str]] = {
+        s: sorted(spk_to_utts[s])[: max(1, int(max_utts_per_speaker))]
+        for s in spks
+    }
+    unique_utts = sorted({u for u_list in selected_map.values() for u in u_list})
+    utt_to_emb, _ = _extract_eval_embeddings(
+        unique_utts,
+        state,
+        exp_cfg,
+        frontend,
+        feature_cache=feature_cache,
+        precomputed_embeddings=precomputed_embeddings,
+    )
+    centroids: list[np.ndarray] = []
+    for s in spks:
+        u_embs = [
+            utt_to_emb[u] / (np.linalg.norm(utt_to_emb[u]) + 1e-6)
+            for u in selected_map[s]
+            if u in utt_to_emb
+        ]
+        if not u_embs:
+            continue
+        c = np.mean(u_embs, axis=0)
+        c = (c / (np.linalg.norm(c) + 1e-6)).astype(np.float32)
+        centroids.append(c)
+    if not centroids:
+        raise ValueError("No valid cohort speaker centroids could be computed.")
+    return np.stack(centroids, axis=0)
 
 
 def require_disjoint_cohort(
@@ -416,15 +444,7 @@ def require_disjoint_cohort(
     min_cohort_size: int = 10,
     max_abs_cosine: float = 1.0 - 1e-5,
 ) -> np.ndarray:
-    """Validates an AS-Norm impostor cohort.
-
-    AS-Norm z-scores are only meaningful against an impostor cohort that is disjoint
-    from the evaluation trials. Using the evaluation embeddings themselves as the
-    cohort (a) puts every utterance's self-score (cosine 1.0) into its own top-k and
-    (b) fills the top-k with same-speaker utterances, which collapses target z-scores.
-    This helper therefore raises if the cohort is missing, too small, or if any cohort
-    vector is (numerically) identical to a trial embedding.
-    """
+    """Validates an AS-Norm impostor cohort for strict disjointness from trial embeddings."""
     if cohort_embeddings is None:
         raise ValueError(
             "AS-Norm is enabled but no `cohort_embeddings` were provided. Pass a "
@@ -437,17 +457,93 @@ def require_disjoint_cohort(
             f"AS-Norm cohort must be a 2-D array with >= {min_cohort_size} rows; "
             f"got shape {cohort.shape}."
         )
-    trial_embs = np.stack(list(utt_to_emb.values()), axis=0).astype(np.float32)
-    c_norm = cohort / (np.linalg.norm(cohort, axis=-1, keepdims=True) + 1e-6)
-    t_norm = trial_embs / (np.linalg.norm(trial_embs, axis=-1, keepdims=True) + 1e-6)
-    max_sim = float(np.max(np.matmul(t_norm, c_norm.T))) if len(t_norm) else 0.0
-    if max_sim > max_abs_cosine:
-        raise ValueError(
-            "AS-Norm cohort overlaps the evaluation trials (a cohort embedding is "
-            f"identical to a trial embedding, cosine={max_sim:.6f}). The cohort must "
-            "be disjoint from the enrollment/test utterances."
+    if utt_to_emb:
+        trial_embs = np.stack(list(utt_to_emb.values()), axis=0).astype(
+            np.float32
         )
+        c_norm = cohort / (
+            np.linalg.norm(cohort, axis=-1, keepdims=True) + 1e-6
+        )
+        t_norm = trial_embs / (
+            np.linalg.norm(trial_embs, axis=-1, keepdims=True) + 1e-6
+        )
+        max_sim = 0.0
+        for s in range(0, t_norm.shape[0], 4096):
+            blk = np.matmul(t_norm[s:s + 4096], c_norm.T)
+            max_sim = max(max_sim, float(np.max(blk)))
+        if max_sim > max_abs_cosine:
+            raise ValueError(
+                "AS-Norm cohort overlaps the evaluation trials (a cohort embedding is "
+                f"identical to a trial embedding, cosine={max_sim:.6f}). The cohort must "
+                "be disjoint from the enrollment/test utterances."
+            )
     return cohort
+
+
+def _compute_metrics_dict(
+    labels: Sequence[int],
+    scores_arr: np.ndarray,
+    c_miss: float = 1.0,
+    c_fa: float = 1.0,
+    compute_ci: bool = True,
+) -> dict[str, Any]:
+    y_true, y_score = _validate_binary_labels(labels, scores_arr)
+    fpr, tpr, thresholds = sk_metrics.roc_curve(y_true, y_score, pos_label=1)
+    fnr = 1.0 - tpr
+    idx = int(np.nanargmin(np.abs(fnr - fpr)))
+    eer = float(0.5 * (fpr[idx] + fnr[idx]))
+    eer_thresh = float(thresholds[idx])
+    if compute_ci:
+        ci_low, ci_high = compute_bootstrap_eer_ci(y_true, y_score)
+    else:
+        ci_low, ci_high = eer, eer
+
+    def _dcf(p_tgt: float) -> float:
+        c_det = c_miss * fnr * p_tgt + c_fa * fpr * (1.0 - p_tgt)
+        c_def = min(c_miss * p_tgt, c_fa * (1.0 - p_tgt))
+        return float(np.min(c_det) / max(c_def, 1e-12))
+
+    min_dcf_001 = _dcf(0.01)
+    min_dcf_005 = _dcf(0.05)
+    min_dcf_01 = _dcf(0.10)
+    roc_auc = float(sk_metrics.roc_auc_score(y_true, y_score))
+    return {
+        "eer": eer,
+        "eer_percent": round(eer * 100.0, 4),
+        "eer_ci95_low_percent": round(ci_low * 100.0, 4),
+        "eer_ci95_high_percent": round(ci_high * 100.0, 4),
+        "eer_threshold": eer_thresh,
+        "min_dcf_001": round(min_dcf_001, 4),
+        "min_dcf_005": round(min_dcf_005, 4),
+        "min_dcf_01": round(min_dcf_01, 4),
+        "roc_auc": round(roc_auc, 4),
+    }
+
+
+def _apply_unique_utt_as_norm(
+    raw_scores: np.ndarray,
+    trials: Sequence[dataset.TrialPair],
+    utt_to_emb: dict[str, np.ndarray],
+    cohort: np.ndarray,
+    top_k: int,
+) -> np.ndarray:
+    """Computes exact AS-Norm in `O(U * C + N_trials)` via unique-utterance cohort stats."""
+    u_keys = list(utt_to_emb.keys())
+    u_idx = {u: i for i, u in enumerate(u_keys)}
+    u_mat = np.stack([utt_to_emb[u] for u in u_keys], axis=0)
+    mu_u, std_u = scoring.compute_cohort_topk_stats(u_mat, cohort, top_k=top_k)
+
+    e_indices = np.fromiter(
+        (u_idx[u1] for _, u1, _ in trials), dtype=np.int64, count=len(trials)
+    )
+    t_indices = np.fromiter(
+        (u_idx[u2] for _, _, u2 in trials), dtype=np.int64, count=len(trials)
+    )
+    scores_f64 = np.asarray(raw_scores, dtype=np.float64)
+    return 0.5 * (
+        (scores_f64 - mu_u[e_indices]) / std_u[e_indices]
+        + (scores_f64 - mu_u[t_indices]) / std_u[t_indices]
+    )
 
 
 def evaluate_verification_trials(
@@ -458,26 +554,13 @@ def evaluate_verification_trials(
     scoring_override: Optional[str] = None,
     precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
     cohort_embeddings: Optional[np.ndarray] = None,
+    include_as_norm_breakdown: bool = False,
 ) -> dict[str, Any]:
-    """Evaluate speaker verification on a list of `(label, enroll_utt, test_utt)` trials.
-
-    Pre-computes embeddings for all unique utterances referenced in `trials` once,
-    then scores all trial pairs using Cosine, PFAS, or Decision Residual Network.
-
-    If AS-Norm is enabled (`eval.use_as_norm` / `eval.apply_as_norm`), a
-    `cohort_embeddings` array `(N_cohort, D)` of impostor embeddings **disjoint from
-    the trial utterances and speakers** (e.g. training-speaker embeddings) is
-    required; see `require_disjoint_cohort`.
-    """
+    """Evaluate speaker verification on a list of `(label, enroll_utt, test_utt)` trials."""
     t0 = time.time()
-    exp_cfg = (
-        myconfig
-        if isinstance(myconfig, configs.ExperimentConfig)
-        else configs.ExperimentConfig.from_munch(myconfig)
-    )
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
     frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
 
-    # Collect unique utterances
     unique_utts = sorted({u for _, u1, u2 in trials for u in (u1, u2)})
     utt_to_emb, latency_ms = _extract_eval_embeddings(
         unique_utts,
@@ -497,25 +580,12 @@ def evaluate_verification_trials(
     )
 
     labels = [int(lbl) for lbl, _, _ in trials]
-    enroll_arr = jnp.asarray(
-        np.stack([utt_to_emb[u1] for _, u1, _ in trials], axis=0)
-    )
-    test_arr = jnp.asarray(
-        np.stack([utt_to_emb[u2] for _, _, u2 in trials], axis=0)
-    )
-
     if scoring_type == "pfas":
         pfas_cfg = exp_cfg.model.pfas
         pfas_scale = (
             float(np.exp(float(state.params["_aux_pfas_log_scale"])))
             if "_aux_pfas_log_scale" in state.params
             else float(pfas_cfg.scale_factor)
-        )
-        t_keys, t_vals = scoring.unpack_pfas_representation(
-            test_arr, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
-        )
-        e_keys, e_vals = scoring.unpack_pfas_representation(
-            enroll_arr, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
         )
         pair_fn = jax.jit(
             jax.vmap(
@@ -541,81 +611,132 @@ def evaluate_verification_trials(
                 )
             )
         )
-        scores_arr = np.asarray(pair_fn(t_keys, t_vals, e_keys, e_vals))
+        # Score in chunks of 65,536 trials so million-trial benchmarks stay < 200 MB
+        n_tr = len(trials)
+        scores_arr = np.empty((n_tr,), dtype=np.float64)
+        for s_i in range(0, n_tr, 65536):
+            e_i = min(n_tr, s_i + 65536)
+            sub_tr = trials[s_i:e_i]
+            sub_e = jnp.asarray(
+                np.stack([utt_to_emb[u1] for _, u1, _ in sub_tr], axis=0)
+            )
+            sub_t = jnp.asarray(
+                np.stack([utt_to_emb[u2] for _, _, u2 in sub_tr], axis=0)
+            )
+            t_keys, t_vals = scoring.unpack_pfas_representation(
+                sub_t, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
+            )
+            e_keys, e_vals = scoring.unpack_pfas_representation(
+                sub_e, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
+            )
+            scores_arr[s_i:e_i] = np.asarray(
+                pair_fn(t_keys, t_vals, e_keys, e_vals)
+            )
     elif scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
         dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
-        scores_arr = np.asarray(
-            dr_net.apply(
-                {"params": state.params["_aux_dr_net"]},
-                test_arr,
-                enroll_arr,
-                method=dr_net.score_pairs,
+        n_tr = len(trials)
+        scores_arr = np.empty((n_tr,), dtype=np.float64)
+        for s_i in range(0, n_tr, 65536):
+            e_i = min(n_tr, s_i + 65536)
+            sub_e = jnp.asarray(
+                np.stack([utt_to_emb[u1] for _, u1, _ in trials[s_i:e_i]], axis=0)
             )
-        )
+            sub_t = jnp.asarray(
+                np.stack([utt_to_emb[u2] for _, _, u2 in trials[s_i:e_i]], axis=0)
+            )
+            scores_arr[s_i:e_i] = np.asarray(
+                dr_net.apply(
+                    {"params": state.params["_aux_dr_net"]},
+                    sub_t,
+                    sub_e,
+                    method=dr_net.score_pairs,
+                )
+            )
     else:
-        # Vectorized cosine similarity
-        e_norm = enroll_arr / (
-            jnp.linalg.norm(enroll_arr, axis=-1, keepdims=True) + 1e-6
+        # Memory-efficient unique-utterance normalized dot products
+        u_keys = unique_utts
+        u_idx = {u: i for i, u in enumerate(u_keys)}
+        u_mat = np.stack([utt_to_emb[u] for u in u_keys], axis=0).astype(
+            np.float32
         )
-        t_norm = test_arr / (
-            jnp.linalg.norm(test_arr, axis=-1, keepdims=True) + 1e-6
-        )
-        scores_arr = np.asarray(jnp.sum(e_norm * t_norm, axis=-1))
+        u_norm = u_mat / (np.linalg.norm(u_mat, axis=-1, keepdims=True) + 1e-6)
+        n_tr = len(trials)
+        scores_arr = np.empty((n_tr,), dtype=np.float64)
+        for s_i in range(0, n_tr, 131072):
+            e_i = min(n_tr, s_i + 131072)
+            sub = trials[s_i:e_i]
+            ei = np.fromiter(
+                (u_idx[u1] for _, u1, _ in sub), dtype=np.int64, count=len(sub)
+            )
+            ti = np.fromiter(
+                (u_idx[u2] for _, _, u2 in sub), dtype=np.int64, count=len(sub)
+            )
+            scores_arr[s_i:e_i] = np.sum(
+                u_norm[ei] * u_norm[ti], axis=-1, dtype=np.float64
+            )
 
     use_as_norm = bool(
         getattr(exp_cfg.eval, "use_as_norm", False)
         or getattr(exp_cfg.eval, "apply_as_norm", False)
     )
-    if use_as_norm and scoring_type == "cosine":
-        cohort = require_disjoint_cohort(cohort_embeddings, utt_to_emb)
-        top_k = int(
-            getattr(
-                exp_cfg.eval,
-                "as_norm_top_k",
-                getattr(exp_cfg.eval, "as_norm_cohort_size", 100),
-            )
+    top_k = int(
+        getattr(
+            exp_cfg.eval,
+            "as_norm_top_k",
+            getattr(exp_cfg.eval, "as_norm_cohort_size", 300),
         )
-        scores_arr = scoring.apply_as_norm(
+    )
+    c_miss = float(getattr(exp_cfg.eval, "dcf_c_miss", 1.0))
+    c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
+
+    as_norm_subdict: Optional[dict[str, Any]] = None
+    if use_as_norm and scoring_type == "cosine":
+        cohort = require_disjoint_cohort(
+            cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
+        )
+        scores_arr = _apply_unique_utt_as_norm(
             scores_arr,
-            np.asarray(enroll_arr),
-            np.asarray(test_arr),
+            trials,
+            {u: utt_to_emb[u] for u in unique_utts},
             cohort,
             top_k=top_k,
         )
+    elif (
+        include_as_norm_breakdown
+        and cohort_embeddings is not None
+        and scoring_type == "cosine"
+    ):
+        cohort = require_disjoint_cohort(
+            cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
+        )
+        asn_scores = _apply_unique_utt_as_norm(
+            scores_arr,
+            trials,
+            {u: utt_to_emb[u] for u in unique_utts},
+            cohort,
+            top_k=top_k,
+        )
+        as_norm_subdict = _compute_metrics_dict(
+            labels, asn_scores, c_miss=c_miss, c_fa=c_fa, compute_ci=len(trials) <= 50000
+        )
+        as_norm_subdict["top_k"] = top_k
 
-    c_miss = float(getattr(exp_cfg.eval, "dcf_c_miss", 1.0))
-    c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
-    scores_list = [float(s) for s in scores_arr]
-    eer, eer_thresh = compute_eer_exact(labels, scores_list)
-    ci_low, ci_high = compute_bootstrap_eer_ci(labels, scores_list)
-    min_dcf_001 = compute_min_dcf(
-        labels, scores_list, p_target=0.01, c_miss=c_miss, c_fa=c_fa
+    out = _compute_metrics_dict(
+        labels, scores_arr, c_miss=c_miss, c_fa=c_fa, compute_ci=len(trials) <= 50000
     )
-    min_dcf_005 = compute_min_dcf(
-        labels, scores_list, p_target=0.05, c_miss=c_miss, c_fa=c_fa
-    )
-    min_dcf_01 = compute_min_dcf(
-        labels, scores_list, p_target=0.10, c_miss=c_miss, c_fa=c_fa
-    )
-    roc_auc = compute_roc_auc(labels, scores_list)
     total_time = time.time() - t0
-
-    return {
-        "eer": eer,
-        "eer_percent": round(eer * 100.0, 4),
-        "eer_ci95_low_percent": round(ci_low * 100.0, 4),
-        "eer_ci95_high_percent": round(ci_high * 100.0, 4),
-        "eer_threshold": eer_thresh,
-        "min_dcf_001": round(min_dcf_001, 4),
-        "min_dcf_005": round(min_dcf_005, 4),
-        "min_dcf_01": round(min_dcf_01, 4),
-        "roc_auc": round(roc_auc, 4),
-        "num_trials": len(trials),
-        "num_unique_utterances": len(unique_utts),
-        "latency_ms_per_utterance": round(latency_ms, 3),
-        "eval_time_sec": round(total_time, 3),
-        "scoring_type": scoring_type,
-    }
+    out.update(
+        {
+            "num_trials": len(trials),
+            "num_unique_utterances": len(unique_utts),
+            "latency_ms_per_utterance": round(latency_ms, 3),
+            "eval_time_sec": round(total_time, 3),
+            "scoring_type": scoring_type,
+        }
+    )
+    if as_norm_subdict is not None:
+        out["as_norm"] = as_norm_subdict
+    return out
 
 
 def evaluate_multi_enroll_trials(
@@ -625,16 +746,11 @@ def evaluate_multi_enroll_trials(
     feature_cache: Optional[feature_extraction.FeatureCache] = None,
     precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
     cohort_embeddings: Optional[np.ndarray] = None,
-) -> dict[str, Any]:
-    """Evaluate multi-utterance enrollment trials `(label, [enroll_utts], test_utt)`.
-
-    See `evaluate_verification_trials` for the AS-Norm `cohort_embeddings` contract.
-    """
-    exp_cfg = (
-        myconfig
-        if isinstance(myconfig, configs.ExperimentConfig)
-        else configs.ExperimentConfig.from_munch(myconfig)
-    )
+    include_as_norm_breakdown: bool = False,
+    return_scores: bool = False,
+) -> Any:
+    """Evaluate multi-utterance enrollment trials `(label, [enroll_utts], test_utt)`."""
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
     frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
 
     unique_utts = sorted(
@@ -657,7 +773,8 @@ def evaluate_multi_enroll_trials(
         )
     )
     labels = [int(lbl) for lbl, _, _ in trials]
-    scores_list = []
+    e_arr_np: Optional[np.ndarray] = None
+    t_arr_np: Optional[np.ndarray] = None
 
     if scoring_type == "pfas":
         pfas_cfg = exp_cfg.model.pfas
@@ -666,26 +783,23 @@ def evaluate_multi_enroll_trials(
             if "_aux_pfas_log_scale" in state.params
             else float(pfas_cfg.scale_factor)
         )
-        stacked_e_list = [
-            scoring.stack_multi_enroll_pfas(
-                [utt_to_emb[u] for u in e_utts],
-                pfas_cfg.num_keys,
-                pfas_cfg.key_dim,
-                pfas_cfg.value_dim,
-            )
-            for _, e_utts, _ in trials
-        ]
-        num_e_keys = len(trials[0][1]) * pfas_cfg.num_keys
-        e_arr = jnp.asarray(np.stack(stacked_e_list, axis=0))
-        t_arr = jnp.asarray(
-            np.stack([utt_to_emb[t_utt] for _, _, t_utt in trials], axis=0)
-        )
-        e_keys, e_vals = scoring.unpack_pfas_representation(
-            e_arr, num_e_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
-        )
-        t_keys, t_vals = scoring.unpack_pfas_representation(
-            t_arr, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
-        )
+        # Memoize stacked multi-enrollment representations per unique enrollment tuple
+        enroll_key_to_stacked: dict[tuple[str, ...], np.ndarray] = {}
+        by_count: dict[int, list[int]] = {}
+        for idx_t, (_, e_utts, _) in enumerate(trials):
+            e_key_tup = tuple(e_utts)
+            if e_key_tup not in enroll_key_to_stacked:
+                enroll_key_to_stacked[e_key_tup] = np.asarray(
+                    scoring.stack_multi_enroll_pfas(
+                        [utt_to_emb[u] for u in e_key_tup],
+                        pfas_cfg.num_keys,
+                        pfas_cfg.key_dim,
+                        pfas_cfg.value_dim,
+                    ),
+                    dtype=np.float32,
+                )
+            by_count.setdefault(len(e_key_tup), []).append(idx_t)
+
         pair_fn = jax.jit(
             jax.vmap(
                 functools.partial(
@@ -710,120 +824,195 @@ def evaluate_multi_enroll_trials(
                 )
             )
         )
-        scores_arr = np.asarray(pair_fn(t_keys, t_vals, e_keys, e_vals))
-        scores_list = [float(s) for s in scores_arr]
-    elif scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
-        dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
-        centroids = []
-        tests = []
-        for _, e_utts, t_utt in trials:
-            c = np.mean([utt_to_emb[u] for u in e_utts], axis=0)
-            c = c / (np.linalg.norm(c) + 1e-6)
-            centroids.append(c)
-            tests.append(utt_to_emb[t_utt])
-        e_arr = jnp.asarray(np.stack(centroids, axis=0))
-        t_arr = jnp.asarray(np.stack(tests, axis=0))
-        scores_arr = np.asarray(
-            dr_net.apply(
-                {"params": state.params["_aux_dr_net"]},
-                t_arr,
-                e_arr,
-                method=dr_net.score_pairs,
+        scores_arr = np.empty((len(trials),), dtype=np.float64)
+        for k_cnt, idxs in by_count.items():
+            num_e_keys = k_cnt * pfas_cfg.num_keys
+            stacked_dim = num_e_keys * (pfas_cfg.key_dim + pfas_cfg.value_dim)
+            chunk_sz = max(
+                256, min(8192, (64 * 1024 * 1024) // max(1, stacked_dim * 4))
             )
-        )
-        scores_list = [float(s) for s in scores_arr]
+            for s_i in range(0, len(idxs), chunk_sz):
+                sub_idxs = idxs[s_i:s_i + chunk_sz]
+                e_sub = jnp.asarray(
+                    np.stack(
+                        [enroll_key_to_stacked[tuple(trials[j][1])] for j in sub_idxs],
+                        axis=0,
+                    )
+                )
+                t_sub = jnp.asarray(
+                    np.stack([utt_to_emb[trials[j][2]] for j in sub_idxs], axis=0)
+                )
+                e_keys, e_vals = scoring.unpack_pfas_representation(
+                    e_sub, num_e_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
+                )
+                t_keys, t_vals = scoring.unpack_pfas_representation(
+                    t_sub, pfas_cfg.num_keys, pfas_cfg.key_dim, pfas_cfg.value_dim
+                )
+                sub_scores = np.asarray(
+                    pair_fn(t_keys, t_vals, e_keys, e_vals), dtype=np.float64
+                )
+                scores_arr[np.asarray(sub_idxs, dtype=np.int64)] = sub_scores
     else:
-        centroids = []
-        tests = []
-        for _, e_utts, t_utt in trials:
-            centroid = np.mean([utt_to_emb[u] for u in e_utts], axis=0)
-            centroid = centroid / (np.linalg.norm(centroid) + 1e-6)
-            t_emb = utt_to_emb[t_utt]
-            sim = float(
-                np.dot(centroid, t_emb)
-                / (np.linalg.norm(centroid) * np.linalg.norm(t_emb) + 1e-6)
+        # Deduplicate enrollment speaker tuples for million-trial multi-enroll sets (e.g. CN-Celeb-E)
+        enroll_key_to_centroid: dict[tuple[str, ...], np.ndarray] = {}
+        for _, e_utts, _ in trials:
+            key = tuple(e_utts)
+            if key not in enroll_key_to_centroid:
+                normed_list = [
+                    utt_to_emb[u] / (np.linalg.norm(utt_to_emb[u]) + 1e-6)
+                    for u in key
+                ]
+                c = np.mean(normed_list, axis=0)
+                c = (c / (np.linalg.norm(c) + 1e-6)).astype(np.float32)
+                enroll_key_to_centroid[key] = c
+
+        if scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
+            dr_net = scoring.build_decision_residual_network(
+                exp_cfg.model.dr_vector
             )
-            scores_list.append(sim)
-            centroids.append(centroid)
-            tests.append(t_emb)
-        e_arr = jnp.asarray(np.stack(centroids, axis=0))
-        t_arr = jnp.asarray(np.stack(tests, axis=0))
+            scores_arr = np.empty((len(trials),), dtype=np.float64)
+            for s_i in range(0, len(trials), 65536):
+                e_i = min(len(trials), s_i + 65536)
+                sub = trials[s_i:e_i]
+                sub_e = jnp.asarray(
+                    np.stack(
+                        [enroll_key_to_centroid[tuple(eu)] for _, eu, _ in sub],
+                        axis=0,
+                    )
+                )
+                sub_t = jnp.asarray(
+                    np.stack([utt_to_emb[tu] for _, _, tu in sub], axis=0)
+                )
+                scores_arr[s_i:e_i] = np.asarray(
+                    dr_net.apply(
+                        {"params": state.params["_aux_dr_net"]},
+                        sub_t,
+                        sub_e,
+                        method=dr_net.score_pairs,
+                    )
+                )
+        else:
+            c_keys = list(enroll_key_to_centroid.keys())
+            c_idx = {k: i for i, k in enumerate(c_keys)}
+            c_mat = np.stack([enroll_key_to_centroid[k] for k in c_keys], axis=0)
+
+            u_keys = unique_utts
+            u_idx = {u: i for i, u in enumerate(u_keys)}
+            u_mat = np.stack([utt_to_emb[u] for u in u_keys], axis=0).astype(
+                np.float32
+            )
+            u_norm = u_mat / (
+                np.linalg.norm(u_mat, axis=-1, keepdims=True) + 1e-6
+            )
+
+            n_tr = len(trials)
+            scores_arr = np.empty((n_tr,), dtype=np.float64)
+            for s_i in range(0, n_tr, 131072):
+                e_i = min(n_tr, s_i + 131072)
+                sub = trials[s_i:e_i]
+                ci = np.fromiter(
+                    (c_idx[tuple(eu)] for _, eu, _ in sub),
+                    dtype=np.int64,
+                    count=len(sub),
+                )
+                ti = np.fromiter(
+                    (u_idx[tu] for _, _, tu in sub),
+                    dtype=np.int64,
+                    count=len(sub),
+                )
+                scores_arr[s_i:e_i] = np.sum(
+                    c_mat[ci] * u_norm[ti], axis=-1, dtype=np.float64
+                )
+            e_arr_np = c_mat
+            t_arr_np = u_norm
 
     use_as_norm = bool(
         getattr(exp_cfg.eval, "use_as_norm", False)
         or getattr(exp_cfg.eval, "apply_as_norm", False)
     )
-    if use_as_norm and scoring_type == "cosine":
-        cohort = require_disjoint_cohort(cohort_embeddings, utt_to_emb)
-        top_k = int(
-            getattr(
-                exp_cfg.eval,
-                "as_norm_top_k",
-                getattr(exp_cfg.eval, "as_norm_cohort_size", 100),
-            )
+    top_k = int(
+        getattr(
+            exp_cfg.eval,
+            "as_norm_top_k",
+            getattr(exp_cfg.eval, "as_norm_cohort_size", 300),
         )
-        norm_scores = scoring.apply_as_norm(
-            np.asarray(scores_list, dtype=np.float64),
-            np.asarray(e_arr),
-            np.asarray(t_arr),
-            cohort,
-            top_k=top_k,
-        )
-        scores_list = [float(s) for s in norm_scores]
-
+    )
     c_miss = float(getattr(exp_cfg.eval, "dcf_c_miss", 1.0))
     c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
-    eer, eer_thresh = compute_eer_exact(labels, scores_list)
-    ci_low, ci_high = compute_bootstrap_eer_ci(labels, scores_list)
-    min_dcf_001 = compute_min_dcf(
-        labels, scores_list, p_target=0.01, c_miss=c_miss, c_fa=c_fa
+
+    best_scores_out = scores_arr
+    as_norm_subdict: Optional[dict[str, Any]] = None
+    if (
+        (use_as_norm or (include_as_norm_breakdown and cohort_embeddings is not None))
+        and scoring_type == "cosine"
+        and e_arr_np is not None
+        and t_arr_np is not None
+    ):
+        cohort = require_disjoint_cohort(
+            cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
+        )
+        mu_c, std_c = scoring.compute_cohort_topk_stats(c_mat, cohort, top_k=top_k)
+        mu_u, std_u = scoring.compute_cohort_topk_stats(u_norm, cohort, top_k=top_k)
+        c_keys = list(enroll_key_to_centroid.keys())
+        c_idx = {k: i for i, k in enumerate(c_keys)}
+        u_idx = {u: i for i, u in enumerate(unique_utts)}
+        ci_all = np.fromiter(
+            (c_idx[tuple(eu)] for _, eu, _ in trials),
+            dtype=np.int64,
+            count=len(trials),
+        )
+        ti_all = np.fromiter(
+            (u_idx[tu] for _, _, tu in trials),
+            dtype=np.int64,
+            count=len(trials),
+        )
+        norm_scores = 0.5 * (
+            (scores_arr - mu_c[ci_all]) / std_c[ci_all]
+            + (scores_arr - mu_u[ti_all]) / std_u[ti_all]
+        )
+        best_scores_out = norm_scores
+        if use_as_norm:
+            scores_arr = norm_scores
+        else:
+            as_norm_subdict = _compute_metrics_dict(
+                labels,
+                norm_scores,
+                c_miss=c_miss,
+                c_fa=c_fa,
+                compute_ci=len(trials) <= 50000,
+            )
+            as_norm_subdict["top_k"] = top_k
+
+    out = _compute_metrics_dict(
+        labels,
+        scores_arr,
+        c_miss=c_miss,
+        c_fa=c_fa,
+        compute_ci=len(trials) <= 50000,
     )
-    min_dcf_005 = compute_min_dcf(
-        labels, scores_list, p_target=0.05, c_miss=c_miss, c_fa=c_fa
-    )
-    min_dcf_01 = compute_min_dcf(
-        labels, scores_list, p_target=0.10, c_miss=c_miss, c_fa=c_fa
-    )
-    roc_auc = compute_roc_auc(labels, scores_list)
-    return {
-        "eer": eer,
-        "eer_percent": round(eer * 100.0, 4),
-        "eer_ci95_low_percent": round(ci_low * 100.0, 4),
-        "eer_ci95_high_percent": round(ci_high * 100.0, 4),
-        "eer_threshold": eer_thresh,
-        "min_dcf_001": round(min_dcf_001, 4),
-        "min_dcf_005": round(min_dcf_005, 4),
-        "min_dcf_01": round(min_dcf_01, 4),
-        "roc_auc": round(roc_auc, 4),
-        "num_trials": len(trials),
-    }
+    out["num_trials"] = len(trials)
+    if as_norm_subdict is not None:
+        out["as_norm"] = as_norm_subdict
+    if return_scores:
+        return out, best_scores_out
+    return out
 
 
 def run_eval(myconfig: Any) -> dict[str, Any]:
     """Run evaluation of the saved model on test data."""
-    start_time = time.time()
-    spk_to_utts = dataset.load_dataset_from_config(myconfig, split="eval")
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    spk_to_utts = dataset.load_dataset_from_config(exp_cfg, split="eval")
     _, state = neural_net.get_speaker_encoder(
-        myconfig, myconfig.model.saved_model_path
+        exp_cfg, exp_cfg.model.saved_model_path
     )
-    if not neural_net._is_modern_config(myconfig):
-        labels, scores = compute_scores(state, spk_to_utts, myconfig)
-        eer, eer_threshold = compute_eer(
-            labels, scores, myconfig.eval.threshold_step
-        )
-        eval_time = time.time() - start_time
-        print("Finished evaluation in", eval_time, "seconds")
-        print("eer_threshold =", eer_threshold, "eer =", eer)
-        return {"eer": eer, "eer_threshold": eer_threshold}
-
-    trials_file = getattr(myconfig.data, "trials_file", None)
+    trials_file = getattr(exp_cfg.data, "trials_file", None)
     if trials_file:
         trials = dataset.load_trials_file(trials_file)
     else:
         trials = dataset.generate_verification_trials(
-            spk_to_utts, num_trials=myconfig.eval.num_triplets * 2
+            spk_to_utts, num_trials=exp_cfg.eval.num_triplets * 2
         )
-    metrics = evaluate_verification_trials(state, trials, myconfig)
+    metrics = evaluate_verification_trials(state, trials, exp_cfg)
     print("Evaluation metrics:", metrics)
     return metrics
 
@@ -836,6 +1025,4 @@ if __name__ == "__main__":
         config_file = args[0]
     else:
         raise ValueError("Expecting a single argument: config file path")
-    with open(config_file, "r", encoding="utf-8") as f:
-        myconfig = munch.Munch.fromYAML(f.read())
-    run_eval(myconfig)
+    run_eval(configs.ExperimentConfig.from_yaml(config_file))

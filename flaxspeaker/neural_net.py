@@ -1,12 +1,11 @@
-"""Neural network models, training state, and end-to-end training loop.
+"""Neural network models, training state, and end-to-end training loop for FlaxSpeaker v0.5.0.
 
-Supports both:
-1. Legacy FlaxSpeaker API (`LstmSpeakerEncoder`, `TransformerSpeakerEncoder`,
-   `get_triplet_loss`, `train_network`) for 100% backward compatibility.
-2. Modernized FlaxSpeaker architecture (`ModernSpeakerEncoder`, Conformer,
-   Mamba, ECAPA-TDNN, ResNet, LSTM, Transformer) with GE2E, Extended-Set Softmax,
-   Dr-Vectors, Parameter-Free Attentive Scoring (PFAS), ArcFace, CosFace,
-   SphereFace, Softmax, Pairwise, and Triplet losses.
+Provides `ModernSpeakerEncoder` construction across all 6 neural backbones
+(Conformer, ECAPA-TDNN with mask-aware BatchNorm, Mamba, ResNet, Transformer, LSTM),
+`SpeakerTrainState` with `batch_stats` tracking, `AdamW` and `SGD + Nesterov`
+optimizers with trunk warm-starting / differential learning rates, `Sub-Center ArcFace`
+(`K=3`), `GE2E`, `Extended-Set Softmax`, `PFAS`, `Dr-Vectors`, `float16` memmap shard
+training, and Stage-2 Large-Margin Fine-Tuning (`LMFT`).
 """
 
 from functools import partial
@@ -23,7 +22,6 @@ from flax.training import train_state
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import munch
 import numpy as np
 import optax
 
@@ -33,67 +31,16 @@ from flaxspeaker import dataset
 from flaxspeaker import feature_extraction
 from flaxspeaker import losses
 from flaxspeaker import scoring
+from flaxspeaker import shard_cache
 
 
-class BaseSpeakerEncoder(nn.Module):
-    """Base class for speaker encoders."""
-    pass
+class SpeakerTrainState(train_state.TrainState):
+    """Flax `TrainState` extended with `batch_stats` for BatchNorm backbones (`ECAPA-TDNN`)."""
+
+    batch_stats: dict[str, Any] = flax.struct.field(default_factory=dict)
 
 
-class LstmSpeakerEncoder(BaseSpeakerEncoder):
-    """Legacy multi-layer LSTM speaker encoder."""
-
-    lstm_config: Any
-
-    def setup(self):
-        self.lstm_layers = [
-            nn.RNN(nn.OptimizedLSTMCell(features=self.lstm_config["hidden_size"]))
-            for _ in range(self.lstm_config["num_layers"])
-        ]
-
-    def _aggregate_frames(self, batch_output: jax.Array) -> jax.Array:
-        """Aggregate output frames."""
-        if self.lstm_config["frame_aggregation_mean"]:
-            return jnp.mean(batch_output, axis=1, keepdims=False)
-        else:
-            return batch_output[:, -1, :]
-
-    def __call__(self, x: jax.Array) -> jax.Array:
-        for lstm in self.lstm_layers:
-            x = lstm(x)
-        return self._aggregate_frames(x)
-
-
-class TransformerSpeakerEncoder(BaseSpeakerEncoder):
-    """Legacy Transformer speaker encoder."""
-
-    transformer_config: Any
-
-    def setup(self):
-        self.linear_layer = nn.Dense(features=self.transformer_config["dim"])
-        self.encoders = [
-            nn.MultiHeadDotProductAttention(
-                num_heads=self.transformer_config["num_heads"]
-            )
-            for _ in range(self.transformer_config["num_encoder_layers"])
-        ]
-        self.temporal_attention = nn.Dense(features=1)
-
-    def __call__(self, x: jax.Array) -> jax.Array:
-        encoder_input = nn.activation.sigmoid(self.linear_layer(x))
-        encoder_output = encoder_input
-        for encoder in self.encoders:
-            encoder_output = encoder(encoder_input)
-            encoder_input = encoder_output
-
-        # Attentive temporal pooling.
-        temporal_weights = self.temporal_attention(encoder_output)
-        weighted_output = jnp.multiply(encoder_output, temporal_weights)
-        weighted_output = jax.nn.softmax(weighted_output)
-        return jnp.mean(weighted_output, axis=1, keepdims=False)
-
-
-# Re-export legacy functions for backward compatibility
+# Convenience re-exports
 cosine_similarity = scoring.cosine_similarity
 get_triplet_loss = losses.get_triplet_loss
 get_triplet_loss_from_batch_output = losses.get_triplet_loss_from_batch_output
@@ -108,23 +55,48 @@ def count_parameters(params: Any) -> int:
 def save_model(
     saved_model_path: str,
     params: Any,
+    batch_stats: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Save model parameters to disk in Flax msgpack (or safetensors) format."""
+    """Save model parameters (and optional `batch_stats`) in SafeTensors or Flax msgpack format."""
     parent = os.path.dirname(os.path.abspath(saved_model_path))
     if parent:
         os.makedirs(parent, exist_ok=True)
+    raw_params = (
+        params["params"]
+        if (isinstance(params, dict) and "params" in params and len(params) <= 2)
+        else params
+    )
+    raw_bs = (
+        batch_stats
+        if batch_stats is not None
+        else (
+            params.get("batch_stats")
+            if isinstance(params, dict) and "params" in params
+            else None
+        )
+    )
+
     if saved_model_path.endswith(".safetensors"):
         from safetensors.flax import save_file
 
-        flat = flax.traverse_util.flatten_dict(params, sep=".")
+        flat = flax.traverse_util.flatten_dict(raw_params, sep=".")
         flat_arrays = {k: jnp.asarray(v) for k, v in flat.items()}
+        if raw_bs:
+            flat_bs = flax.traverse_util.flatten_dict(raw_bs, sep=".")
+            for k, v in flat_bs.items():
+                flat_arrays[f"_batch_stats.{k}"] = jnp.asarray(v)
         save_file(flat_arrays, saved_model_path)
         print("Model saved to: ", saved_model_path)
         return
 
     if not saved_model_path.endswith(".msgpack"):
         saved_model_path += ".msgpack"
-    bytes_output = flax.serialization.to_bytes(params)
+    payload = (
+        {"params": raw_params, "batch_stats": raw_bs}
+        if raw_bs
+        else (params if (isinstance(params, dict) and "params" in params) else {"params": raw_params})
+    )
+    bytes_output = flax.serialization.to_bytes(payload)
     with open(saved_model_path, "wb") as f:
         f.write(bytes_output)
     print("Model saved to: ", saved_model_path)
@@ -134,14 +106,25 @@ def load_model(
     saved_model_path: str,
     params: Any,
 ) -> Any:
-    """Load model parameters from disk."""
+    """Load model parameters (and optional `batch_stats`) from SafeTensors or Flax msgpack."""
     if saved_model_path.endswith(".safetensors"):
         from safetensors.flax import load_file
 
         flat_arrays = load_file(saved_model_path)
-        unflat = flax.traverse_util.unflatten_dict(flat_arrays, sep=".")
+        flat_p = {
+            k: v for k, v in flat_arrays.items() if not k.startswith("_batch_stats.")
+        }
+        flat_bs = {
+            k.removeprefix("_batch_stats."): v
+            for k, v in flat_arrays.items()
+            if k.startswith("_batch_stats.")
+        }
+        unflat_p = flax.traverse_util.unflatten_dict(flat_p, sep=".")
         print("Model loaded from:", saved_model_path)
-        return unflat
+        if flat_bs:
+            unflat_bs = flax.traverse_util.unflatten_dict(flat_bs, sep=".")
+            return {"params": unflat_p, "batch_stats": unflat_bs}
+        return unflat_p
 
     if not os.path.exists(saved_model_path) and os.path.exists(
         saved_model_path + ".msgpack"
@@ -150,31 +133,19 @@ def load_model(
     with open(saved_model_path, "rb") as f:
         bytes_output = f.read()
     print("Model loaded from:", saved_model_path)
-    return flax.serialization.from_bytes(params, bytes_output)
-
-
-def _is_modern_config(myconfig: Any) -> bool:
-    """Determine whether `myconfig` uses the modern `ModernSpeakerEncoder` API."""
-    if isinstance(myconfig, configs.ExperimentConfig):
-        return True
-    model_cfg = getattr(myconfig, "model", None)
-    if model_cfg is None:
-        return False
-    if hasattr(model_cfg, "backbone") or (
-        isinstance(model_cfg, dict) and "backbone" in model_cfg
-    ):
-        return True
-    return False
+    if params is None:
+        return flax.serialization.msgpack_restore(bytes_output)
+    try:
+        return flax.serialization.from_bytes(params, bytes_output)
+    except ValueError:
+        return flax.serialization.msgpack_restore(bytes_output)
 
 
 def build_modern_encoder_from_config(
     myconfig: Any,
 ) -> backbones.ModernSpeakerEncoder:
-    """Construct `ModernSpeakerEncoder` from an `ExperimentConfig` or dict/Munch."""
-    if not isinstance(myconfig, configs.ExperimentConfig):
-        exp_cfg = configs.ExperimentConfig.from_munch(myconfig)
-    else:
-        exp_cfg = myconfig
+    """Construct `ModernSpeakerEncoder` from an `ExperimentConfig`, dict, or YAML path."""
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
 
     m_cfg = exp_cfg.model
     b_type = str(getattr(m_cfg.backbone, "value", m_cfg.backbone))
@@ -240,8 +211,11 @@ def build_modern_encoder_from_config(
             "dilations": tuple(m_cfg.ecapa_tdnn.dilations),
             "mfa_dim": m_cfg.ecapa_tdnn.mfa_dim,
             "se_bottleneck_dim": m_cfg.ecapa_tdnn.se_bottleneck_dim,
+            "use_batch_norm": bool(
+                getattr(m_cfg.ecapa_tdnn, "use_batch_norm", True)
+            ),
             "norm_after_activation": bool(
-                getattr(m_cfg.ecapa_tdnn, "norm_after_activation", False)
+                getattr(m_cfg.ecapa_tdnn, "norm_after_activation", True)
             ),
         }
     elif b_type == "resnet":
@@ -250,6 +224,9 @@ def build_modern_encoder_from_config(
             "num_blocks": tuple(m_cfg.resnet.num_blocks),
             "use_se": m_cfg.resnet.use_se,
             "out_dim": m_cfg.resnet.out_dim,
+            "use_batch_norm": bool(
+                getattr(m_cfg.resnet, "use_batch_norm", True)
+            ),
         }
     else:
         raise ValueError(f"Unknown backbone: {b_type}")
@@ -326,73 +303,163 @@ def build_modern_encoder_from_config(
 
 def _get_feature_dim(myconfig: Any) -> int:
     """Resolve input feature dimension from config."""
-    if isinstance(myconfig, configs.ExperimentConfig):
-        return myconfig.frontend.feature_dim
-    model_cfg = getattr(myconfig, "model", None)
-    if model_cfg is not None and hasattr(model_cfg, "n_mfcc") and model_cfg.n_mfcc:
-        frontend_cfg = getattr(myconfig, "frontend", None)
-        if frontend_cfg is not None:
-            ftype = str(getattr(frontend_cfg, "feature_type", "mfcc")).lower()
-            if ftype != "mfcc":
-                return int(getattr(frontend_cfg, "n_mels", 80))
-        return int(model_cfg.n_mfcc)
-    return 40
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    return exp_cfg.frontend.feature_dim
 
 
 def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
-    """Create Optax optimizer with optional warmup cosine schedule and grad clip."""
+    """Create Optax optimizer (`adamw`, `sgd` with Nesterov, or `adam`) + optional trunk freezing/scaling."""
     train_cfg = getattr(myconfig, "train", myconfig)
     lr = float(getattr(train_cfg, "learning_rate", 1e-3))
-    # `min_learning_rate` is honoured exactly (end value of the cosine schedule).
     min_lr = float(getattr(train_cfg, "min_learning_rate", lr * 0.01))
     end_lr = min(lr, max(min_lr, 0.0))
-    opt_name = str(getattr(train_cfg, "optimizer", "adam")).lower()
+    opt_name = str(getattr(train_cfg, "optimizer", "adamw")).lower()
     weight_decay = float(getattr(train_cfg, "weight_decay", 0.0))
+    sgd_momentum = float(getattr(train_cfg, "sgd_momentum", 0.9))
+    nesterov = bool(getattr(train_cfg, "nesterov", True))
     grad_clip = float(getattr(train_cfg, "grad_clip_norm", 0.0))
     use_cosine = bool(getattr(train_cfg, "lr_schedule_cosine", False))
     num_steps = int(getattr(train_cfg, "num_steps", 500))
     warmup_steps = min(
         int(getattr(train_cfg, "warmup_steps", 0)), max(0, num_steps - 1)
     )
+    freeze_trunk = bool(getattr(train_cfg, "freeze_trunk", False))
+    trunk_lr_mult = float(getattr(train_cfg, "trunk_lr_mult", 1.0))
 
-    if use_cosine and num_steps > 2:
-        if warmup_steps > 0:
-            schedule = optax.warmup_cosine_decay_schedule(
-                init_value=lr * 0.1,
-                peak_value=lr,
-                warmup_steps=warmup_steps,
+    def _make_schedule(scale_mult: float = 1.0):
+        s_lr = lr * scale_mult
+        s_end = end_lr * scale_mult
+        if use_cosine and num_steps > 2:
+            if warmup_steps > 0:
+                return optax.warmup_cosine_decay_schedule(
+                    init_value=s_lr * 0.1,
+                    peak_value=s_lr,
+                    warmup_steps=warmup_steps,
+                    decay_steps=num_steps,
+                    end_value=s_end,
+                )
+            return optax.cosine_decay_schedule(
+                init_value=s_lr,
                 decay_steps=num_steps,
-                end_value=end_lr,
+                alpha=s_end / max(s_lr, 1e-12),
+            )
+        return s_lr
+
+    decay_mask = lambda params: jax.tree_util.tree_map(  # noqa: E731
+        lambda p: getattr(p, "ndim", 0) >= 2, params
+    )
+
+    def _make_single_tx(scale_mult: float = 1.0) -> optax.GradientTransformation:
+        sched = _make_schedule(scale_mult)
+        transforms: list[optax.GradientTransformation] = []
+        if grad_clip > 0:
+            transforms.append(optax.clip_by_global_norm(grad_clip))
+        if opt_name == "adamw":
+            transforms.append(
+                optax.adamw(
+                    learning_rate=sched,
+                    weight_decay=weight_decay,
+                    mask=decay_mask,
+                )
+            )
+        elif opt_name == "sgd":
+            if weight_decay > 0.0:
+                transforms.append(
+                    optax.add_decayed_weights(weight_decay, mask=decay_mask)
+                )
+            transforms.append(
+                optax.sgd(
+                    learning_rate=sched,
+                    momentum=sgd_momentum if sgd_momentum > 0.0 else None,
+                    nesterov=nesterov and sgd_momentum > 0.0,
+                )
             )
         else:
-            schedule = optax.cosine_decay_schedule(
-                init_value=lr,
-                decay_steps=num_steps,
-                alpha=end_lr / max(lr, 1e-12),
-            )
-    else:
-        schedule = lr
+            transforms.append(optax.adam(learning_rate=sched))
+        return optax.chain(*transforms) if len(transforms) > 1 else transforms[0]
 
-    transforms = []
-    if grad_clip > 0 and _is_modern_config(myconfig):
-        transforms.append(optax.clip_by_global_norm(grad_clip))
+    head_tx = _make_single_tx(1.0)
+    if not freeze_trunk and abs(trunk_lr_mult - 1.0) < 1e-8:
+        return head_tx
 
-    if opt_name == "adamw" and _is_modern_config(myconfig):
-        # Exclude 0D/1D parameters (_aux_w, _aux_b, biases, LayerNorm/GroupNorm scales)
-        # from L2 weight decay.
-        transforms.append(
-            optax.adamw(
-                learning_rate=schedule,
-                weight_decay=weight_decay,
-                mask=lambda params: jax.tree_util.tree_map(
-                    lambda p: getattr(p, "ndim", 0) >= 2, params
-                ),
-            )
+    trunk_tx = (
+        optax.set_to_zero()
+        if freeze_trunk
+        else _make_single_tx(max(0.0, trunk_lr_mult))
+    )
+
+    def _partition_labels(params: dict[str, Any]) -> dict[str, Any]:
+        labels: dict[str, Any] = {}
+        for k, subtree in params.items():
+            tag = "trunk" if k == "backbone" else "head"
+            labels[k] = jax.tree_util.tree_map(lambda _: tag, subtree)
+        return labels
+
+    return optax.multi_transform(
+        {"trunk": trunk_tx, "head": head_tx}, _partition_labels
+    )
+
+
+def warm_start_from_checkpoint(
+    state: SpeakerTrainState, ckpt_path: str
+) -> SpeakerTrainState:
+    """Warm-starts matching-shape encoder/backbone parameters (and `batch_stats`) from `ckpt_path`.
+
+    Incompatible head or auxiliary loss parameters (e.g., `_aux_class_weights` vs `pfas_head`
+    or `_aux_dr_net`) keep their freshly initialized values in `state`.
+    """
+    resolved = os.path.expanduser(ckpt_path)
+    if not os.path.exists(resolved) and not os.path.isabs(ckpt_path):
+        repo_cand = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ckpt_path
         )
-    else:
-        transforms.append(optax.adam(learning_rate=schedule))
+        if os.path.exists(repo_cand):
+            resolved = repo_cand
+    if os.path.isdir(resolved):
+        st_cand = os.path.join(resolved, "model.safetensors")
+        mp_cand = os.path.join(resolved, "flax_model.msgpack")
+        if os.path.isfile(st_cand):
+            resolved = st_cand
+        elif os.path.isfile(mp_cand):
+            resolved = mp_cand
+        else:
+            raise FileNotFoundError(
+                f"No model.safetensors or flax_model.msgpack found in {resolved}"
+            )
 
-    return optax.chain(*transforms) if len(transforms) > 1 else transforms[0]
+    loaded = load_model(resolved, None)
+    if isinstance(loaded, dict) and "params" in loaded:
+        src_params = loaded["params"]
+        src_bs = loaded.get("batch_stats", {}) or {}
+    else:
+        src_params = loaded
+        src_bs = {}
+
+    flat_target = flax.traverse_util.flatten_dict(state.params, sep=".")
+    flat_src = flax.traverse_util.flatten_dict(src_params, sep=".")
+    copied = 0
+    for k, src_v in flat_src.items():
+        if k.startswith("_aux_class_weights"):
+            continue
+        if k in flat_target and tuple(src_v.shape) == tuple(flat_target[k].shape):
+            flat_target[k] = jnp.asarray(src_v, dtype=flat_target[k].dtype)
+            copied += 1
+    new_params = flax.traverse_util.unflatten_dict(flat_target, sep=".")
+
+    new_bs = state.batch_stats
+    if state.batch_stats and src_bs:
+        flat_bs_tgt = flax.traverse_util.flatten_dict(state.batch_stats, sep=".")
+        flat_bs_src = flax.traverse_util.flatten_dict(src_bs, sep=".")
+        for k, src_v in flat_bs_src.items():
+            if k in flat_bs_tgt and tuple(src_v.shape) == tuple(flat_bs_tgt[k].shape):
+                flat_bs_tgt[k] = jnp.asarray(src_v, dtype=flat_bs_tgt[k].dtype)
+        new_bs = flax.traverse_util.unflatten_dict(flat_bs_tgt, sep=".")
+
+    print(
+        f"Warm-started {copied} parameter tensors from {resolved} "
+        f"(kept {len(flat_target) - copied} freshly initialized tensors)."
+    )
+    return state.replace(params=new_params, batch_stats=new_bs)
 
 
 def create_train_state(
@@ -400,82 +467,76 @@ def create_train_state(
     rng: jax.Array,
     myconfig: Any,
     num_classes: int = 0,
-) -> train_state.TrainState:
-    """Creates an initial `TrainState` (including optional auxiliary loss params)."""
-    seq_len = int(getattr(myconfig.model, "seq_len", 100))
-    feat_dim = _get_feature_dim(myconfig)
-    params = dict(module.init(rng, jnp.ones([1, seq_len, feat_dim]))["params"])
+) -> SpeakerTrainState:
+    """Creates an initial `SpeakerTrainState` (including `batch_stats` and auxiliary loss params)."""
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    seq_len = int(exp_cfg.model.seq_len)
+    feat_dim = exp_cfg.frontend.feature_dim
+    init_vars = module.init(rng, jnp.ones([1, seq_len, feat_dim]))
+    params = dict(init_vars["params"])
+    batch_stats = dict(init_vars.get("batch_stats", {}))
 
-    if _is_modern_config(myconfig):
-        exp_cfg = (
-            myconfig
-            if isinstance(myconfig, configs.ExperimentConfig)
-            else configs.ExperimentConfig.from_munch(myconfig)
+    loss_cfg = exp_cfg.train.loss
+    loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
+    scoring_type = str(
+        getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type)
+    )
+
+    if loss_type in (
+        "ge2e_softmax",
+        "ge2e_contrast",
+        "extended_set_softmax",
+        "pairwise",
+    ):
+        init_w = float(loss_cfg.ge2e_init_w)
+        init_b = float(loss_cfg.ge2e_init_b)
+        params["_aux_w"] = jnp.array(init_w, dtype=jnp.float32)
+        params["_aux_b"] = jnp.array(init_b, dtype=jnp.float32)
+
+    if scoring_type == "pfas" and getattr(
+        exp_cfg.model.pfas, "use_trainable_scale_factor", True
+    ):
+        init_scale = max(float(exp_cfg.model.pfas.scale_factor), 1.0)
+        params["_aux_pfas_log_scale"] = jnp.array(
+            float(np.log(init_scale)), dtype=jnp.float32
         )
-        loss_cfg = exp_cfg.train.loss
-        loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
-        scoring_type = str(
-            getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type)
+
+    if scoring_type == "dr_vector":
+        dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
+        emb_dim = exp_cfg.model.output_embedding_dim
+        dr_rng = jax.random.fold_in(rng, 101)
+        dr_params = dr_net.init(
+            dr_rng,
+            jnp.ones((2, emb_dim), dtype=jnp.float32),
+            jnp.ones((2, emb_dim), dtype=jnp.float32),
+        )["params"]
+        params["_aux_dr_net"] = dr_params
+
+    if (
+        loss_type
+        in ("arcface", "subcenter_arcface", "cosface", "sphereface", "softmax")
+        and num_classes > 0
+    ):
+        cls_rng = jax.random.fold_in(rng, 202)
+        emb_dim = exp_cfg.model.output_embedding_dim
+        n_sub = (
+            max(1, int(getattr(loss_cfg, "subcenter_k", 3)))
+            if loss_type == "subcenter_arcface"
+            else 1
         )
+        total_cols = num_classes * n_sub
+        w_init = jax.random.normal(cls_rng, (emb_dim, total_cols)) * 0.05
+        w_init = w_init / (
+            jnp.linalg.norm(w_init, axis=0, keepdims=True) + 1e-6
+        )
+        params["_aux_class_weights"] = w_init
 
-        # Initialize trainable scale w and bias b for GE2E / Extended-Set / Pairwise
-        if loss_type in (
-            "ge2e_softmax",
-            "ge2e_contrast",
-            "extended_set_softmax",
-            "pairwise",
-        ):
-            # No hidden overrides: `ge2e_init_w` / `ge2e_init_b` are used verbatim for
-            # every GE2E-style loss (the released `*_ge2e_contrast` configs set
-            # `ge2e_init_b = -1.0` explicitly).
-            init_w = float(loss_cfg.ge2e_init_w)
-            init_b = float(loss_cfg.ge2e_init_b)
-            params["_aux_w"] = jnp.array(init_w, dtype=jnp.float32)
-            params["_aux_b"] = jnp.array(init_b, dtype=jnp.float32)
-
-        # Initialize trainable log scale factor for PFAS if enabled
-        if scoring_type == "pfas" and getattr(
-            exp_cfg.model.pfas, "use_trainable_scale_factor", True
-        ):
-            init_scale = max(float(exp_cfg.model.pfas.scale_factor), 1.0)
-            params["_aux_pfas_log_scale"] = jnp.array(
-                float(np.log(init_scale)), dtype=jnp.float32
-            )
-
-        # Initialize Decision Residual Network (Dr-Vectors) parameters if enabled
-        if scoring_type == "dr_vector":
-            dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
-            emb_dim = exp_cfg.model.output_embedding_dim
-            dr_rng = jax.random.fold_in(rng, 101)
-            dr_params = dr_net.init(
-                dr_rng,
-                jnp.ones((2, emb_dim), dtype=jnp.float32),
-                jnp.ones((2, emb_dim), dtype=jnp.float32),
-            )["params"]
-            params["_aux_dr_net"] = dr_params
-
-        # Initialize speaker classification weights for ArcFace / CosFace / SphereFace / Softmax
-        if (
-            loss_type in ("arcface", "cosface", "sphereface", "softmax")
-            and num_classes > 0
-        ):
-            cls_rng = jax.random.fold_in(rng, 202)
-            emb_dim = exp_cfg.model.output_embedding_dim
-            w_init = jax.random.normal(cls_rng, (emb_dim, num_classes)) * 0.05
-            w_init = w_init / (
-                jnp.linalg.norm(w_init, axis=0, keepdims=True) + 1e-6
-            )
-            params["_aux_class_weights"] = w_init
-
-    tx = build_optimizer(myconfig)
-    return train_state.TrainState.create(
+    tx = build_optimizer(exp_cfg)
+    return SpeakerTrainState.create(
         apply_fn=module.apply,
-        params=(
-            flax.core.freeze(params)
-            if not _is_modern_config(myconfig)
-            else params
-        ),
+        params=params,
         tx=tx,
+        batch_stats=batch_stats,
     )
 
 
@@ -483,58 +544,41 @@ def get_speaker_encoder(
     myconfig: Any,
     load_from: str = "",
     num_classes: int = 0,
-) -> tuple[nn.Module, train_state.TrainState]:
-    """Create speaker encoder model and initialize or load `TrainState`."""
-    if _is_modern_config(myconfig):
-        encoder = build_modern_encoder_from_config(myconfig)
-    elif myconfig.model.use_transformer:
-        encoder = TransformerSpeakerEncoder(
-            transformer_config=myconfig.model.transformer
-        )
-    else:
-        lstm_cfg = dict(myconfig.model.lstm)
-        if "frame_aggregation_mean" in myconfig.model:
-            lstm_cfg["frame_aggregation_mean"] = (
-                myconfig.model.frame_aggregation_mean
-            )
-        encoder = LstmSpeakerEncoder(lstm_config=munch.Munch(lstm_cfg))
-
-    seed = int(getattr(getattr(myconfig, "train", None), "seed", 0))
+    skip_warm_start: bool = False,
+) -> tuple[nn.Module, SpeakerTrainState]:
+    """Create `ModernSpeakerEncoder` and initialize, load, or warm-start `SpeakerTrainState`."""
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    encoder = build_modern_encoder_from_config(exp_cfg)
+    seed = int(exp_cfg.train.seed)
     init_rng = jax.random.PRNGKey(seed)
     state = create_train_state(
-        encoder, init_rng, myconfig, num_classes=num_classes
+        encoder, init_rng, exp_cfg, num_classes=num_classes
     )
     if load_from:
-        loaded = load_model(load_from, {"params": state.params})
-        loaded_params = loaded["params"] if "params" in loaded else loaded
-        state = state.replace(params=loaded_params)
+        template = (
+            {"params": state.params, "batch_stats": state.batch_stats}
+            if state.batch_stats
+            else {"params": state.params}
+        )
+        loaded = load_model(load_from, template)
+        if isinstance(loaded, dict) and "params" in loaded:
+            loaded_params = loaded["params"]
+            loaded_bs = loaded.get("batch_stats", state.batch_stats) or state.batch_stats
+        else:
+            loaded_params = loaded
+            loaded_bs = state.batch_stats
+        state = state.replace(params=loaded_params, batch_stats=loaded_bs)
+    elif exp_cfg.train.init_from_checkpoint and not skip_warm_start:
+        state = warm_start_from_checkpoint(
+            state, exp_cfg.train.init_from_checkpoint
+        )
 
     return encoder, state
 
 
-@partial(jax.jit, static_argnames=["batch_size", "triplet_alpha"])
-def train_step(
-    state: train_state.TrainState,
-    batch_input: jax.Array,
-    batch_size: int,
-    triplet_alpha: float,
-) -> tuple[train_state.TrainState, jax.Array]:
-    """Train for a single step with Triplet Loss."""
-
-    def loss_fn(params: Any) -> jax.Array:
-        batch_output = state.apply_fn({"params": params}, batch_input)
-        return get_triplet_loss_from_batch_output(
-            batch_output, batch_size, triplet_alpha
-        )
-
-    loss_grad_fn = jax.value_and_grad(loss_fn)
-    loss_val, grads = loss_grad_fn(state.params)
-    state = state.apply_gradients(grads=grads)
-    return state, loss_val
-
-
 def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     """Build a JIT-compiled training step function for the configured loss & scoring."""
+    exp_cfg = configs.ExperimentConfig.from_any(exp_cfg)
     loss_cfg = exp_cfg.train.loss
     loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
     scoring_type = str(
@@ -569,6 +613,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     )
     scale = float(loss_cfg.scale)
     margin = float(loss_cfg.margin)
+    subcenter_k = max(1, int(getattr(loss_cfg, "subcenter_k", 3)))
     sphere_m = float(loss_cfg.sphereface_m)
     sf_l_min = float(getattr(loss_cfg, "sphereface_lambda_min", 5.0))
     sf_l_base = float(getattr(loss_cfg, "sphereface_lambda_base", 1000.0))
@@ -577,6 +622,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     margin_warmup_steps = int(getattr(loss_cfg, "margin_warmup_steps", 0))
     triplet_alpha = float(exp_cfg.train.triplet_alpha)
     batch_size = int(exp_cfg.train.batch_size)
+    freeze_trunk = bool(getattr(exp_cfg.train, "freeze_trunk", False))
 
     pfas_cfg = exp_cfg.model.pfas
     is_pfas = scoring_type == "pfas"
@@ -588,11 +634,11 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
 
     @jax.jit
     def _step(
-        state: train_state.TrainState,
+        state: SpeakerTrainState,
         batch_input: jax.Array,
         batch_labels: Optional[jax.Array] = None,
         batch_mask: Optional[jax.Array] = None,
-    ) -> tuple[train_state.TrainState, jax.Array]:
+    ) -> tuple[SpeakerTrainState, jax.Array]:
         step_f = state.step.astype(jnp.float32)
         sf_lambda = jnp.maximum(
             sf_l_min,
@@ -608,10 +654,35 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
             eff_margin = margin
             eff_sphere_m = sphere_m
 
-        def loss_fn(params: dict[str, Any]) -> jax.Array:
-            embeddings = state.apply_fn(
-                {"params": params}, batch_input, mask=batch_mask
-            )
+        cur_bs = getattr(state, "batch_stats", None) or {}
+        has_bs = bool(cur_bs) and not freeze_trunk
+
+        def loss_fn(params: dict[str, Any]) -> tuple[jax.Array, dict[str, Any]]:
+            if has_bs:
+                embeddings, updates = state.apply_fn(
+                    {"params": params, "batch_stats": cur_bs},
+                    batch_input,
+                    deterministic=False,
+                    mask=batch_mask,
+                    mutable=["batch_stats"],
+                )
+                next_bs = updates["batch_stats"]
+            elif cur_bs:
+                embeddings = state.apply_fn(
+                    {"params": params, "batch_stats": cur_bs},
+                    batch_input,
+                    deterministic=True,
+                    mask=batch_mask,
+                )
+                next_bs = cur_bs
+            else:
+                embeddings = state.apply_fn(
+                    {"params": params},
+                    batch_input,
+                    deterministic=False,
+                    mask=batch_mask,
+                )
+                next_bs = cur_bs
 
             score_fn = None
             if scoring_type == "dr_vector" and dr_net is not None:
@@ -652,11 +723,11 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 )
 
             if loss_type == "triplet":
-                return losses.get_triplet_loss_from_batch_output(
+                loss_v = losses.get_triplet_loss_from_batch_output(
                     embeddings, batch_size, triplet_alpha
                 )
             elif loss_type == "ge2e_softmax":
-                return losses.ge2e_softmax_loss(
+                loss_v = losses.ge2e_softmax_loss(
                     embeddings,
                     num_speakers=n_spk,
                     num_utts_per_speaker=n_utt,
@@ -671,7 +742,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     pfas_value_dim=pfas_cfg.value_dim,
                 )
             elif loss_type == "ge2e_contrast":
-                return losses.ge2e_contrast_loss(
+                loss_v = losses.ge2e_contrast_loss(
                     embeddings,
                     num_speakers=n_spk,
                     num_utts_per_speaker=n_utt,
@@ -683,7 +754,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     surrogate=contrast_surrogate,
                 )
             elif loss_type == "extended_set_softmax":
-                return losses.extended_set_softmax_loss(
+                loss_v = losses.extended_set_softmax_loss(
                     embeddings,
                     num_speakers=n_spk,
                     num_utts_per_speaker=n_utt,
@@ -700,7 +771,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     row_softmax_weight=ext_row_w,
                 )
             elif loss_type == "pairwise":
-                return losses.pairwise_loss(
+                loss_v = losses.pairwise_loss(
                     embeddings,
                     num_speakers=n_spk,
                     num_utts_per_speaker=n_utt,
@@ -713,15 +784,24 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     pfas_value_dim=pfas_cfg.value_dim,
                 )
             elif loss_type == "arcface":
-                return losses.arcface_loss(
+                loss_v = losses.arcface_loss(
                     embeddings,
                     class_weights=params["_aux_class_weights"],
                     labels=batch_labels,
                     scale=scale,
                     margin=eff_margin,
                 )
+            elif loss_type == "subcenter_arcface":
+                loss_v = losses.subcenter_arcface_loss(
+                    embeddings,
+                    class_weights=params["_aux_class_weights"],
+                    labels=batch_labels,
+                    scale=scale,
+                    margin=eff_margin,
+                    subcenter_k=subcenter_k,
+                )
             elif loss_type == "cosface":
-                return losses.cosface_loss(
+                loss_v = losses.cosface_loss(
                     embeddings,
                     class_weights=params["_aux_class_weights"],
                     labels=batch_labels,
@@ -729,7 +809,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     margin=eff_margin,
                 )
             elif loss_type == "sphereface":
-                return losses.sphereface_loss(
+                loss_v = losses.sphereface_loss(
                     embeddings,
                     class_weights=params["_aux_class_weights"],
                     labels=batch_labels,
@@ -738,7 +818,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     anneal_lambda=sf_lambda,
                 )
             elif loss_type == "softmax":
-                return losses.softmax_loss(
+                loss_v = losses.softmax_loss(
                     embeddings,
                     class_weights=params["_aux_class_weights"],
                     labels=batch_labels,
@@ -746,8 +826,30 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 )
             else:
                 raise ValueError(f"Unsupported loss_type: {loss_type}")
+            return loss_v, next_bs
 
-        loss_val, grads = jax.value_and_grad(loss_fn)(state.params)
+        if freeze_trunk and "backbone" in state.params:
+            frozen_bb = jax.lax.stop_gradient(state.params["backbone"])
+            head_only_params = {
+                k: v for k, v in state.params.items() if k != "backbone"
+            }
+
+            def head_loss_fn(
+                h_params: dict[str, Any],
+            ) -> tuple[jax.Array, dict[str, Any]]:
+                return loss_fn({"backbone": frozen_bb, **h_params})
+
+            (loss_val, new_bs), head_grads = jax.value_and_grad(
+                head_loss_fn, has_aux=True
+            )(head_only_params)
+            grads = {
+                "backbone": jax.tree_util.tree_map(jnp.zeros_like, frozen_bb),
+                **head_grads,
+            }
+        else:
+            (loss_val, new_bs), grads = jax.value_and_grad(
+                loss_fn, has_aux=True
+            )(state.params)
         if "_aux_w" in grads and "_aux_b" in grads:
             grads = dict(grads)
             if not learn_wb:
@@ -757,71 +859,57 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 grads["_aux_w"] = grads["_aux_w"] * wb_grad_scale
                 grads["_aux_b"] = grads["_aux_b"] * b_grad_scale
         new_state = state.apply_gradients(grads=grads)
+        if hasattr(new_state, "batch_stats"):
+            new_state = new_state.replace(batch_stats=new_bs)
         return new_state, loss_val
 
     return _step
 
 
 def train_network(
-    spk_to_utts: dataset.SpkToUtts,
+    spk_to_utts: Optional[dataset.SpkToUtts],
     myconfig: Any,
     pool: Optional[multiprocessing.pool.Pool] = None,
     feature_cache: Optional[feature_extraction.FeatureCache] = None,
+    shard_store: Optional[shard_cache.ShardedFeatureStore] = None,
 ) -> list[float]:
-    """Train speaker recognition network (supports both legacy and modern configs)."""
+    """Train speaker recognition network from `spk_to_utts` or `ShardedFeatureStore`."""
+    del pool  # ThreadPool kept optional in signature for call-site convenience
     start_time = time.time()
     losses_history: list[float] = []
 
-    if not _is_modern_config(myconfig):
-        # Legacy path for 100% compatibility with existing tests
-        _, state = get_speaker_encoder(myconfig)
-        for step in range(myconfig.train.num_steps):
-            batch_input = feature_extraction.get_batched_triplet_input(
-                spk_to_utts, myconfig, pool
-            )
-            state, loss = train_step(
-                state,
-                batch_input,
-                myconfig.train.batch_size,
-                myconfig.train.triplet_alpha,
-            )
-            losses_history.append(loss)
-            print("step:", step, "/", myconfig.train.num_steps, "loss:", loss)
-
-            if (
-                myconfig.model.saved_model_path
-                and (step + 1) % myconfig.train.save_model_frequency == 0
-            ):
-                checkpoint = myconfig.model.saved_model_path
-                if checkpoint.endswith(".msgpack"):
-                    checkpoint = checkpoint[:-8]
-                checkpoint += ".ckpt-" + str(step + 1) + ".msgpack"
-                save_model(checkpoint, {"params": state.params})
-
-        training_time = time.time() - start_time
-        print("Finished training in", training_time, "seconds")
-        if myconfig.model.saved_model_path:
-            save_model(
-                myconfig.model.saved_model_path, {"params": state.params}
-            )
-        return losses_history
-
-    # Modern training path
-    exp_cfg = (
-        myconfig
-        if isinstance(myconfig, configs.ExperimentConfig)
-        else configs.ExperimentConfig.from_munch(myconfig)
-    )
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
     loss_type = str(
         getattr(
             exp_cfg.train.loss.loss_type, "value", exp_cfg.train.loss.loss_type
         )
     )
-    is_cls_loss = loss_type in ("arcface", "cosface", "sphereface", "softmax")
-    speaker_to_id = {
-        spk: idx for idx, spk in enumerate(sorted(spk_to_utts.keys()))
-    }
-    num_classes = len(speaker_to_id) if is_cls_loss else 0
+    is_cls_loss = loss_type in (
+        "arcface",
+        "subcenter_arcface",
+        "cosface",
+        "sphereface",
+        "softmax",
+    )
+
+    active_shards = shard_store
+    if active_shards is None and exp_cfg.data.sharded_cache_dir:
+        active_shards = shard_cache.ShardedFeatureStore(
+            exp_cfg.data.sharded_cache_dir, base_speakers_only=not is_cls_loss
+        )
+
+    if active_shards is not None:
+        num_classes = active_shards.num_speakers if is_cls_loss else 0
+        speaker_to_id: dict[str, int] = active_shards.speaker_to_id
+    else:
+        if not spk_to_utts:
+            raise ValueError(
+                "Either spk_to_utts or data.sharded_cache_dir / shard_store must be provided."
+            )
+        speaker_to_id = {
+            spk: idx for idx, spk in enumerate(sorted(spk_to_utts.keys()))
+        }
+        num_classes = len(speaker_to_id) if is_cls_loss else 0
 
     _, state = get_speaker_encoder(exp_cfg, num_classes=num_classes)
     step_fn = make_modern_train_step(exp_cfg)
@@ -836,7 +924,52 @@ def train_network(
     triplet_rng = random.Random(int(exp_cfg.train.seed))
 
     for step in range(exp_cfg.train.num_steps):
-        if loss_type == "triplet":
+        if active_shards is not None:
+            if is_cls_loss:
+                batch_input, batch_labels, batch_mask = (
+                    active_shards.sample_classification_batch(
+                        batch_size=exp_cfg.train.batch_size,
+                        max_seq_len=max_seq_len,
+                        min_seq_len=min_seq_len,
+                        variable_length=var_len,
+                        specaug_config=exp_cfg.train.specaug,
+                        rng=rng,
+                        domain_temp_alpha=float(
+                            getattr(exp_cfg.data, "domain_temp_alpha", 0.35)
+                        ),
+                    )
+                )
+            elif loss_type == "triplet":
+                batch_input, batch_labels, batch_mask = (
+                    active_shards.sample_triplet_batch(
+                        batch_size=exp_cfg.train.batch_size,
+                        max_seq_len=max_seq_len,
+                        min_seq_len=min_seq_len,
+                        variable_length=var_len,
+                        specaug_config=exp_cfg.train.specaug,
+                        rng=rng,
+                    )
+                )
+            else:
+                batch_input, batch_labels, batch_mask = (
+                    active_shards.sample_nm_batch(
+                        num_speakers=exp_cfg.train.loss.num_speakers_per_batch,
+                        num_utts_per_speaker=exp_cfg.train.loss.num_utts_per_speaker,
+                        max_seq_len=max_seq_len,
+                        min_seq_len=min_seq_len,
+                        variable_length=var_len,
+                        specaug_config=exp_cfg.train.specaug,
+                        rng=rng,
+                        within_domain_prob=float(
+                            getattr(exp_cfg.data, "within_domain_prob", 0.75)
+                        ),
+                        domain_temp_alpha=float(
+                            getattr(exp_cfg.data, "domain_temp_alpha", 0.35)
+                        ),
+                    )
+                )
+        elif loss_type == "triplet":
+            assert spk_to_utts is not None
             batch_list = []
             mask_list = []
             for _ in range(exp_cfg.train.batch_size):
@@ -871,6 +1004,7 @@ def train_network(
             )
             batch_labels = None
         elif is_cls_loss:
+            assert spk_to_utts is not None
             batch_input, batch_labels, batch_mask = (
                 feature_extraction.get_batched_classification_input(
                     spk_to_utts,
@@ -885,10 +1019,13 @@ def train_network(
                     min_seq_len=min_seq_len,
                     variable_length=var_len,
                     return_mask=True,
+                    domain_temp_alpha=float(
+                        getattr(exp_cfg.data, "domain_temp_alpha", 0.35)
+                    ),
                 )
             )
         else:
-            # Structured N x M batch for GE2E / Extended-Set Softmax / Pairwise
+            assert spk_to_utts is not None
             batch_input, batch_labels, batch_mask = (
                 feature_extraction.get_batched_nm_input(
                     spk_to_utts,
@@ -931,13 +1068,112 @@ def train_network(
             if checkpoint.endswith(".msgpack"):
                 checkpoint = checkpoint[:-8]
             checkpoint += f".ckpt-{step + 1}.msgpack"
-            save_model(checkpoint, {"params": state.params})
+            save_model(checkpoint, state.params, batch_stats=state.batch_stats)
 
     training_time = time.time() - start_time
     print("Finished training in", training_time, "seconds")
     if exp_cfg.model.saved_model_path:
-        save_model(exp_cfg.model.saved_model_path, {"params": state.params})
+        save_model(
+            exp_cfg.model.saved_model_path,
+            state.params,
+            batch_stats=state.batch_stats,
+        )
     return losses_history
+
+
+def run_lmft_stage(
+    state: SpeakerTrainState,
+    base_cfg: configs.ExperimentConfig,
+    shard_store: shard_cache.ShardedFeatureStore,
+    lmft_steps: int = 4000,
+    lmft_seq_len: int = 600,
+    lmft_batch_size: int = 64,
+    lmft_lr: float = 1e-4,
+    lmft_margin: float = 0.5,
+) -> tuple[SpeakerTrainState, list[float]]:
+    """Stage-2 Large-Margin Fine-Tuning (`LMFT`, Thienpondt et al., Interspeech 2021).
+
+    Continues training `state` on long `lmft_seq_len`-frame (`6.0s`) utterances with
+    tighter angular margin (`lmft_margin = 0.5`), reduced learning rate, and disabled
+    SpecAugment so long-context statistics and decision boundaries sharpen cleanly.
+    """
+    import copy
+
+    lmft_cfg = copy.deepcopy(base_cfg)
+    lmft_cfg.model.seq_len = int(lmft_seq_len)
+    lmft_cfg.model.max_seq_len = int(lmft_seq_len)
+    lmft_cfg.model.min_seq_len = int(lmft_seq_len)
+    lmft_cfg.model.variable_length_training = False
+    lmft_cfg.train.batch_size = int(lmft_batch_size)
+    lmft_cfg.train.num_steps = int(lmft_steps)
+    lmft_cfg.train.learning_rate = float(lmft_lr)
+    lmft_cfg.train.min_learning_rate = float(lmft_lr) * 0.05
+    lmft_cfg.train.warmup_steps = min(200, max(1, lmft_steps // 10))
+    lmft_cfg.train.specaug.use_specaug = False
+    lmft_cfg.train.loss.margin = float(lmft_margin)
+    lmft_cfg.train.loss.margin_warmup_steps = 0
+    lmft_cfg.loss = lmft_cfg.train.loss
+
+    tx = build_optimizer(lmft_cfg)
+    lmft_state = SpeakerTrainState.create(
+        apply_fn=state.apply_fn,
+        params=state.params,
+        tx=tx,
+        batch_stats=state.batch_stats,
+    )
+    step_fn = make_modern_train_step(lmft_cfg)
+    rng = np.random.default_rng(int(lmft_cfg.train.seed) + 777)
+    loss_type = str(
+        getattr(
+            lmft_cfg.train.loss.loss_type, "value", lmft_cfg.train.loss.loss_type
+        )
+    )
+    is_cls = loss_type in (
+        "arcface",
+        "subcenter_arcface",
+        "cosface",
+        "sphereface",
+        "softmax",
+    )
+
+    lmft_losses: list[float] = []
+    for step in range(lmft_steps):
+        if is_cls:
+            b_in, b_lbl, b_m = shard_store.sample_classification_batch(
+                batch_size=lmft_batch_size,
+                max_seq_len=lmft_seq_len,
+                min_seq_len=lmft_seq_len,
+                variable_length=False,
+                specaug_config=lmft_cfg.train.specaug,
+                rng=rng,
+                domain_temp_alpha=float(
+                    getattr(lmft_cfg.data, "domain_temp_alpha", 0.35)
+                ),
+            )
+        else:
+            b_in, b_lbl, b_m = shard_store.sample_nm_batch(
+                num_speakers=lmft_cfg.train.loss.num_speakers_per_batch,
+                num_utts_per_speaker=lmft_cfg.train.loss.num_utts_per_speaker,
+                max_seq_len=lmft_seq_len,
+                min_seq_len=lmft_seq_len,
+                variable_length=False,
+                specaug_config=lmft_cfg.train.specaug,
+                rng=rng,
+                within_domain_prob=float(
+                    getattr(lmft_cfg.data, "within_domain_prob", 0.75)
+                ),
+                domain_temp_alpha=float(
+                    getattr(lmft_cfg.data, "domain_temp_alpha", 0.35)
+                ),
+            )
+        lmft_state, l_val = step_fn(lmft_state, b_in, b_lbl, b_m)
+        lmft_losses.append(float(l_val.item()))
+        if step % 50 == 0 or step == lmft_steps - 1:
+            print(
+                f"[LMFT] step: {step + 1}/{lmft_steps} "
+                f"loss ({loss_type}, m={lmft_margin}): {lmft_losses[-1]:.5f}"
+            )
+    return lmft_state, lmft_losses
 
 
 def visualize_losses(losses_list: list[float], output_path: Optional[str] = None) -> None:
@@ -955,13 +1191,15 @@ def visualize_losses(losses_list: list[float], output_path: Optional[str] = None
 
 
 def run_training(myconfig: Any) -> None:
-    """Entry point to load dataset and run training from config."""
-    spk_to_utts = dataset.load_dataset_from_config(myconfig, split="train")
+    """Entry point to load dataset (or sharded cache) and run training from config."""
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    if exp_cfg.data.sharded_cache_dir:
+        print(f"Training from sharded cache: {exp_cfg.data.sharded_cache_dir}")
+        train_network(None, exp_cfg)
+        return
+    spk_to_utts = dataset.load_dataset_from_config(exp_cfg, split="train")
     print(f"Loaded {len(spk_to_utts)} speakers for training.")
-    with multiprocessing.pool.ThreadPool(myconfig.train.num_processes) as pool:
-        losses_list = train_network(spk_to_utts, myconfig, pool)
-    if not _is_modern_config(myconfig):
-        visualize_losses(losses_list)
+    train_network(spk_to_utts, exp_cfg)
 
 
 if __name__ == "__main__":
@@ -972,6 +1210,4 @@ if __name__ == "__main__":
         config_file = args[0]
     else:
         raise ValueError("Expecting a single argument: config file path")
-    with open(config_file, "r", encoding="utf-8") as f:
-        myconfig = munch.Munch.fromYAML(f.read())
-    run_training(myconfig)
+    run_training(configs.ExperimentConfig.from_yaml(config_file))

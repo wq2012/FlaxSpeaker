@@ -694,6 +694,101 @@ class SqueezeExcitation1D(nn.Module):
         return out
 
 
+class MaskedBatchNorm1D(nn.Module):
+    """Mask-aware 1D Batch Normalization over `(B, T, C)` frame representations.
+
+    Computes batch mean and variance strictly over valid (`mask > 0`) frames during
+    training (`use_running_average=False`) while updating EMA `running_mean` and
+    `running_var` in the `"batch_stats"` collection, and applies `running_mean` /
+    `running_var` during inference (`use_running_average=True`), guaranteeing exact
+    zero-padding invariance in both training and evaluation.
+    """
+
+    momentum: float = 0.9
+    epsilon: float = 1e-5
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        use_running_average: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        features = x.shape[-1]
+        scale = self.param("scale", nn.initializers.ones, (features,))
+        bias = self.param("bias", nn.initializers.zeros, (features,))
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+
+        has_bs = self.has_variable(
+            "batch_stats", "running_mean"
+        ) or self.is_mutable_collection("batch_stats")
+        if has_bs:
+            ra_mean = self.variable(
+                "batch_stats",
+                "running_mean",
+                lambda s: jnp.zeros(s, dtype=jnp.float32),
+                (features,),
+            )
+            ra_var = self.variable(
+                "batch_stats",
+                "running_var",
+                lambda s: jnp.ones(s, dtype=jnp.float32),
+                (features,),
+            )
+        else:
+            ra_mean = None
+            ra_var = None
+
+        if use_running_average:
+            mean = (
+                ra_mean.value.astype(x.dtype)
+                if ra_mean is not None
+                else jnp.zeros((features,), dtype=x.dtype)
+            )
+            var = (
+                ra_var.value.astype(x.dtype)
+                if ra_var is not None
+                else jnp.ones((features,), dtype=x.dtype)
+            )
+        else:
+            x_f32 = x.astype(jnp.float32)
+            if mask_f is not None:
+                m_f32 = mask_f.astype(jnp.float32)
+                denom = jnp.maximum(jnp.sum(m_f32), 1.0)
+                mean_f32 = jnp.sum(x_f32 * m_f32, axis=(0, 1)) / denom
+                diff = (x_f32 - mean_f32[None, None, :]) * m_f32
+                var_f32 = jnp.sum(jnp.square(diff), axis=(0, 1)) / denom
+            else:
+                mean_f32 = jnp.mean(x_f32, axis=(0, 1))
+                var_f32 = jnp.var(x_f32, axis=(0, 1))
+            if (
+                ra_mean is not None
+                and ra_var is not None
+                and not self.is_initializing()
+                and self.is_mutable_collection("batch_stats")
+            ):
+                ra_mean.value = (
+                    self.momentum * ra_mean.value
+                    + (1.0 - self.momentum) * mean_f32
+                )
+                ra_var.value = (
+                    self.momentum * ra_var.value
+                    + (1.0 - self.momentum) * var_f32
+                )
+            mean = mean_f32.astype(x.dtype)
+            var = var_f32.astype(x.dtype)
+
+        inv = jax.lax.rsqrt(var + self.epsilon)
+        y = (x - mean[None, None, :]) * (inv * scale.astype(x.dtype))[
+            None, None, :
+        ] + bias.astype(x.dtype)[None, None, :]
+        if mask_f is not None:
+            y = y * mask_f
+        return y
+
+
 class SERes2Block(nn.Module):
     """ECAPA-TDNN Squeeze-and-Excitation Res2Net block."""
 
@@ -702,16 +797,39 @@ class SERes2Block(nn.Module):
     dilation: int = 2
     scale: int = 4
     se_bottleneck_dim: int = 64
-    norm_after_activation: bool = False
+    use_batch_norm: bool = True
+    norm_after_activation: bool = True
 
-    def _norm_act(self, h: jax.Array, name: str) -> jax.Array:
+    def _norm(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
+        if self.use_batch_norm:
+            return MaskedBatchNorm1D(name=name)(
+                h, use_running_average=use_running_average, mask=mask
+            )
+        return nn.LayerNorm(name=name)(h)
+
+    def _norm_act(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
         if self.norm_after_activation:
-            return nn.LayerNorm(name=name)(nn.relu(h))
-        return nn.relu(nn.LayerNorm(name=name)(h))
+            return self._norm(nn.relu(h), name, use_running_average, mask)
+        return nn.relu(self._norm(h, name, use_running_average, mask))
 
     @nn.compact
     def __call__(
-        self, x: jax.Array, mask: Optional[jax.Array] = None
+        self,
+        x: jax.Array,
+        use_running_average: bool = True,
+        mask: Optional[jax.Array] = None,
     ) -> jax.Array:
         mask_f = (
             (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
@@ -719,7 +837,13 @@ class SERes2Block(nn.Module):
         if mask_f is not None:
             x = x * mask_f
         residual = x
-        h = self._norm_act(nn.Dense(self.channels, name="pw1")(x), "ln1")
+        norm_tag = "bn" if self.use_batch_norm else "ln"
+        h = self._norm_act(
+            nn.Dense(self.channels, name="pw1")(x),
+            f"{norm_tag}1",
+            use_running_average,
+            mask,
+        )
         if mask_f is not None:
             h = h * mask_f
 
@@ -739,14 +863,21 @@ class SERes2Block(nn.Module):
                 padding="SAME",
                 name=f"res2_conv_{s_idx}",
             )(cur)
-            cur = self._norm_act(cur, f"res2_ln_{s_idx}")
+            cur = self._norm_act(
+                cur, f"res2_{norm_tag}_{s_idx}", use_running_average, mask
+            )
             if mask_f is not None:
                 cur = cur * mask_f
             outs.append(cur)
             prev = cur
 
         h = jnp.concatenate(outs, axis=-1)
-        h = self._norm_act(nn.Dense(self.channels, name="pw2")(h), "ln2")
+        h = self._norm_act(
+            nn.Dense(self.channels, name="pw2")(h),
+            f"{norm_tag}2",
+            use_running_average,
+            mask,
+        )
         h = SqueezeExcitation1D(
             channels=self.channels,
             bottleneck_dim=self.se_bottleneck_dim,
@@ -762,7 +893,8 @@ class EcapaTdnnBackbone(nn.Module):
     """ECAPA-TDNN backbone (Desplanques et al., Interspeech 2020).
 
     Combines an initial 1D TDNN layer, multiple SE-Res2Net blocks with increasing
-    dilations, and Multi-layer Feature Aggregation (MFA).
+    dilations, mask-aware post-activation BatchNorm (`use_batch_norm=True,
+    norm_after_activation=True`), and Multi-layer Feature Aggregation (MFA).
     """
 
     channels: int = 256
@@ -771,12 +903,32 @@ class EcapaTdnnBackbone(nn.Module):
     dilations: Sequence[int] = (1, 2, 3, 4)
     mfa_dim: int = 512
     se_bottleneck_dim: int = 64
-    norm_after_activation: bool = False
+    use_batch_norm: bool = True
+    norm_after_activation: bool = True
 
-    def _norm_act(self, h: jax.Array, name: str) -> jax.Array:
+    def _norm(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
+        if self.use_batch_norm:
+            return MaskedBatchNorm1D(name=name)(
+                h, use_running_average=use_running_average, mask=mask
+            )
+        return nn.LayerNorm(name=name)(h)
+
+    def _norm_act(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
         if self.norm_after_activation:
-            return nn.LayerNorm(name=name)(nn.relu(h))
-        return nn.relu(nn.LayerNorm(name=name)(h))
+            return self._norm(nn.relu(h), name, use_running_average, mask)
+        return nn.relu(self._norm(h, name, use_running_average, mask))
 
     @nn.compact
     def __call__(
@@ -784,7 +936,10 @@ class EcapaTdnnBackbone(nn.Module):
         x: jax.Array,
         deterministic: bool = True,
         mask: Optional[jax.Array] = None,
+        use_running_average: Optional[bool] = None,
     ) -> jax.Array:
+        use_ra = deterministic if use_running_average is None else bool(use_running_average)
+        norm_tag = "bn" if self.use_batch_norm else "ln"
         mask_f = (
             (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
         )
@@ -797,7 +952,7 @@ class EcapaTdnnBackbone(nn.Module):
             padding="SAME",
             name="stem_conv",
         )(x)
-        h = self._norm_act(h, "stem_ln")
+        h = self._norm_act(h, f"stem_{norm_tag}", use_ra, mask)
         if mask_f is not None:
             h = h * mask_f
 
@@ -812,31 +967,152 @@ class EcapaTdnnBackbone(nn.Module):
                 dilation=dil,
                 scale=self.scale,
                 se_bottleneck_dim=self.se_bottleneck_dim,
+                use_batch_norm=self.use_batch_norm,
                 norm_after_activation=self.norm_after_activation,
                 name=f"se_res2_{i}",
-            )(h, mask=mask)
+            )(h, use_running_average=use_ra, mask=mask)
             block_outputs.append(h)
 
         # Multi-layer Feature Aggregation (MFA)
         cat = jnp.concatenate(block_outputs, axis=-1)
         out = self._norm_act(
-            nn.Dense(self.mfa_dim, name="mfa_proj")(cat), "mfa_ln"
+            nn.Dense(self.mfa_dim, name="mfa_proj")(cat),
+            f"mfa_{norm_tag}",
+            use_ra,
+            mask,
         )
         if mask_f is not None:
             out = out * mask_f
         return out
 
 
+class MaskedBatchNorm2D(nn.Module):
+    """Mask-aware 2D Batch Normalization over `(B, T, F, C)` time-frequency maps.
+
+    Computes per-channel batch mean and variance strictly over valid (`mask > 0`)
+    time-frequency positions during training (`use_running_average=False`) while
+    updating EMA `running_mean` and `running_var` in `"batch_stats"`, and applies
+    `running_mean` / `running_var` during inference (`use_running_average=True`).
+    Preserves cross-frequency formant energy structure while guaranteeing exact
+    zero-padding invariance in both training and evaluation.
+    """
+
+    momentum: float = 0.9
+    epsilon: float = 1e-5
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        use_running_average: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        features = x.shape[-1]
+        scale = self.param("scale", nn.initializers.ones, (features,))
+        bias = self.param("bias", nn.initializers.zeros, (features,))
+        mask_f = (
+            (mask > 0).astype(x.dtype)[:, :, None, None]
+            if mask is not None
+            else None
+        )
+
+        has_bs = self.has_variable(
+            "batch_stats", "running_mean"
+        ) or self.is_mutable_collection("batch_stats")
+        if has_bs:
+            ra_mean = self.variable(
+                "batch_stats",
+                "running_mean",
+                lambda s: jnp.zeros(s, dtype=jnp.float32),
+                (features,),
+            )
+            ra_var = self.variable(
+                "batch_stats",
+                "running_var",
+                lambda s: jnp.ones(s, dtype=jnp.float32),
+                (features,),
+            )
+        else:
+            ra_mean = None
+            ra_var = None
+
+        if use_running_average:
+            mean = (
+                ra_mean.value.astype(x.dtype)
+                if ra_mean is not None
+                else jnp.zeros((features,), dtype=x.dtype)
+            )
+            var = (
+                ra_var.value.astype(x.dtype)
+                if ra_var is not None
+                else jnp.ones((features,), dtype=x.dtype)
+            )
+        else:
+            x_f32 = x.astype(jnp.float32)
+            if mask_f is not None:
+                m_f32 = mask_f.astype(jnp.float32)
+                denom = jnp.maximum(
+                    jnp.sum(m_f32) * float(x_f32.shape[2]), 1.0
+                )
+                mean_f32 = jnp.sum(x_f32 * m_f32, axis=(0, 1, 2)) / denom
+                diff = (x_f32 - mean_f32[None, None, None, :]) * m_f32
+                var_f32 = jnp.sum(jnp.square(diff), axis=(0, 1, 2)) / denom
+            else:
+                mean_f32 = jnp.mean(x_f32, axis=(0, 1, 2))
+                var_f32 = jnp.var(x_f32, axis=(0, 1, 2))
+            if (
+                ra_mean is not None
+                and ra_var is not None
+                and not self.is_initializing()
+                and self.is_mutable_collection("batch_stats")
+            ):
+                ra_mean.value = (
+                    self.momentum * ra_mean.value
+                    + (1.0 - self.momentum) * mean_f32
+                )
+                ra_var.value = (
+                    self.momentum * ra_var.value
+                    + (1.0 - self.momentum) * var_f32
+                )
+            mean = mean_f32.astype(x.dtype)
+            var = var_f32.astype(x.dtype)
+
+        inv = jax.lax.rsqrt(var + self.epsilon)
+        y = (x - mean[None, None, None, :]) * (
+            inv * scale.astype(x.dtype)
+        )[None, None, None, :] + bias.astype(x.dtype)[None, None, None, :]
+        if mask_f is not None:
+            y = y * mask_f
+        return y
+
+
 class ResNetBasicBlock2D(nn.Module):
-    """2D Residual Block with optional Squeeze-and-Excitation."""
+    """2D Residual Block with mask-aware 2D BatchNorm and optional Squeeze-and-Excitation."""
 
     channels: int
     stride: tuple[int, int] = (1, 1)
     use_se: bool = True
+    use_batch_norm: bool = True
+
+    def _norm(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
+        if self.use_batch_norm:
+            return MaskedBatchNorm2D(name=name)(
+                h, use_running_average=use_running_average, mask=mask
+            )
+        return nn.LayerNorm(reduction_axes=(-2, -1), name=name)(h)
 
     @nn.compact
     def __call__(
-        self, x: jax.Array, mask: Optional[jax.Array] = None
+        self,
+        x: jax.Array,
+        use_running_average: bool = True,
+        mask: Optional[jax.Array] = None,
     ) -> jax.Array:
         mask_f = (
             (mask > 0).astype(x.dtype)[:, :, None, None]
@@ -846,6 +1122,7 @@ class ResNetBasicBlock2D(nn.Module):
         if mask_f is not None:
             x = x * mask_f
         residual = x
+        norm_tag = "bn" if self.use_batch_norm else "ln"
         h = nn.Conv(
             features=self.channels,
             kernel_size=(3, 3),
@@ -854,7 +1131,7 @@ class ResNetBasicBlock2D(nn.Module):
             use_bias=False,
             name="conv1",
         )(x)
-        h = nn.relu(nn.LayerNorm(name="ln1")(h))
+        h = nn.relu(self._norm(h, f"{norm_tag}1", use_running_average, mask))
         if mask_f is not None:
             h = h * mask_f
         h = nn.Conv(
@@ -865,7 +1142,7 @@ class ResNetBasicBlock2D(nn.Module):
             use_bias=False,
             name="conv2",
         )(h)
-        h = nn.LayerNorm(name="ln2")(h)
+        h = self._norm(h, f"{norm_tag}2", use_running_average, mask)
         if mask_f is not None:
             h = h * mask_f
 
@@ -893,7 +1170,9 @@ class ResNetBasicBlock2D(nn.Module):
                 use_bias=False,
                 name="downsample",
             )(residual)
-            residual = nn.LayerNorm(name="downsample_ln")(residual)
+            residual = self._norm(
+                residual, f"downsample_{norm_tag}", use_running_average, mask
+            )
 
         out = nn.relu(residual + h)
         if mask_f is not None:
@@ -908,6 +1187,7 @@ class ResNetBackbone(nn.Module):
     num_blocks: Sequence[int] = (2, 2, 2, 2)
     use_se: bool = True
     out_dim: int = 256
+    use_batch_norm: bool = True
 
     @nn.compact
     def __call__(
@@ -915,7 +1195,14 @@ class ResNetBackbone(nn.Module):
         x: jax.Array,
         deterministic: bool = True,
         mask: Optional[jax.Array] = None,
+        use_running_average: Optional[bool] = None,
     ) -> jax.Array:
+        use_ra = (
+            deterministic
+            if use_running_average is None
+            else bool(use_running_average)
+        )
+        norm_tag = "bn" if self.use_batch_norm else "ln"
         mask_f = (
             (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
         )
@@ -931,7 +1218,18 @@ class ResNetBackbone(nn.Module):
             use_bias=False,
             name="stem_conv",
         )(h)
-        h = nn.relu(nn.LayerNorm(name="stem_ln")(h))
+        if self.use_batch_norm:
+            h = nn.relu(
+                MaskedBatchNorm2D(name=f"stem_{norm_tag}")(
+                    h, use_running_average=use_ra, mask=mask
+                )
+            )
+        else:
+            h = nn.relu(
+                nn.LayerNorm(reduction_axes=(-2, -1), name=f"stem_{norm_tag}")(
+                    h
+                )
+            )
         if mask_f is not None:
             h = h * mask_f[..., None]
 
@@ -944,17 +1242,20 @@ class ResNetBackbone(nn.Module):
                     channels=ch,
                     stride=stride,
                     use_se=self.use_se,
+                    use_batch_norm=self.use_batch_norm,
                     name=f"stage{stage_idx}_block{b_idx}",
-                )(h, mask=mask)
+                )(h, use_running_average=use_ra, mask=mask)
 
         # Collapse frequency & channel dimensions: (B, T, F', C) -> (B, T, F'*C)
         bsz, seq_len, freq_bins, ch = h.shape
         h = h.reshape(bsz, seq_len, freq_bins * ch)
-        h = nn.relu(
-            nn.LayerNorm(name="out_ln")(
-                nn.Dense(self.out_dim, name="out_proj")(h)
+        h = nn.relu(nn.Dense(self.out_dim, name="out_proj")(h))
+        if self.use_batch_norm:
+            h = MaskedBatchNorm1D(name=f"out_{norm_tag}")(
+                h, use_running_average=use_ra, mask=mask
             )
-        )
+        else:
+            h = nn.LayerNorm(name=f"out_{norm_tag}")(h)
         if mask_f is not None:
             h = h * mask_f
         return h
@@ -982,6 +1283,7 @@ class ModernSpeakerEncoder(nn.Module):
         x: jax.Array,
         deterministic: bool = True,
         mask: Optional[jax.Array] = None,
+        use_running_average: Optional[bool] = None,
     ) -> jax.Array:
         b_kwargs = dict(self.backbone_kwargs or {})
         p_kwargs = dict(self.pooling_kwargs or {})
@@ -1006,11 +1308,17 @@ class ModernSpeakerEncoder(nn.Module):
             )
         elif b_type == "ecapa_tdnn":
             frames = EcapaTdnnBackbone(**b_kwargs, name="backbone")(
-                x, deterministic=deterministic, mask=mask
+                x,
+                deterministic=deterministic,
+                mask=mask,
+                use_running_average=use_running_average,
             )
         elif b_type == "resnet":
             frames = ResNetBackbone(**b_kwargs, name="backbone")(
-                x, deterministic=deterministic, mask=mask
+                x,
+                deterministic=deterministic,
+                mask=mask,
+                use_running_average=use_running_average,
             )
         else:
             raise ValueError(

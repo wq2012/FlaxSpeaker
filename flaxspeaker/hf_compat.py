@@ -1,8 +1,8 @@
-"""HuggingFace `transformers` and `safetensors` integration for FlaxSpeaker.
+"""HuggingFace `transformers` and `safetensors` integration for FlaxSpeaker v0.5.0.
 
-All 44 pretrained models are hosted on the Hugging Face Hub at
-`https://huggingface.co/wq2012/<model_id>` and grouped in the FlaxSpeaker
-collection:
+All 48 pretrained models (44 controlled ablation models + 4 full-data SOTA flagship
+models) are hosted on the Hugging Face Hub at `https://huggingface.co/wq2012/<model_id>`
+and grouped in the FlaxSpeaker collection:
 https://huggingface.co/collections/wq2012/flaxspeaker
 
 Provides:
@@ -10,8 +10,8 @@ Provides:
   registered under `model_type = "flaxspeaker"`, serializing to `config.json`.
 - `FlaxSpeakerModel`: High-level model wrapper supporting `.save_pretrained()` and
   `.from_pretrained()` (writing `config.json`, `model.safetensors`,
-  `flax_model.msgpack`, and a HuggingFace Model Card),
-  plus one-line `.extract_embedding()` and `.verify()` methods.
+  `flax_model.msgpack`, and a HuggingFace Model Card, including `batch_stats` for
+  BatchNorm backbones), plus one-line `.extract_embedding()` and `.verify()` methods.
 """
 
 from collections.abc import Sequence
@@ -42,8 +42,8 @@ HF_COLLECTION_URL = (
     "wq2012/flaxspeaker"
 )
 
-PRETRAINED_MODEL_IDS: tuple[str, ...] = (
-    # Universal Multi-Domain models (19)
+CONTROLLED_ABLATION_MODEL_IDS: tuple[str, ...] = (
+    # Universal Multi-Domain controlled models (19)
     "univ_conformer_tiny_ge2e",
     "univ_conformer_small_ge2e",
     "univ_conformer_base_ge2e",
@@ -63,7 +63,7 @@ PRETRAINED_MODEL_IDS: tuple[str, ...] = (
     "univ_ecapa_tdnn_small_ge2e",
     "univ_ecapa_tdnn_base_ge2e",
     "univ_resnet_small_ge2e",
-    # LibriSpeech Single-Domain models (19)
+    # LibriSpeech Single-Domain controlled models (19)
     "ls_conformer_tiny_ge2e",
     "ls_conformer_small_ge2e",
     "ls_conformer_base_ge2e",
@@ -83,14 +83,25 @@ PRETRAINED_MODEL_IDS: tuple[str, ...] = (
     "ls_ecapa_tdnn_small_ge2e",
     "ls_ecapa_tdnn_base_ge2e",
     "ls_resnet_small_ge2e",
-    # CN-Celeb2 Single-Domain models (4)
+    # CN-Celeb2 Single-Domain controlled models (4)
     "cn_conformer_small_dr_vectors",
     "cn_conformer_small_ge2e",
     "cn_conformer_small_pfas",
     "cn_ecapa_tdnn_small_arcface",
-    # VoxCeleb1 Single-Domain models (2)
+    # VoxCeleb1 Single-Domain controlled models (2)
     "vox_conformer_small_ge2e",
     "vox_ecapa_tdnn_small_ext_softmax",
+)
+
+FULL_DATA_FLAGSHIP_IDS: tuple[str, ...] = (
+    "univ_full_conformer_large_arcface",
+    "univ_full_ecapa_c1024_arcface",
+    "univ_full_conformer_large_pfas",
+    "univ_full_conformer_large_dr_vectors",
+)
+
+PRETRAINED_MODEL_IDS: tuple[str, ...] = (
+    CONTROLLED_ABLATION_MODEL_IDS + FULL_DATA_FLAGSHIP_IDS
 )
 
 HF_MODEL_REGISTRY: tuple[str, ...] = PRETRAINED_MODEL_IDS
@@ -122,7 +133,13 @@ class FlaxSpeakerConfig(PretrainedConfig):
         self.backbone = backbone
         self.size_variant = size_variant
         self.pooling_type = pooling_type
-        default_emb_dims = {"tiny": 128, "small": 192, "base": 256}
+        default_emb_dims = {
+            "tiny": 128,
+            "small": 192,
+            "base": 256,
+            "large": 256,
+            "c1024": 256,
+        }
         self._explicit_embedding_dim = embedding_dim is not None
         self.embedding_dim = (
             int(embedding_dim)
@@ -137,10 +154,6 @@ class FlaxSpeakerConfig(PretrainedConfig):
         self.scoring_type = scoring_type
         self.loss_type = loss_type
         self.experiment_dict = experiment_dict or {}
-        # How the *released* weights were actually trained, when this differs from
-        # the recipe in `experiment_dict` (e.g. `variable_length_training_actual`,
-        # `crop_frames`, `training_code`, `step0_loss_fingerprint`). Written by
-        # `scripts/write_training_provenance.py`; `None` for freshly trained models.
         self.training_provenance = training_provenance
 
     @classmethod
@@ -197,19 +210,23 @@ class FlaxSpeakerModel:
         self,
         config: FlaxSpeakerConfig,
         params: Optional[dict[str, Any]] = None,
+        batch_stats: Optional[dict[str, Any]] = None,
     ):
         self.config = config
         self.exp_config = config.to_experiment_config()
-        self.encoder, self.state = neural_net.get_speaker_encoder(self.exp_config)
+        self.encoder, self.state = neural_net.get_speaker_encoder(
+            self.exp_config, skip_warm_start=(params is not None)
+        )
         if params is not None:
             self.state = self.state.replace(params=params)
+        if batch_stats is not None:
+            self.state = self.state.replace(batch_stats=batch_stats)
         self.frontend = feature_extraction.AudioFrontend(
             self.exp_config.frontend, self.exp_config.vad
         )
         self._jit_apply = jax.jit(
-            lambda p, x: self.state.apply_fn({"params": p}, x)
+            lambda vars_d, x: self.state.apply_fn(vars_d, x)
         )
-        # Populated by `from_pretrained` when the checkpoint ships `eval_results.json`.
         self.eval_results: Optional[dict[str, Any]] = None
 
     @property
@@ -217,8 +234,11 @@ class FlaxSpeakerModel:
         return self.state.params
 
     @property
+    def batch_stats(self) -> dict[str, Any]:
+        return getattr(self.state, "batch_stats", None) or {}
+
+    @property
     def num_parameters(self) -> int:
-        # Count encoder parameters (excluding auxiliary training-only classification weights)
         enc_only = {
             k: v
             for k, v in self.state.params.items()
@@ -229,41 +249,37 @@ class FlaxSpeakerModel:
     def eer_threshold(
         self, domain: str = "universal_pooled", num_enroll: int = 1
     ) -> Optional[float]:
-        """Decision threshold at the checkpoint's own EER operating point.
-
-        Read from `eval_results.json` (`multi_domain_eval.domains_1utt[domain]
-        .eer_threshold` for `num_enroll == 1`, `domains_3utt[domain].eer_threshold`
-        for `num_enroll >= 2`, i.e. the 3-utterance multi-enrollment protocol); `None`
-        if the checkpoint has no such record. Scores are on the model's own scale
-        (cosine, Dr-Vector or PFAS), so this is the only default that is meaningful
-        across scorers.
-        """
+        """Decision threshold at the checkpoint's own EER operating point."""
         if not self.eval_results:
             return None
         md = self.eval_results.get("multi_domain_eval", {})
         block = "domains_3utt" if int(num_enroll) >= 2 else "domains_1utt"
         rec = md.get(block, {}).get(domain)
         if rec is None and block == "domains_3utt":
-            # Fall back to the 1-utt operating point if no multi-enroll record exists.
             rec = md.get("domains_1utt", {}).get(domain)
         if rec is None and domain == "universal_pooled":
             rec = self.eval_results.get("in_domain_eval")
+        if rec is None and "official_benchmarks" in self.eval_results:
+            ob = self.eval_results["official_benchmarks"]
+            rec = ob.get("voxceleb1_o") or ob.get("librispeech_test_clean")
         if isinstance(rec, dict) and "eer_threshold" in rec:
             return float(rec["eer_threshold"])
         return None
 
     @staticmethod
     def load_exp_config(model_dir: str) -> configs.ExperimentConfig:
-        """The `ExperimentConfig` stored in a checkpoint directory's `config.json`.
-
-        Does not instantiate the network; useful for scripts that only need the
-        model's frontend / VAD configuration (e.g. TFLite evaluation).
-        """
+        """The `ExperimentConfig` stored in a checkpoint directory's `config.json`."""
         return FlaxSpeakerConfig.from_pretrained(model_dir).to_experiment_config()
 
     def __call__(self, features: jax.Array) -> jax.Array:
         """Forward pass on batched features `(B, T, F) -> (B, D)`."""
-        return self._jit_apply(self.state.params, features)
+        bs = self.batch_stats
+        vars_d = (
+            {"params": self.state.params, "batch_stats": bs}
+            if bs
+            else {"params": self.state.params}
+        )
+        return self._jit_apply(vars_d, features)
 
     def resolve_frontend(
         self,
@@ -271,14 +287,7 @@ class FlaxSpeakerModel:
         vad_top_db: Optional[float] = None,
         vad_snr_margin_db: Optional[float] = None,
     ) -> feature_extraction.AudioFrontend:
-        """Resolve an AudioFrontend with optional VAD overrides.
-
-        `vad_top_db` maps to `VadConfig.energy_db_threshold` (frames more than this
-        many dB below the utterance's 95th-percentile energy are dropped) and
-        `vad_snr_margin_db` to `VadConfig.snr_margin_db` (margin above the adaptive
-        noise-floor percentile); see Eq. (1) of the paper. These are the same two knobs
-        exposed by `scripts/inference.py` and the Gradio demo.
-        """
+        """Resolve an AudioFrontend with optional VAD overrides."""
         if apply_vad is None and vad_top_db is None and vad_snr_margin_db is None:
             return self.frontend
         vad_cfg = dataclasses.replace(
@@ -303,7 +312,6 @@ class FlaxSpeakerModel:
             self.exp_config.frontend, vad_cfg
         )
 
-    # Backwards-compatible private alias.
     _resolve_frontend = resolve_frontend
 
     def extract_embedding(
@@ -315,15 +323,7 @@ class FlaxSpeakerModel:
         vad_top_db: Optional[float] = None,
         vad_snr_margin_db: Optional[float] = None,
     ) -> np.ndarray:
-        """Extract speaker embedding from an audio file path or 1D waveform.
-
-        By default (`full_sequence=None`, with `eval.full_sequence_inference=True`),
-        routes through `evaluation.encode_features` (fixed-window masked `@jax.jit`
-        forward pass up to `max_eval_seq_len` frames), matching the benchmark and
-        Gradio demo evaluation path without per-length XLA recompilation. Setting
-        `full_sequence=False` (or `exp_config.eval.full_sequence_inference = False`)
-        uses the sliding-window path in `evaluation.run_inference`.
-        """
+        """Extract speaker embedding from an audio file path or 1D waveform."""
         active_frontend = self.resolve_frontend(
             apply_vad=apply_vad,
             vad_top_db=vad_top_db,
@@ -368,13 +368,7 @@ class FlaxSpeakerModel:
         ],
         test_emb: Union[np.ndarray, jax.Array],
     ) -> float:
-        """Score single or multi-utterance enrollment embedding(s) against a test embedding.
-
-        Dispatches across `pfas` (multi-enrollment key-value frame concatenation +
-        Parameter-Free Attentive Scoring), `dr_vector` (L2-normalized enrollment
-        centroid + Decision Residual Network), and `cosine` (L2-normalized centroid
-        cosine similarity).
-        """
+        """Score single or multi-utterance enrollment embedding(s) against a test embedding."""
         t_emb = jnp.asarray(test_emb, dtype=jnp.float32)
         if isinstance(enroll_emb, (list, tuple)):
             enroll_list = [jnp.asarray(e, dtype=jnp.float32) for e in enroll_emb]
@@ -483,11 +477,7 @@ class FlaxSpeakerModel:
         vad_top_db: Optional[float] = None,
         vad_snr_margin_db: Optional[float] = None,
     ) -> float:
-        """Compute verification similarity score between enrollment and test audio.
-
-        `enroll_audio` may be a single audio file path / 1D waveform or a sequence
-        of multiple enrollment audio file paths / waveforms.
-        """
+        """Compute verification similarity score between enrollment and test audio."""
         t_emb = self.extract_embedding(
             test_audio,
             full_sequence=full_sequence,
@@ -521,38 +511,36 @@ class FlaxSpeakerModel:
         save_directory: str,
         metrics: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Save model in standard HuggingFace Hub format.
-
-        Writes:
-        - `config.json`
-        - `model.safetensors`
-        - `flax_model.msgpack`
-        - `README.md` (Model Card)
+        """Save model in HuggingFace Hub format (`config.json`, `model.safetensors`,
+        `flax_model.msgpack`, and `README.md`).
         """
         os.makedirs(save_directory, exist_ok=True)
         self.config.save_pretrained(save_directory)
 
-        # Save weights excluding training-only classification prototypes
         export_params = {
             k: v
             for k, v in self.state.params.items()
             if k != "_aux_class_weights"
         }
+        bs = self.batch_stats
 
-        # 1. SafeTensors
+        # 1. SafeTensors (params + optional _batch_stats.*)
         flat = flax.traverse_util.flatten_dict(export_params, sep=".")
         flat_jnp = {k: jnp.asarray(v) for k, v in flat.items()}
+        if bs:
+            flat_bs = flax.traverse_util.flatten_dict(bs, sep=".")
+            for k, v in flat_bs.items():
+                flat_jnp[f"_batch_stats.{k}"] = jnp.asarray(v)
         save_safetensors(flat_jnp, os.path.join(save_directory, "model.safetensors"))
 
         # 2. Flax Msgpack
         neural_net.save_model(
             os.path.join(save_directory, "flax_model.msgpack"),
-            {"params": export_params},
+            export_params,
+            batch_stats=bs if bs else None,
         )
 
-        # 3. No `preprocessor_config.json`: the frontend (natural-log Mel + energy VAD +
-        # CMVN) is not expressible as a Hugging Face `AutoFeatureExtractor`; its full
-        # configuration lives in `config.json` and is applied by `flaxspeaker.AudioFrontend`.
+        # 3. Clean up any stale preprocessor_config.json
         stale_preproc = os.path.join(save_directory, "preprocessor_config.json")
         if os.path.exists(stale_preproc):
             os.remove(stale_preproc)
@@ -560,6 +548,7 @@ class FlaxSpeakerModel:
         # 4. Save metrics if provided
         model_id = os.path.basename(os.path.normpath(save_directory))
         if metrics is not None:
+            self.eval_results = metrics
             with open(
                 os.path.join(save_directory, "eval_results.json"),
                 "w",
@@ -567,7 +556,7 @@ class FlaxSpeakerModel:
             ) as f:
                 json.dump(metrics, f, indent=2)
 
-        # 5. Model card README.md (generated from config + metrics only; see model_card.py)
+        # 5. Model card README.md
         card_text = model_card.build_model_card(
             model_id=model_id,
             exp_cfg=self.exp_config,
@@ -679,12 +668,44 @@ class FlaxSpeakerModel:
         msg_path = os.path.join(resolved_dir, "flax_model.msgpack")
         if os.path.exists(st_path):
             flat_loaded = load_safetensors(st_path)
-            params = flax.traverse_util.unflatten_dict(flat_loaded, sep=".")
-            model.state = model.state.replace(params=params)
+            flat_p = {
+                k: v
+                for k, v in flat_loaded.items()
+                if not k.startswith("_batch_stats.")
+            }
+            flat_bs = {
+                k.removeprefix("_batch_stats."): v
+                for k, v in flat_loaded.items()
+                if k.startswith("_batch_stats.")
+            }
+            params = flax.traverse_util.unflatten_dict(flat_p, sep=".")
+            batch_stats = (
+                flax.traverse_util.unflatten_dict(flat_bs, sep=".")
+                if flat_bs
+                else model.batch_stats
+            )
+            model.state = model.state.replace(
+                params=params, batch_stats=batch_stats
+            )
         elif os.path.exists(msg_path):
-            loaded = neural_net.load_model(msg_path, {"params": model.state.params})
-            params = loaded["params"] if "params" in loaded else loaded
-            model.state = model.state.replace(params=params)
+            template = (
+                {"params": model.state.params, "batch_stats": model.batch_stats}
+                if model.batch_stats
+                else {"params": model.state.params}
+            )
+            loaded = neural_net.load_model(msg_path, template)
+            if isinstance(loaded, dict) and "params" in loaded:
+                params = loaded["params"]
+                batch_stats = (
+                    loaded.get("batch_stats", model.batch_stats)
+                    or model.batch_stats
+                )
+            else:
+                params = loaded
+                batch_stats = model.batch_stats
+            model.state = model.state.replace(
+                params=params, batch_stats=batch_stats
+            )
         else:
             raise FileNotFoundError(
                 f"Neither model.safetensors nor flax_model.msgpack found in {resolved_dir}"

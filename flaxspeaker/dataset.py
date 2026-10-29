@@ -376,6 +376,153 @@ def load_voxceleb_veri_test(
     return trials
 
 
+def load_cnceleb_eval_trials(
+    cnceleb1_root: str,
+    max_trials: Optional[int] = None,
+    seed: int = 42,
+) -> tuple[list[MultiEnrollTrial], list[TrialPair]]:
+    """Load official CN-Celeb1 evaluation trials (`eval/lists/enroll.lst` + `trials.lst`).
+
+    Supports both `<cnceleb1_root>/eval/...` and `<cnceleb1_root>/CN-Celeb_flac/eval/...`
+    directory layouts, and both `enroll_id test_rel 0|1` and `0|1 enroll_id test_rel`
+    trial formats (including `target`/`nontarget` string labels).
+
+    Returns:
+        `(multi_enroll_trials, single_utt_trials)` where `multi_enroll_trials` uses the
+        official list of per-speaker enrollment utterances from `enroll.lst` (or the
+        pre-concatenated `eval/enroll/<spk>-enroll.flac` file if present) and
+        `single_utt_trials` pairs the first available enrollment file with each test file.
+    """
+    root = resolve_data_path(cnceleb1_root)
+    eval_dir = root
+    for cand_sub in ("eval", "CN-Celeb_flac/eval"):
+        cand = os.path.join(root, cand_sub)
+        if os.path.isdir(cand):
+            eval_dir = cand
+            break
+    cn_base = os.path.dirname(eval_dir)
+
+    lists_dir = os.path.join(eval_dir, "lists")
+    enroll_lst = os.path.join(lists_dir, "enroll.lst")
+    enroll_map_file = os.path.join(lists_dir, "enroll.map")
+    trials_lst = os.path.join(lists_dir, "trials.lst")
+    if not os.path.isfile(trials_lst):
+        raise FileNotFoundError(
+            f"CN-Celeb evaluation trials.lst not found at {trials_lst}"
+        )
+
+    data_dir = os.path.join(cn_base, "data")
+    search_bases: list[str] = [eval_dir, cn_base, root]
+    if os.path.isdir(data_dir):
+        search_bases.insert(1, data_dir)
+    resolved_memo: dict[str, Optional[str]] = {}
+
+    def _resolve_rel(rel_p: str) -> Optional[str]:
+        rel_clean = rel_p.strip()
+        if rel_clean in resolved_memo:
+            return resolved_memo[rel_clean]
+        stem, orig_ext = os.path.splitext(rel_clean)
+        cand_rels = [rel_clean]
+        if orig_ext.lower() in (".wav", ".flac"):
+            alt_ext = ".flac" if orig_ext.lower() == ".wav" else ".wav"
+            cand_rels.append(stem + alt_ext)
+        else:
+            cand_rels.extend([rel_clean + ".flac", rel_clean + ".wav"])
+        for base in search_bases:
+            for c_rel in cand_rels:
+                cand = os.path.join(base, c_rel)
+                if os.path.isfile(cand):
+                    resolved_memo[rel_clean] = cand
+                    return cand
+        resolved_memo[rel_clean] = None
+        return None
+
+    single_enroll_map: dict[str, str] = {}
+    if os.path.isfile(enroll_lst):
+        with open(enroll_lst, "r", encoding="utf-8") as f:
+            for line in f:
+                toks = line.strip().split()
+                if not toks:
+                    continue
+                e_id = toks[0]
+                for rel in toks[1:]:
+                    resolved = _resolve_rel(rel)
+                    if resolved is not None:
+                        single_enroll_map[e_id] = resolved
+                        break
+                if e_id not in single_enroll_map:
+                    concat_cand = _resolve_rel(f"enroll/{e_id}")
+                    if concat_cand is not None:
+                        single_enroll_map[e_id] = concat_cand
+
+    multi_enroll_map: dict[str, list[str]] = {}
+    if os.path.isfile(enroll_map_file):
+        with open(enroll_map_file, "r", encoding="utf-8") as f:
+            for line in f:
+                toks = line.strip().split()
+                if len(toks) < 2:
+                    continue
+                e_id = toks[0]
+                paths = [
+                    r for r in (_resolve_rel(rel) for rel in toks[1:]) if r is not None
+                ]
+                if paths:
+                    multi_enroll_map[e_id] = paths
+
+    for e_id, s_path in single_enroll_map.items():
+        if e_id not in multi_enroll_map:
+            multi_enroll_map[e_id] = [s_path]
+
+    raw_pairs: list[tuple[int, str, list[str], str]] = []
+    with open(trials_lst, "r", encoding="utf-8") as f:
+        for line in f:
+            toks = line.strip().split()
+            if len(toks) != 3:
+                continue
+            if toks[0] in ("0", "1", "target", "nontarget"):
+                lbl_str, e_tok, t_tok = toks[0], toks[1], toks[2]
+            else:
+                e_tok, t_tok, lbl_str = toks[0], toks[1], toks[2]
+            lbl = 1 if lbl_str in ("1", "target") else 0
+
+            e_key = os.path.splitext(os.path.basename(e_tok))[0]
+            s_e = (
+                single_enroll_map.get(e_tok)
+                or single_enroll_map.get(e_key)
+                or _resolve_rel(e_tok)
+                or _resolve_rel(f"enroll/{e_key}")
+            )
+            m_e = (
+                multi_enroll_map.get(e_tok)
+                or multi_enroll_map.get(e_key)
+                or ([s_e] if s_e is not None else None)
+            )
+            if s_e is None and m_e:
+                s_e = m_e[0]
+            t_path = _resolve_rel(t_tok) or _resolve_rel(f"test/{t_tok}")
+            if s_e is not None and m_e and t_path is not None:
+                raw_pairs.append((lbl, s_e, m_e, t_path))
+
+    if max_trials is not None and len(raw_pairs) > max_trials:
+        rng = random.Random(seed)
+        pos = [t for t in raw_pairs if t[0] == 1]
+        neg = [t for t in raw_pairs if t[0] == 0]
+        n_neg = min(max_trials // 2, len(neg))
+        n_pos = min(max_trials - n_neg, len(pos))
+        if n_pos + n_neg < max_trials and len(neg) > n_neg:
+            n_neg = min(max_trials - n_pos, len(neg))
+        raw_pairs = rng.sample(pos, n_pos) + rng.sample(neg, n_neg)
+        rng.shuffle(raw_pairs)
+
+    raw_trials: list[MultiEnrollTrial] = [
+        (lbl, m_list, t_p) for lbl, _, m_list, t_p in raw_pairs
+    ]
+    single_trials: list[TrialPair] = [
+        (lbl, s_p, t_p) for lbl, s_p, _, t_p in raw_pairs
+    ]
+    return raw_trials, single_trials
+
+
 def save_trials_file(trials: Sequence[TrialPair], output_path: str) -> None:
     """Save verification trials (`label enroll_path test_path`) to disk."""
     parent = os.path.dirname(os.path.abspath(output_path))

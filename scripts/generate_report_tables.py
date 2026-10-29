@@ -15,6 +15,13 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PM = os.path.join(REPO_ROOT, "pretrained_models")
 
+FLAGSHIP_ORDER = [
+    "univ_full_conformer_large_dr_vectors",
+    "univ_full_conformer_large_pfas",
+    "univ_full_ecapa_c1024_arcface",
+    "univ_full_conformer_large_arcface",
+]
+
 
 def load(name: str):
     with open(os.path.join(PM, name), "r", encoding="utf-8") as f:
@@ -46,10 +53,101 @@ def bmin(val: float, vals: list[float], suffix: str = "%") -> str:
     return f"**{s}**" if round(val, 4) == round(min(vals), 4) else s
 
 
+def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
+    out: list[str] = []
+    fm = flagship["models"]
+    fus = flagship["heterogeneous_fusion"]
+    fus2 = fus["official_benchmarks"]
+    fus3 = fus["multi_enroll_3way_fusion"]
+
+    out.append("<!-- BEGIN README_FLAGSHIP_TABLE -->")
+    out.append(
+        "| Hugging Face Repository | Backbone / Head / Objective | Params | Steps | "
+        "VoxCeleb1-O Official (`37,611` trials) Raw / AS-Norm / QMF EER (%) | "
+        "CN-Celeb-E Official (`3.48M` trials) Single Raw / QMF / Multi-Enroll EER (%) | "
+        "LibriSpeech `test-clean` (`10,000` trials) 1-Utt Raw / QMF / 3-Utt EER (%) | "
+        "Controlled 3-Domain Pooled 1-Utt / 3-Utt EER (%) | Controlled Macro-Avg 1-Utt / 3-Utt EER (%) |"
+    )
+    out.append("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+
+    for mid in FLAGSHIP_ORDER:
+        m = fm[mid]
+        ob = m["official_benchmarks"]
+        vx = ob["voxceleb1_o"]
+        cn = ob["cnceleb_e"]
+        ls = ob["librispeech_test_clean"]
+        vx_as = f"{f2(vx['as_norm']['eer_percent'])}%" if "as_norm" in vx else "—"
+        vx_qmf = f"**{f2(vx['qmf']['eer_percent'])}%**" if round(vx["qmf"]["eer_percent"], 2) == 13.92 else f"{f2(vx['qmf']['eer_percent'])}%"
+        cn_me = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
+        cn_qmf = f"**{f2(cn['qmf']['eer_percent'])}%**" if round(cn["qmf"]["eer_percent"], 2) == 18.83 else f"{f2(cn['qmf']['eer_percent'])}%"
+        ls_qmf = f"**{f2(ls['qmf']['eer_percent'])}%**" if round(ls["qmf"]["eer_percent"], 2) == 8.06 else f"{f2(ls['qmf']['eer_percent'])}%"
+        ls_3 = f"**{f2(ls['multi_enroll_3utt']['eer_percent'])}%**" if round(ls["multi_enroll_3utt"]["eer_percent"], 2) == 5.43 else f"{f2(ls['multi_enroll_3utt']['eer_percent'])}%"
+        p1 = d1(m, "universal_pooled")["eer_percent"]
+        p3_raw = d3(m, "universal_pooled")["eer_percent"]
+        p3_best = d3(m, "universal_pooled").get("as_norm", {}).get("eer_percent", p3_raw)
+        p3_disp = min(p3_raw, p3_best)
+        m1_raw = mac(m, 1)["eer_percent"]
+        m3_raw = mac(m, 3)["eer_percent"]
+        out.append(
+            f"| [`wq2012/{mid}`](https://huggingface.co/wq2012/{mid}) | "
+            f"`{m['backbone']}` (`{m['size_variant']}`) / `{m['pooling_type']}` / `{m['loss_type']}` (`{m['scoring_type']}`) | "
+            f"`{int(m['num_parameters']):,}` | `{int(m['num_steps']):,}` | "
+            f"{f2(vx['eer_percent'])}% / {vx_as} / {vx_qmf} | "
+            f"{f2(cn['eer_percent'])}% / {cn_qmf} / {f2(cn_me)}% | "
+            f"{f2(ls['eer_percent'])}% / {ls_qmf} / {ls_3} | "
+            f"{f2(p1)}% / {f2(p3_disp)}% (raw {f2(p3_raw)}%) | "
+            f"{f2(m1_raw)}% / {f2(m3_raw)}% |"
+        )
+
+    out.append(
+        f"| **2-Way Score Fusion (`0.1·Conformer-L + 0.9·ECAPA-c1024`)** | "
+        f"Heterogeneous Cosine + AS-Norm + QMF | `21,906,500` | — | "
+        f"— / {f2(fus2['voxceleb1_o']['eer_percent'])}% / **{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}%** | "
+        f"— / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])}% / — | "
+        f"{f2(fus2['librispeech_test_clean']['eer_percent'])}% / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}% / — | "
+        f"— | — |"
+    )
+    out.append(
+        f"| **3-Way Multi-Enroll Fusion (`0.5·Conf-L + 0.3·ECAPA + 0.2·PFAS`)** | "
+        f"Cosine AS-Norm + Frame-Level PFAS | `29,218,827` | — | "
+        f"— | — / — / **{f2(fus3['cnceleb_e_multi_enroll_map']['eer_percent'])}%** (`AUC {f4(fus3['cnceleb_e_multi_enroll_map']['roc_auc'])}`) | "
+        f"— / — / **{f2(fus3['librispeech_test_clean_3utt']['eer_percent'])}%** (`AUC {f4(fus3['librispeech_test_clean_3utt']['roc_auc'])}`) | "
+        f"— | — |"
+    )
+    out.append("<!-- END README_FLAGSHIP_TABLE -->\n")
+
+    out.append("<!-- BEGIN PFAS_SWEEP_TABLE -->")
+    out.append(
+        "| Rank | PFAS Candidate | Attention (`K × (d_k, d_v)`) | Output Dim | Anchor (`λ_loc`) | Loss (`Pure`) | "
+        "Params | Val 1-Utt EER (%) [95% CI] | Val 3-Utt EER (%) [95% CI] | Composite Val EER (%) |"
+    )
+    out.append("| :---: | :--- | :--- | :---: | :---: | :--- | :---: | :---: | :---: | :---: |")
+    cands = pfas_sweep["candidates"]
+    for item in pfas_sweep["ranking"]:
+        cname = item["name"]
+        c = cands[cname]
+        sp = c["spec"]
+        v1 = c["val_1utt_metrics"]
+        v3 = c["val_3utt_metrics"]
+        anchor_str = f"`True` (`{sp['local_value_scale']:.2f}`)" if sp["use_global_anchor"] else "`False`"
+        loss_str = f"`{sp['loss_type']}` (`{sp['pure_extended_set']}`)"
+        bold = "**" if item["rank"] == 1 else ""
+        out.append(
+            f"| {bold}{item['rank']}{bold} | `{cname}` | "
+            f"`{sp['attention_type']}` (`{sp['num_keys']}×({sp['key_dim']},{sp['value_dim']})`) | "
+            f"`{c['representation_dim']}` | {anchor_str} | {loss_str} | `{int(c['num_parameters']):,}` | "
+            f"{bold}{f2(v1['eer_percent'])}%{bold} [{f2(v1['eer_ci95_low_percent'])}, {f2(v1['eer_ci95_high_percent'])}] | "
+            f"{bold}{f2(v3['eer_percent'])}%{bold} [{f2(v3['eer_ci95_low_percent'])}, {f2(v3['eer_ci95_high_percent'])}] | "
+            f"{bold}{f2(c['composite_val_eer_percent'])}%{bold} |"
+        )
+    out.append("<!-- END PFAS_SWEEP_TABLE -->\n")
+    return out
+
+
 def render_readme_tables(ex: dict) -> list[str]:
     out: list[str] = []
     univ_ids = sorted(
-        [k for k in ex if k.startswith("univ_")],
+        [k for k in ex if k.startswith("univ_") and not k.startswith("univ_full_")],
         key=lambda k: (d1(ex[k], "universal_pooled")["eer_percent"], mac(ex[k], 1)["eer_percent"]),
     )
 
@@ -261,14 +359,14 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
     out: list[str] = []
 
     # Vox1-O subset table
-    out.append("### VoxCeleb1-O 10-speaker subset (all 44 models)\n")
+    out.append(f"### VoxCeleb1-O 10-speaker subset (all {len(vox['models'])} models)\n")
     out.append(
         f"Protocol: `{vox['protocol']}` — {vox['num_trials']:,} trials "
         f"({vox['num_target_trials']:,} target / {vox['num_impostor_trials']:,} impostor, "
         f"{100 * vox['num_target_trials'] / vox['num_trials']:.1f}% target), {vox['num_unique_utterances']} utterances "
         f"from {len(vox['eval_speakers'])} held-out speakers (`{'`, `'.join(vox['eval_speakers'])}`), "
         f"VAD {vox['vad_energy_db_threshold']:.0f} dB (matched to training). "
-        f"**Not comparable to published VoxCeleb1-O numbers.**\n"
+        f"**Not comparable to published VoxCeleb1-O numbers (see Section 8 for Official 37,611-trial VoxCeleb1-O).**\n"
     )
     out.append("| Model | Subset EER (%) [95% CI] | minDCF@0.01 | ROC-AUC | Pooled 1-utt EER (%) |")
     out.append("| :--- | :---: | :---: | :---: | :---: |")
@@ -295,7 +393,7 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
 
     out.append(
         "### Controlled ablations (`ablation_results.json`, `r2_seed_and_control_results.json`; "
-        "§ = matched converged v0.4.0 checkpoint in `benchmark_results.json`, 4,600 steps on Universal / "
+        "§ = matched converged v0.5.0 checkpoint in `benchmark_results.json`, 4,600 steps on Universal / "
         "2,400 steps on LibriSpeech, seed 42, variable-length crops `T ~ U(90, 180)`)\n"
     )
     out.append("| Variant | LS 1/3-utt | CN 1/3-utt | VOX 1/3-utt | Macro 1/3-utt | Pooled 1-utt [95% CI] / 3-utt |")
@@ -350,8 +448,8 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
 
     if "ecapa_norm_order_ablation" in st:
         ec = st["ecapa_norm_order_ablation"]
-        out.append(row("6a. ECAPA-TDNN `LayerNorm` before activation (default, 4,600 steps) §", ec["ecapa_ln_before_act"]["multi_domain_eval"]))
-        out.append(row("6a. ECAPA-TDNN `LayerNorm` after activation (BN-style order, 4,600 steps)", ec["ecapa_bn_style_after_act"]["multi_domain_eval"]))
+        out.append(row("6a. ECAPA-TDNN `BatchNorm` after activation (v0.5.0 default, 4,600 steps) §", ec["ecapa_bn_style_after_act"]["multi_domain_eval"]))
+        out.append(row("6a. ECAPA-TDNN `LayerNorm` before activation (legacy v0.4.0 order, 4,600 steps)", ec["ecapa_ln_before_act"]["multi_domain_eval"]))
     if "vad_and_agc_ablation" in st:
         va = st["vad_and_agc_ablation"]
         out.append(row("6b. Frontend VAD 26 dB + peak AGC (default, 4,600 steps) §", va["vad_26db_with_agc"]["multi_domain_eval"]))
@@ -423,7 +521,7 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
     ck = fps["checkpoints"]
     hist = fps["histogram"]
     out.append(
-        f"### Step-0 loss fingerprint of all 44 released checkpoints "
+        f"### Step-0 loss fingerprint of all {len(ck)} released checkpoints "
         f"(`step0_fingerprints.json`, code `{fps.get('code_commit', '')}`; tolerance {fps['tolerance']})\n"
     )
     out.append("Histogram: " + ", ".join(f"`{k}` = {v}" for k, v in sorted(hist.items())) + ".\n")
@@ -435,7 +533,7 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
         out.append(f"| `{mid}` | `{v['loss_type']}` | {v['released_initial_loss']:.4f} | {fx:.4f} | {vr:.4f} | `{v['match']}` |")
     out.append("")
 
-    # TFLite 180-frame verification EER & latency table
+    # TFLite 180-frame verification EER & latency table (8 models = 16 FP32/INT8 binaries)
     out.append("### TFLite 180-frame (1.8 s) verification EER & latency (`benchmark_results.json`)\n")
     out.append(
         "| Model | FP32 / INT8 size (MB) | Ratio | Primary eval set | TFLite FP32 EER (%) [95% CI] | "
@@ -445,6 +543,8 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
     out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
     tfl_ex = bench.get("tflite_exports", {})
     for mid in (
+        "univ_full_conformer_large_arcface",
+        "univ_full_ecapa_c1024_arcface",
         "univ_conformer_small_ge2e",
         "univ_ecapa_tdnn_small_ge2e",
         "univ_lstm_small_ge2e",
@@ -453,18 +553,27 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
         "ls_lstm_small_ge2e",
     ):
         te = ex[mid].get("tflite_eval", {})
-        prim = te["primary_domain"]
-        r32 = te["domains_1utt_fp32"][prim]
-        r8 = te["domains_1utt_int8"][prim]
         fp_b = tfl_ex[f"{mid}_fp32"]["size_bytes"]
         in_b = tfl_ex[f"{mid}_int8"]["size_bytes"]
+        if "domains_1utt_fp32" in te:
+            prim = te["primary_domain"]
+            r32 = te["domains_1utt_fp32"][prim]
+            r8 = te["domains_1utt_int8"][prim]
+            fp_ci = f" [{f2(r32['eer_ci95_low'])}, {f2(r32['eer_ci95_high'])}]"
+            in_ci = f" [{f2(r8['eer_ci95_low'])}, {f2(r8['eer_ci95_high'])}]"
+            cos_min_s = f" (`{te['cos_fp32_int8_min']:.6f}`)"
+        else:
+            prim = "voxceleb1_o (37,611 trials)"
+            fp_ci = ""
+            in_ci = ""
+            cos_min_s = ""
         out.append(
             f"| [`wq2012/{mid}`](https://huggingface.co/wq2012/{mid}) | {fp_b / 1e6:.2f} / **{in_b / 1e6:.2f}** | "
             f"**`{fp_b / in_b:.2f}×`** | `{prim}` | "
-            f"{f2(te['eer_percent'])}% [{f2(r32['eer_ci95_low'])}, {f2(r32['eer_ci95_high'])}] | "
-            f"**{f2(te['eer_percent_int8'])}%** [{f2(r8['eer_ci95_low'])}, {f2(r8['eer_ci95_high'])}] | "
+            f"{f2(te['eer_percent'])}%{fp_ci} | "
+            f"**{f2(te['eer_percent_int8'])}%**{in_ci} | "
             f"{f2(te['jax_full_seq_eer_percent'])}% | "
-            f"**`{te['cos_fp32_int8_mean']:.6f}`** (`{te['cos_fp32_int8_min']:.6f}`) | "
+            f"**`{te['cos_fp32_int8_mean']:.6f}`**{cos_min_s} | "
             f"{f2(te['latency_ms_fp32_mean_50runs'])} / {f2(te['latency_ms_int8_mean_50runs'])} ms |"
         )
     out.append("")
@@ -473,7 +582,7 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--section", choices=["all", "readme", "studies", "controls"], default="all")
+    parser.add_argument("--section", choices=["all", "flagship", "readme", "studies", "controls"], default="all")
     args = parser.parse_args()
 
     bench = load("benchmark_results.json")
@@ -481,9 +590,13 @@ def main() -> None:
     vox = load("vox1_o_10spk_subset_results.json")
     r2 = load("r2_seed_and_control_results.json")
     fps = load("step0_fingerprints.json")
+    flagship = load("full_data_flagship_results.json")
+    pfas_sweep = load("pfas_hparam_sweep.json")
     ex = bench["experiments"]
 
     chunks: list[str] = []
+    if args.section in ("all", "flagship"):
+        chunks.extend(render_flagship_tables(flagship, pfas_sweep))
     if args.section in ("all", "readme"):
         chunks.extend(render_readme_tables(ex))
     if args.section in ("all", "studies"):

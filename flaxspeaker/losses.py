@@ -533,6 +533,56 @@ def arcface_loss(
     return -jnp.mean(jnp.sum(one_hot * log_probs, axis=-1))
 
 
+def subcenter_arcface_loss(
+    embeddings: jax.Array,
+    class_weights: jax.Array,
+    labels: jax.Array,
+    scale: float = 30.0,
+    margin: float = 0.2,
+    subcenter_k: int = 3,
+    eps: float = 1e-6,
+) -> jax.Array:
+    """Sub-Center ArcFace Loss (Deng et al., ECCV 2020; Zhao et al., ICASSP 2021).
+
+    Maintains `subcenter_k` prototype vectors per speaker (`class_weights` of shape
+    `(D, num_classes * subcenter_k)`), selects the maximum cosine similarity across the
+    `subcenter_k` sub-centers for each speaker class (`max_k cos(theta_{c,k})`), and
+    applies the additive angular margin `margin` to the ground-truth speaker class.
+    Absorbs noisy/corrupted recordings in multi-genre corpora (`VoxCeleb2`, `CN-Celeb2`)
+    into non-dominant sub-centers without distorting the clean dominant prototype.
+    """
+    k = max(1, int(subcenter_k))
+    total_cols = class_weights.shape[1]
+    if total_cols % k != 0:
+        raise ValueError(
+            f"class_weights columns ({total_cols}) must be divisible by subcenter_k ({k})."
+        )
+    num_classes = total_cols // k
+    dim = embeddings.shape[-1]
+
+    x_norm = embeddings / (jnp.linalg.norm(embeddings, axis=-1, keepdims=True) + eps)
+    w_norm = class_weights / (jnp.linalg.norm(class_weights, axis=0, keepdims=True) + eps)
+    w_sub = w_norm.reshape(dim, num_classes, k)
+
+    # Cosine against all K sub-centers per class: (B, C, K) -> max over K -> (B, C)
+    cos_all = jnp.einsum("bd,dck->bck", x_norm, w_sub)
+    cosine = jnp.clip(jnp.max(cos_all, axis=-1), -1.0 + eps, 1.0 - eps)
+    sine = jnp.sqrt(jnp.maximum(1.0 - cosine ** 2, eps))
+
+    cos_m = jnp.cos(margin)
+    sin_m = jnp.sin(margin)
+    phi = cosine * cos_m - sine * sin_m
+
+    threshold = jnp.cos(jnp.pi - margin)
+    mm = jnp.sin(jnp.pi - margin) * margin
+    phi = jnp.where(cosine > threshold, phi, cosine - mm)
+
+    one_hot = jax.nn.one_hot(labels, num_classes, dtype=embeddings.dtype)
+    logits = scale * (one_hot * phi + (1.0 - one_hot) * cosine)
+    log_probs = jax.nn.log_softmax(logits, axis=-1)
+    return -jnp.mean(jnp.sum(one_hot * log_probs, axis=-1))
+
+
 def cosface_loss(
     embeddings: jax.Array,
     class_weights: jax.Array,

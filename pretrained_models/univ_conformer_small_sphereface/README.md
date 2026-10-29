@@ -35,13 +35,13 @@ metrics:
 > - **ATP** (pooling head repurposed from a *language identification* paper): *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
 > - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642](https://arxiv.org/abs/2203.05642))
 >
-> The experiments in those papers were run on Google-internal infrastructure and data, not with this library. **This is a converged small-corpus benchmark checkpoint (4,600 steps / ~15.58 epochs on 9,447 utterances from 381 speakers), not a full-corpus reproduction of the papers' large-scale results** -- see *Training budget* and *Deviations from the source papers* below.
+> The experiments in those papers were run on Google-internal infrastructure and data, not with this library. **This is a converged small-corpus benchmark checkpoint (4,600 steps / ~31.16 epochs on 9,447 utterances from 381 speakers), not a full-corpus reproduction of the papers' large-scale results** -- see *Training budget* and *Deviations from the source papers* below.
 
 ## Training Budget (read this first)
 
-This model was trained to convergence for **4,600 gradient steps** (`S_safe = X + 2 epochs` safety margin, warmup `460` steps) with mini-batches of 32 utterances (8 speakers x 4 utterances), i.e. **~15.58 epochs** over the 9,447-utterance 3-domain training pool (381 speakers), on a CPU workstation with seed 42. Across the training trajectory, Universal Pooled EER progressed from step `400`: **25.80%** (1-utt) / **21.83%** (3-utt) -> step `4000` (knee): **14.46%** (1-utt) / **10.23%** (3-utt) -> step `4600` (final): **14.60%** (1-utt) / **10.53%** (3-utt). While training loss and validation EER have reached their small-corpus convergence plateau on this 381-speaker open split (<= 25 utterances/speaker), absolute EERs remain bounded by training speaker diversity compared to industrial benchmarks trained on thousands of speakers (see below).
+This model was trained to convergence for **4,600 gradient steps** (`S_safe = X + 2 epochs` safety margin, warmup `460` steps) with mini-batches of 64 utterances (8 speakers x 4 utterances), i.e. **~31.16 epochs** over the 9,447-utterance 3-domain controlled training pool (381 speakers), on a CPU workstation with seed 42. Across the training trajectory, Universal Pooled EER progressed from step `400`: **26.93%** (1-utt) / **24.17%** (3-utt) -> step `4000` (knee): **14.59%** (1-utt) / **10.90%** (3-utt) -> step `4600` (final): **14.20%** (1-utt) / **11.07%** (3-utt). While training loss and validation EER have reached their small-corpus convergence plateau on this 381-speaker open split (<= 25 utterances/speaker), absolute EERs remain bounded by training speaker diversity compared to industrial benchmarks trained on thousands of speakers (see below).
 
-**Training-crop provenance.** This checkpoint was trained with `U(90, 180)`-frame variable-length crops and an exact validity mask (the current pipeline default); the shipped `config.json` / YAML (`variable_length_training: true`) describes the released weights. Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, `pretrained_models/step0_fingerprints.json`): archived `8.9258`; current code with fixed 180-frame crops `8.4967`, with `U(90, 180)` crops `8.9258` (match: `variable`). Evaluating the released weights with the current code reproduces the archived metrics in `eval_results.json`. At the converged `S_safe` budget, the seed-to-seed standard deviation of pooled 1-utt EER across seeds 0-2 is 0.08-0.41 % absolute (`pretrained_models/r2_seed_and_control_results.json`), while the 8,000-trial 95 % bootstrap CI half-width is ~0.8 %.
+**Training-crop provenance.** This checkpoint was trained with `U(90, 180)`-frame variable-length crops and an exact validity mask (the current pipeline default); the shipped `config.json` / YAML (`variable_length_training: true`) describes the released weights. Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, `pretrained_models/step0_fingerprints.json`): archived `9.3188`; current code with fixed 180-frame crops `9.1407`, with `U(90, 180)` crops `9.3188` (match: `variable`). Evaluating the released weights with the current code reproduces the archived metrics in `eval_results.json`. At the converged `S_safe` budget, the seed-to-seed standard deviation of pooled 1-utt EER across seeds 0-2 is 0.08-0.41 % absolute (`pretrained_models/r2_seed_and_control_results.json`), while the 8,000-trial 95 % bootstrap CI half-width is ~0.8 %.
 
 For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reach about 0.9% EER on the full VoxCeleb1-O list (Desplanques et al., 2020), and sub-1M-parameter systems about 2% (Wang et al., EfficientTDNN, 2022). The checkpoints released here are trained to convergence (including a +2-epoch safety margin) on the self-contained 381-speaker (<=25 utterances/speaker) benchmark corpus rather than VoxCeleb2-dev (5,994 speakers, ~1.1M utterances), and are intended for controlled relative comparisons within the FlaxSpeaker benchmark, not as state-of-the-art models trained on thousand-speaker corpora.
 
@@ -61,7 +61,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 | **Output Representation Dim** | `192` |
 | **Inference Parameters (encoder + scoring head; excludes training-only classifier weights)** | `2,029,892` |
 | **Training Data** | LibriSpeech + CN-Celeb2 + VoxCeleb1 (universal multi-domain, 381 speakers, 9,447 utterances) |
-| **Training Steps / Batch** | `4,600` steps x 32 utterances (~15.58 epochs), seed 42 |
+| **Training Steps / Batch** | `4,600` steps x 64 utterances (~31.16 epochs), seed 42 |
 | **Audio Frontend** | `80`-dim natural-log Mel @ `16000` Hz + frame-level energy VAD + CMVN (`flaxspeaker.AudioFrontend`; **not** a Hugging Face `AutoFeatureExtractor`) |
 
 ## Model Files Included
@@ -75,7 +75,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.4.0` (`pip install -U flaxspeaker`) for full `margin_warmup_steps` config compatibility with the v0.4.0 converged checkpoints (`>= 0.3.0` introduced `load_pretrained`; the legacy `0.2.0` wheel cannot load Hub checkpoints).
+Requires `flaxspeaker >= 0.5.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained
@@ -99,14 +99,14 @@ python scripts/inference.py --model_dir wq2012/univ_conformer_small_sphereface \
 
 Trial lists are 50/50 target/impostor over held-out speakers (LibriSpeech 40, CN-Celeb2 30, VoxCeleb1 10 speakers); minDCF@0.01 is close to its trivial ceiling of 1.0 for every model under this trial mix.
 
-| Evaluation Split | Trials | EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **LibriSpeech (English Read)** | 3,000 | **7.07%** | [6.13, 7.88] | 0.3467 | 0.3067 | 0.9773 |
-| **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **18.40%** | [16.95, 19.82] | 0.9093 | 0.7340 | 0.8981 |
-| **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **20.10%** | [18.40, 22.03] | 0.8740 | 0.7790 | 0.9010 |
-| **Universal Pooled (All 3 Domains)** | 8,000 | **14.60%** | [13.89, 15.49] | 0.8290 | 0.6055 | 0.9354 |
-| **Universal Macro-Average (3 Domains)** | — | **15.19%** | — | 0.7100 | 0.6066 | 0.9255 |
-| **VoxCeleb1-O 10-speaker subset** (see caveat) | 2,500 | **20.43%** | [18.72, 22.18] | 0.8256 | 0.7445 | 0.8871 |
+| Evaluation Split | Trials | Raw EER (%) | AS-Norm EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **LibriSpeech (English Read)** | 3,000 | **8.00%** | **6.70%** | [7.03, 9.05] | 0.4287 | 0.3247 | 0.9748 |
+| **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **17.00%** | **16.07%** | [15.67, 18.43] | 0.8987 | 0.7047 | 0.9094 |
+| **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **18.40%** | **17.25%** | [16.50, 20.00] | 0.7790 | 0.6790 | 0.9103 |
+| **Universal Pooled (All 3 Domains)** | 8,000 | **14.20%** | **12.99%** | [13.53, 15.03] | 0.7900 | 0.5690 | 0.9359 |
+| **Universal Macro-Average (3 Domains)** | — | **14.47%** | **13.34%** | — | 0.7021 | 0.5695 | 0.9315 |
+| **VoxCeleb1-O 10-speaker subset** (see caveat) | 2,500 | **20.55%** | **18.74%** | [18.81, 22.29] | 0.8211 | 0.7283 | 0.8944 |
 
 Caveat: VoxCeleb1-O **10-speaker subset**: the official `veri_test2.txt` list filtered to trials whose enrollment and test speakers are both among the 10 held-out evaluation speakers (2,500 trials, ~72% target). **Not comparable to published VoxCeleb1-O numbers**; the other 30 of the 40 official test speakers are used as training data by `vox_*` and `univ_*` models.
 
@@ -114,21 +114,21 @@ Caveat: VoxCeleb1-O **10-speaker subset**: the official `veri_test2.txt` list fi
 
 | Evaluation Split | Trials | 3-Utt EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | ROC-AUC |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **LibriSpeech (3-Utt)** | 1,000 | **3.00%** | [1.95, 4.25] | 0.2520 | 0.9928 |
-| **CN-Celeb2 (3-Utt)** | 1,000 | **13.70%** | [11.40, 15.60] | 0.8420 | 0.9457 |
-| **VoxCeleb1 (3-Utt)** | 1,000 | **14.70%** | [12.40, 16.85] | 0.7580 | 0.9371 |
-| **Universal Pooled (3-Utt)** | 3,000 | **10.53%** | [9.27, 11.60] | 0.7707 | 0.9638 |
-| **Universal Macro-Average (3-Utt)** | — | **10.47%** | — | 0.6173 | 0.9585 |
+| **LibriSpeech (3-Utt)** | 1,000 | **4.20%** | [2.90, 5.60] | 0.1660 | 0.9912 |
+| **CN-Celeb2 (3-Utt)** | 1,000 | **12.00%** | [9.80, 14.20] | 0.6200 | 0.9526 |
+| **VoxCeleb1 (3-Utt)** | 1,000 | **14.20%** | [12.15, 16.60] | 0.7440 | 0.9418 |
+| **Universal Pooled (3-Utt)** | 3,000 | **11.07%** | [9.85, 12.07] | 0.5907 | 0.9645 |
+| **Universal Macro-Average (3-Utt)** | — | **10.13%** | — | 0.5100 | 0.9619 |
 
 Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences below about 1% absolute EER between FlaxSpeaker checkpoints are within the seed-to-seed variation measured in `pretrained_models/r2_seed_and_control_results.json` (see the GitHub README) and should not be interpreted as rankings.
 
 ## Deviations from the Source Papers
 
-- **Training regime**: 4,600 gradient steps x 32 utterances (N = 8 speakers x M = 4, ~15.58 epochs) on <= 25 utterances/speaker from 381 speakers (9,447 utterances); the source papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers.
-- **Augmentation**: synthetic log-Mel-domain noise + one-tap smoothing (`specaug.apply_feature_mtr_augmentation`), not waveform MTR with recorded noise/RIR corpora.
+- **Training regime**: 4,600 gradient steps x 64 utterances (N = 8 speakers x M = 4, ~31.16 epochs) on <= 25 utterances/speaker from 381 speakers (9,447 utterances); the source papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers.
+- **Augmentation**: corpus-backed MUSAN environmental noise, music, and multi-speaker babble + RIRS_NOISES room impulse responses + 3-way polyphase speed perturbation (`0.9x`, `1.0x`, `1.1x`) + SpecAugment.
 - **Conformer**: parallel linear + Conv1D stem, no positional encoding, 3 blocks x 192-D, 4 heads, kernel 15, mask-aware GroupNorm(2), no dropout, multi-layer feature aggregation; the Google papers use 12 x 512 blocks, 4-8 heads, kernel 32, relative positional encoding and dropout.
 - **ATP pooling**: 4 heads with a tanh bottleneck (128-D) and `subspace_heads = True`; the papers use a single head with a linear-sigmoid weight (`attention_dim = 0`). Note that arXiv:2202.12163 is a language-identification paper whose pooling head is repurposed here.
-- **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation centre-crops to at most 500 frames (5 s).
+- **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation processes up to 3000 frames (30.0 s).
 
 ## Citation
 

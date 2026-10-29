@@ -58,9 +58,13 @@ def _make_tf_module(
     encoder_params = {
         k: v for k, v in state.params.items() if not k.startswith("_aux_")
     }
+    batch_stats = getattr(state, "batch_stats", None) or {}
+    variables: dict[str, Any] = {"params": encoder_params}
+    if batch_stats:
+        variables["batch_stats"] = batch_stats
 
     def _forward_jax(x: jax.Array) -> jax.Array:
-        return state.apply_fn({"params": encoder_params}, x)
+        return state.apply_fn(variables, x)
 
     tf_Module = tf.Module()
     input_spec = tf.TensorSpec(

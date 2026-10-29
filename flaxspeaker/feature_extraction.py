@@ -116,32 +116,43 @@ class AudioFrontend:
         waveform: np.ndarray,
         waveform_aug_config: Optional[Any] = None,
         rng: Optional[np.random.Generator] = None,
+        clean_waveform: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Extracts 2D acoustic features (T, D) from a 1D waveform.
 
         Applies AGC peak normalization first, extracts STFT/filterbank features
         on the continuous waveform (avoiding splice boundary clicks), filters
         non-speech frames via frame-level VAD, and then applies utterance CMVN
-        strictly over active speech frames.
+        strictly over active speech frames. When `clean_waveform` is provided
+        (e.g. for corpus-augmented MUSAN/RIR speech), VAD frame decisions are
+        computed on `clean_waveform` so 0 dB background noise does not corrupt
+        voice activity detection.
         """
         waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
-        if waveform.size > 0:
-            vad_cfg = (
-                self.vad_processor.config
-                if self.vad_processor is not None
-                else self.vad_config
-            )
-            apply_agc = (
-                True
-                if vad_cfg is None
-                else bool(getattr(vad_cfg, "apply_agc", True))
-            )
-            if apply_agc:
-                peak = float(np.max(np.abs(waveform)))
-                if peak > 1e-8:
-                    waveform = waveform / peak
+        vad_cfg = (
+            self.vad_processor.config
+            if self.vad_processor is not None
+            else self.vad_config
+        )
+        apply_agc = (
+            True
+            if vad_cfg is None
+            else bool(getattr(vad_cfg, "apply_agc", True))
+        )
+        if waveform.size > 0 and apply_agc:
+            peak = float(np.max(np.abs(waveform)))
+            if peak > 1e-8:
+                waveform = waveform / peak
 
-        clean_waveform = waveform
+        if clean_waveform is not None:
+            vad_ref_waveform = np.asarray(clean_waveform, dtype=np.float32).reshape(-1)
+            if vad_ref_waveform.size > 0 and apply_agc:
+                c_peak = float(np.max(np.abs(vad_ref_waveform)))
+                if c_peak > 1e-8:
+                    vad_ref_waveform = vad_ref_waveform / c_peak
+        else:
+            vad_ref_waveform = waveform
+
         if waveform_aug_config is not None:
             waveform, _ = specaug.apply_waveform_augmentation(
                 waveform,
@@ -220,7 +231,7 @@ class AudioFrontend:
         # Apply frame-level VAD after STFT extraction and before CMVN
         if self.vad_processor is not None and self.vad_processor.config.enabled:
             features = self.vad_processor.filter_features(
-                features, waveform=clean_waveform, pre_normalized=True
+                features, waveform=vad_ref_waveform, pre_normalized=True
             )
 
         if cfg.apply_cmvn and ftype != configs.FeatureType.WHISPER_MEL.value:

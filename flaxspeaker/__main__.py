@@ -1,12 +1,11 @@
 """Command-line interface for FlaxSpeaker.
 
-All 44 pretrained models are hosted on the Hugging Face Hub (`wq2012/<model_id>`):
+All 48 pretrained models are hosted on the Hugging Face Hub (`wq2012/<model_id>`):
 https://huggingface.co/collections/wq2012/flaxspeaker
 """
 
 import argparse
 import os
-import munch
 
 from flaxspeaker import configs
 from flaxspeaker import evaluation
@@ -99,16 +98,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_config_any(config_path: str):
-    """Load YAML config as ExperimentConfig if modern, else legacy Munch."""
-    with open(config_path, "r", encoding="utf-8") as f:
-        raw_text = f.read()
-    m = munch.Munch.fromYAML(raw_text)
-    if neural_net._is_modern_config(m):
-        return configs.ExperimentConfig.from_yaml(config_path)
-    return m
-
-
 def main() -> None:
     args = parse_args()
 
@@ -130,32 +119,29 @@ def main() -> None:
         print("Prepared dataset splits:", paths)
         return
 
-    myconfig = load_config_any(args.config)
+    exp_cfg = configs.ExperimentConfig.from_yaml(args.config)
 
     if args.mode == "train":
-        neural_net.run_training(myconfig)
+        neural_net.run_training(exp_cfg)
     elif args.mode == "eval":
-        evaluation.run_eval(myconfig)
+        evaluation.run_eval(exp_cfg)
     elif args.mode == "export_tflite":
         _, state = neural_net.get_speaker_encoder(
-            myconfig, load_from=myconfig.model.saved_model_path
+            exp_cfg, load_from=exp_cfg.model.saved_model_path
         )
         out_path = os.path.join(args.output_dir, "speaker_encoder.tflite")
         info = export.export_to_tflite(
-            state, myconfig, out_path, quantize_int8=args.quantize_int8
+            state, exp_cfg, out_path, quantize_int8=args.quantize_int8
         )
         print("Exported TFLite model:", info)
     elif args.mode == "save_hf":
-        exp_cfg = (
-            myconfig
-            if isinstance(myconfig, configs.ExperimentConfig)
-            else configs.ExperimentConfig.from_munch(myconfig)
-        )
         _, state = neural_net.get_speaker_encoder(
             exp_cfg, load_from=exp_cfg.model.saved_model_path
         )
         hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(exp_cfg)
-        hf_model = hf_compat.FlaxSpeakerModel(config=hf_cfg, params=state.params)
+        hf_model = hf_compat.FlaxSpeakerModel(
+            config=hf_cfg, params=state.params, batch_stats=state.batch_stats
+        )
         hf_model.save_pretrained(args.output_dir)
         print("Saved HuggingFace model to:", args.output_dir)
     else:

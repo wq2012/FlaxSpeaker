@@ -39,6 +39,8 @@ from flaxspeaker import dataset  # noqa: E402
 from flaxspeaker import feature_extraction  # noqa: E402
 from flaxspeaker import hf_compat  # noqa: E402
 from flaxspeaker import neural_net  # noqa: E402
+from flaxspeaker import resources  # noqa: E402
+from flaxspeaker import shard_cache  # noqa: E402
 from scripts import run_research_benchmarks as rrb  # noqa: E402
 
 
@@ -68,8 +70,33 @@ def run_single_config(
     var_len = bool(getattr(exp_cfg.model, "variable_length_training", True))
     within_prob = float(getattr(exp_cfg.data, "within_domain_prob", 0.75))
     temp_alpha = float(getattr(exp_cfg.data, "domain_temp_alpha", 0.35))
+    resolved_shard_dir = (
+        dataset.resolve_data_path(exp_cfg.data.sharded_cache_dir)
+        if exp_cfg.data.sharded_cache_dir
+        else ""
+    )
+    shard_store = (
+        shard_cache.ShardedFeatureStore(resolved_shard_dir, base_speakers_only=True)
+        if (
+            resolved_shard_dir
+            and os.path.isfile(os.path.join(resolved_shard_dir, "metadata.json"))
+        )
+        else None
+    )
 
     def _sample():
+        if shard_store is not None:
+            return shard_store.sample_nm_batch(
+                num_speakers=exp_cfg.train.loss.num_speakers_per_batch,
+                num_utts_per_speaker=exp_cfg.train.loss.num_utts_per_speaker,
+                max_seq_len=exp_cfg.model.seq_len,
+                min_seq_len=exp_cfg.model.min_seq_len,
+                variable_length=var_len,
+                specaug_config=exp_cfg.train.specaug,
+                rng=rng,
+                within_domain_prob=within_prob,
+                domain_temp_alpha=temp_alpha,
+            )
         return feature_extraction.get_batched_nm_input(
             spk_train,
             num_speakers=exp_cfg.train.loss.num_speakers_per_batch,
@@ -103,9 +130,19 @@ def run_single_config(
             )
 
     train_time = round(time.time() - t0, 2)
+    dname_cohort = str(getattr(exp_cfg.data, "dataset_name", "universal") or "universal")
+    cohort_embs = rrb.compute_training_cohort_embeddings(
+        state, exp_cfg, dname_cohort, spk_train, train_cache
+    )
     shared_embs: dict[str, Any] = {}
     md_eval = rrb.evaluate_all_domains(
-        state, exp_cfg, caches, trials_sets, multi_trials_sets, shared_embs=shared_embs
+        state,
+        exp_cfg,
+        caches,
+        trials_sets,
+        multi_trials_sets,
+        shared_embs=shared_embs,
+        cohort_embeddings=cohort_embs,
     )
     return {
         "num_steps": int(exp_cfg.train.num_steps),
@@ -301,8 +338,9 @@ def _load_data_and_caches(data_root: str = DEFAULT_DATA_ROOT):
         )
         c_dir = os.path.join(data_root, "feature_cache", dname)
         cache = feature_extraction.FeatureCache(frontend, cache_dir=c_dir)
-        cache.precompute_dataset(spk_eval_sets[dname], num_workers=8)
-        cache.precompute_dataset(spk_train_sets[dname], num_workers=8)
+        cache.precompute_dataset(spk_eval_sets[dname], num_workers=4)
+        sub_cohort = {s: sorted(u)[:5] for s, u in spk_train_sets[dname].items()}
+        cache.precompute_dataset(sub_cohort, num_workers=4)
         caches[dname] = cache
 
     univ_info = ds_summary["universal"]
@@ -345,16 +383,22 @@ def run_single_ablation_task(
     num_steps: int = DEFAULT_NUM_STEPS,
 ) -> dict[str, Any]:
     """Run one atomic R1 ablation task and cache its JSON result."""
+    resources.configure_polite_resources(
+        max_threads=int(os.environ.get("OMP_NUM_THREADS", "7")), nice_level=10
+    )
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache_file = os.path.join(CACHE_DIR, f"r1_{task_name}.json")
     expected_steps = _expected_steps_for_task(task_name, num_steps)
     if os.path.exists(cache_file):
         with open(cache_file, "r", encoding="utf-8") as f:
             cached = json.load(f)
-        if int(cached.get("num_steps", 0)) == int(expected_steps):
+        if (
+            cached.get("flaxspeaker_version") == "0.5.0"
+            and int(cached.get("num_steps", 0)) == int(expected_steps)
+        ):
             print(
                 f"[R1 Ablation] Skipping {task_name} "
-                f"(already cached at {expected_steps} steps)"
+                f"(already cached in v0.5.0 at {expected_steps} steps)"
             )
             return cached
 
@@ -532,8 +576,33 @@ def run_single_ablation_task(
         losses: list[float] = []
         snaps: dict[str, Any] = {}
         max_snap_step = 2400
+        resolved_h_shard = (
+            dataset.resolve_data_path(cfg.data.sharded_cache_dir)
+            if cfg.data.sharded_cache_dir
+            else ""
+        )
+        h_store = (
+            shard_cache.ShardedFeatureStore(resolved_h_shard, base_speakers_only=True)
+            if (
+                resolved_h_shard
+                and os.path.isfile(os.path.join(resolved_h_shard, "metadata.json"))
+            )
+            else None
+        )
 
         def _sample_h():
+            if h_store is not None:
+                return h_store.sample_nm_batch(
+                    num_speakers=cfg.train.loss.num_speakers_per_batch,
+                    num_utts_per_speaker=cfg.train.loss.num_utts_per_speaker,
+                    max_seq_len=cfg.model.seq_len,
+                    min_seq_len=cfg.model.min_seq_len,
+                    variable_length=True,
+                    specaug_config=cfg.train.specaug,
+                    rng=rng,
+                    within_domain_prob=cfg.data.within_domain_prob,
+                    domain_temp_alpha=cfg.data.domain_temp_alpha,
+                )
             return feature_extraction.get_batched_nm_input(
                 spk_univ_train,
                 num_speakers=cfg.train.loss.num_speakers_per_batch,
@@ -644,7 +713,7 @@ def run_single_ablation_task(
             multi_trials_sets,
             frontend,
         )
-    elif task_name == "ecapa_bn_style_after_act":
+    elif task_name in ("ecapa_ln_before_act", "ecapa_bn_style_after_act"):
         cfg = rrb.make_exp_config(
             dataset_name="universal",
             train_csv=univ_info["train_csv"],
@@ -657,7 +726,12 @@ def run_single_ablation_task(
             pooling_type="asp",
             num_steps=num_steps,
         )
-        cfg.model.ecapa_tdnn.norm_after_activation = True
+        if task_name == "ecapa_ln_before_act":
+            cfg.model.ecapa_tdnn.use_batch_norm = False
+            cfg.model.ecapa_tdnn.norm_after_activation = False
+        else:
+            cfg.model.ecapa_tdnn.use_batch_norm = True
+            cfg.model.ecapa_tdnn.norm_after_activation = True
         res = train_and_eval_ablation(
             task_name,
             cfg,
@@ -683,6 +757,7 @@ def run_single_ablation_task(
             pooling_type="atp",
             num_steps=num_steps,
         )
+        cfg.data.sharded_cache_dir = ""
         cfg.vad.energy_db_threshold = top_db
         cfg.vad.apply_agc = use_agc
         custom_fe = feature_extraction.AudioFrontend(frontend_cfg, cfg.vad)
@@ -690,8 +765,8 @@ def run_single_ablation_task(
         for dname in ("librispeech", "cnceleb2", "voxceleb1"):
             c_dir = os.path.join(data_root, "feature_cache", f"{dname}_{task_name}")
             c_obj = feature_extraction.FeatureCache(custom_fe, cache_dir=c_dir)
-            c_obj.precompute_dataset(spk_eval_sets[dname], num_workers=8)
-            c_obj.precompute_dataset(spk_train_sets[dname], num_workers=8)
+            c_obj.precompute_dataset(spk_eval_sets[dname], num_workers=4)
+            c_obj.precompute_dataset(spk_train_sets[dname], num_workers=4)
             custom_caches[dname] = c_obj
         custom_univ_cache = feature_extraction.FeatureCache.merged(
             custom_fe,
@@ -797,9 +872,16 @@ def run_single_ablation_task(
             ),
         }
         cfg = preset_map[task_name]()
+        cfg.data.dataset_name = "universal"
+        cfg.data.sharded_cache_dir = (
+            "data/speaker_datasets/sharded_caches/controlled_v050/universal"
+        )
         cfg.model.seq_len = 180
         cfg.model.min_seq_len = 90
         cfg.model.max_seq_len = 180
+        cfg.model.max_eval_seq_len = 0
+        cfg.eval.full_sequence_inference = True
+        cfg.eval.max_eval_frames_cap = 3000
         cfg.model.variable_length_training = True
         cfg.train.num_steps = num_steps
         cfg.train.learning_rate = 1.5e-3
@@ -821,6 +903,7 @@ def run_single_ablation_task(
     else:
         raise ValueError(f"Unknown R1 ablation task: {task_name}")
 
+    res["flaxspeaker_version"] = "0.5.0"
     with open(cache_file, "w", encoding="utf-8") as f:
         json.dump(res, f, indent=2)
     return res
@@ -839,7 +922,7 @@ CANONICAL_R1_TASKS = [
 
 EXTENDED_R1_TASKS = [
     "mamba_bidirectional",
-    "ecapa_bn_style_after_act",
+    "ecapa_ln_before_act",
     "vad_26db_no_agc",
     "vad_20db_no_agc",
     "pfas_sn_mlp_no_anchor",
@@ -965,8 +1048,8 @@ def assemble_ablation_results(
     mamba_uni = _extract_from_main_benchmark(
         "univ_mamba_small_ge2e", "mamba_unidirectional"
     )
-    ecapa_before = _extract_from_main_benchmark(
-        "univ_ecapa_tdnn_small_ge2e", "ecapa_ln_before_act"
+    ecapa_bn_after = _extract_from_main_benchmark(
+        "univ_ecapa_tdnn_small_ge2e", "ecapa_bn_style_after_act"
     )
     vad_26_with_agc = _extract_from_main_benchmark(
         "univ_conformer_small_ge2e", "vad_26db_with_agc"
@@ -987,8 +1070,8 @@ def assemble_ablation_results(
             "mamba_bidirectional": cached_tasks.get("mamba_bidirectional"),
         },
         "ecapa_norm_order_ablation": {
-            "ecapa_ln_before_act": ecapa_before,
-            "ecapa_bn_style_after_act": cached_tasks.get("ecapa_bn_style_after_act"),
+            "ecapa_ln_before_act": cached_tasks.get("ecapa_ln_before_act"),
+            "ecapa_bn_style_after_act": ecapa_bn_after,
         },
         "vad_and_agc_ablation": {
             "vad_26db_no_agc": cached_tasks.get("vad_26db_no_agc"),

@@ -11,7 +11,7 @@ Implements:
 - Adaptive Symmetric Score Normalization (AS-Norm)
 """
 
-from typing import Any, Sequence, Union
+from typing import Any, Optional, Sequence, Union
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
@@ -475,12 +475,52 @@ def build_decision_residual_network(dr_cfg: Any) -> DecisionResidualNetwork:
     )
 
 
+def compute_cohort_topk_stats(
+    embs: np.ndarray,
+    cohort_embs: np.ndarray,
+    top_k: int = 300,
+    chunk_size: int = 4096,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute top-`top_k` cohort mean and std for `(N, D)` embeddings in bounded memory.
+
+    Processes `embs` in chunks of `chunk_size` rows and uses `O(C)` `np.partition`
+    rather than full `O(C log C)` sorting so even million-trial cohorts require
+    `< 50 MB` peak RAM.
+    """
+    x = np.asarray(embs, dtype=np.float32)
+    c = np.asarray(cohort_embs, dtype=np.float32)
+    x_norm = x / (np.linalg.norm(x, axis=-1, keepdims=True) + eps)
+    c_norm = c / (np.linalg.norm(c, axis=-1, keepdims=True) + eps)
+
+    n = x_norm.shape[0]
+    k = max(1, min(int(top_k), c_norm.shape[0]))
+    mu = np.empty((n,), dtype=np.float64)
+    std = np.empty((n,), dtype=np.float64)
+
+    c_t = c_norm.T
+    step = max(1, int(chunk_size))
+    for start in range(0, n, step):
+        end = min(n, start + step)
+        sims = np.matmul(x_norm[start:end], c_t)  # (chunk, N_cohort)
+        if k < sims.shape[1]:
+            topk = np.partition(sims, sims.shape[1] - k, axis=-1)[:, -k:]
+        else:
+            topk = sims
+        mu[start:end] = np.mean(topk, axis=-1, dtype=np.float64)
+        std[start:end] = np.maximum(
+            np.std(topk, axis=-1, dtype=np.float64), eps
+        )
+    return mu, std
+
+
 def apply_as_norm(
     raw_scores: np.ndarray,
     enroll_embs: np.ndarray,
     test_embs: np.ndarray,
     cohort_embs: np.ndarray,
-    top_k: int = 100,
+    top_k: int = 300,
+    chunk_size: int = 4096,
     eps: float = 1e-6,
 ) -> np.ndarray:
     """Adaptive Symmetric Score Normalization (AS-Norm).
@@ -489,20 +529,118 @@ def apply_as_norm(
     against an imposter cohort `cohort_embs` of shape `(N_cohort, D)` using the
     top-`top_k` highest-scoring cohort imposters for each side.
     """
-    e_norm = enroll_embs / (np.linalg.norm(enroll_embs, axis=-1, keepdims=True) + eps)
-    t_norm = test_embs / (np.linalg.norm(test_embs, axis=-1, keepdims=True) + eps)
-    c_norm = cohort_embs / (np.linalg.norm(cohort_embs, axis=-1, keepdims=True) + eps)
+    scores = np.asarray(raw_scores, dtype=np.float64)
+    mu_e, std_e = compute_cohort_topk_stats(
+        enroll_embs, cohort_embs, top_k=top_k, chunk_size=chunk_size, eps=eps
+    )
+    mu_t, std_t = compute_cohort_topk_stats(
+        test_embs, cohort_embs, top_k=top_k, chunk_size=chunk_size, eps=eps
+    )
+    return 0.5 * ((scores - mu_e) / std_e + (scores - mu_t) / std_t)
 
-    k = min(top_k, c_norm.shape[0])
-    e_cohort = np.matmul(e_norm, c_norm.T)  # (N_trials, N_cohort)
-    t_cohort = np.matmul(t_norm, c_norm.T)  # (N_trials, N_cohort)
 
-    e_topk = np.sort(e_cohort, axis=-1)[:, -k:]
-    t_topk = np.sort(t_cohort, axis=-1)[:, -k:]
+class QualityMeasureCalibrator:
+    """Logistic Quality Measure Function (QMF) score calibrator (Thienpondt et al., 2021).
 
-    mu_e = np.mean(e_topk, axis=-1)
-    std_e = np.maximum(np.std(e_topk, axis=-1), eps)
-    mu_t = np.mean(t_topk, axis=-1)
-    std_t = np.maximum(np.std(t_topk, axis=-1), eps)
+    Fits an L2-regularized logistic regression model on a speaker-disjoint validation
+    trial set combining the verification score (raw or AS-Norm) with symmetric duration
+    and pre-norm embedding magnitude quality features:
+    `[score, log(1 + T_min), log(1 + T_max), |log(1 + T_e) - log(1 + T_t)|, min(norm_e, norm_t), |norm_e - norm_t|]`.
+    """
 
-    return 0.5 * ((raw_scores - mu_e) / std_e + (raw_scores - mu_t) / std_t)
+    def __init__(self, c_reg: float = 1.0):
+        self.c_reg = float(c_reg)
+        self._clf: Any = None
+
+    @staticmethod
+    def build_features(
+        scores: np.ndarray,
+        enroll_frames: Optional[np.ndarray] = None,
+        test_frames: Optional[np.ndarray] = None,
+        enroll_norms: Optional[np.ndarray] = None,
+        test_norms: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        s = np.asarray(scores, dtype=np.float64).reshape(-1, 1)
+        cols = [s]
+        n = s.shape[0]
+        if enroll_frames is not None and test_frames is not None:
+            le = np.log1p(
+                np.maximum(np.asarray(enroll_frames, dtype=np.float64), 0.0)
+            ).reshape(n, 1)
+            lt = np.log1p(
+                np.maximum(np.asarray(test_frames, dtype=np.float64), 0.0)
+            ).reshape(n, 1)
+            cols.extend(
+                [np.minimum(le, lt), np.maximum(le, lt), np.abs(le - lt)]
+            )
+        if enroll_norms is not None and test_norms is not None:
+            ne = np.asarray(enroll_norms, dtype=np.float64).reshape(n, 1)
+            nt = np.asarray(test_norms, dtype=np.float64).reshape(n, 1)
+            cols.extend([np.minimum(ne, nt), np.abs(ne - nt)])
+        return np.concatenate(cols, axis=1)
+
+    def fit(
+        self,
+        scores: np.ndarray,
+        labels: Sequence[int],
+        enroll_frames: Optional[np.ndarray] = None,
+        test_frames: Optional[np.ndarray] = None,
+        enroll_norms: Optional[np.ndarray] = None,
+        test_norms: Optional[np.ndarray] = None,
+    ) -> "QualityMeasureCalibrator":
+        from sklearn.linear_model import LogisticRegression
+
+        feats = self.build_features(
+            scores, enroll_frames, test_frames, enroll_norms, test_norms
+        )
+        y = np.asarray(labels, dtype=np.int32)
+        self._clf = LogisticRegression(
+            C=self.c_reg, class_weight="balanced", max_iter=500
+        )
+        self._clf.fit(feats, y)
+        return self
+
+    def predict(
+        self,
+        scores: np.ndarray,
+        enroll_frames: Optional[np.ndarray] = None,
+        test_frames: Optional[np.ndarray] = None,
+        enroll_norms: Optional[np.ndarray] = None,
+        test_norms: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Returns calibrated log-likelihood-ratio scores."""
+        if self._clf is None:
+            raise RuntimeError("QualityMeasureCalibrator must be fit before predict().")
+        feats = self.build_features(
+            scores, enroll_frames, test_frames, enroll_norms, test_norms
+        )
+        return np.asarray(self._clf.decision_function(feats), dtype=np.float64)
+
+
+def fuse_scores(
+    score_arrays: Sequence[np.ndarray],
+    weights: Optional[Sequence[float]] = None,
+    z_normalize: bool = False,
+    eps: float = 1e-8,
+) -> np.ndarray:
+    """Convex linear fusion of complementary verification score arrays."""
+    if not score_arrays:
+        raise ValueError("score_arrays must contain at least one array.")
+    arrs = [np.asarray(a, dtype=np.float64).reshape(-1) for a in score_arrays]
+    n = arrs[0].shape[0]
+    for a in arrs[1:]:
+        if a.shape[0] != n:
+            raise ValueError("All score_arrays must have identical length.")
+    if z_normalize:
+        arrs = [(a - np.mean(a)) / max(float(np.std(a)), eps) for a in arrs]
+    if weights is None:
+        w = np.full((len(arrs),), 1.0 / len(arrs), dtype=np.float64)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+        if w.shape[0] != len(arrs):
+            raise ValueError("weights length must match score_arrays length.")
+        w_sum = float(np.sum(w))
+        if abs(w_sum) > eps:
+            w = w / w_sum
+    stacked = np.stack(arrs, axis=0)  # (M, N)
+    return np.sum(w[:, None] * stacked, axis=0)

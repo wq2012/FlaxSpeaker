@@ -56,6 +56,8 @@ from flaxspeaker import export  # noqa: E402
 from flaxspeaker import feature_extraction  # noqa: E402
 from flaxspeaker import hf_compat  # noqa: E402
 from flaxspeaker import neural_net  # noqa: E402
+from flaxspeaker import resources  # noqa: E402
+from flaxspeaker import shard_cache  # noqa: E402
 from scripts import prepare_datasets  # noqa: E402
 
 
@@ -279,6 +281,9 @@ def make_exp_config(
     cfg.data.train_csv = f"data/speaker_datasets/splits/{dataset_name}/train.csv"
     cfg.data.test_csv = f"data/speaker_datasets/splits/{dataset_name}/eval.csv"
     cfg.data.trials_file = f"data/speaker_datasets/splits/{dataset_name}/trials.tsv"
+    cfg.data.sharded_cache_dir = (
+        f"data/speaker_datasets/sharded_caches/controlled_v050/{dataset_name}"
+    )
 
     cfg.frontend.feature_type = configs.FeatureType.LOG_MEL.value
     cfg.frontend.n_mels = 80
@@ -292,20 +297,31 @@ def make_exp_config(
     cfg.model.seq_len = seq_len
     cfg.model.min_seq_len = max(60, seq_len // 2)
     cfg.model.max_seq_len = seq_len
+    cfg.model.max_eval_seq_len = 0
     cfg.model.variable_length_training = True
+    cfg.model.ecapa_tdnn.use_batch_norm = True
+    cfg.model.ecapa_tdnn.norm_after_activation = True
+    cfg.model.resnet.use_batch_norm = True
     cfg.model.pooling.pooling_type = "pfas" if scoring_type == "pfas" else pooling_type
     cfg.model.scoring_type = scoring_type
+    cfg.eval.full_sequence_inference = True
+    cfg.eval.max_eval_frames_cap = 3000
 
-    lr_val = 1.2e-3 if str(size_variant).lower() == "base" else learning_rate
+    is_cls = str(loss_type).lower() in ("arcface", "cosface", "sphereface", "softmax")
+    if is_cls:
+        lr_val = 1.5e-3 if str(size_variant).lower() == "base" else 2.0e-3
+        b_size = 64
+    else:
+        lr_val = 1.2e-3 if str(size_variant).lower() == "base" else learning_rate
+        b_size = 32
     cfg.train.num_steps = int(num_steps)
     cfg.train.learning_rate = lr_val
     # End value of the cosine schedule used for every released checkpoint
-    # (1.5e-5 for lr = 1.5e-3; 1.2e-5 for the `base` models).
     cfg.train.min_learning_rate = max(1e-5, 0.01 * lr_val)
     cfg.train.warmup_steps = (
         int(warmup_steps) if warmup_steps is not None else max(10, int(num_steps) // 10)
     )
-    cfg.train.batch_size = 32
+    cfg.train.batch_size = b_size
     cfg.train.save_model_frequency = 0
     cfg.train.loss.loss_type = loss_type
     cfg.train.loss.scoring_type = scoring_type
@@ -321,19 +337,64 @@ def make_exp_config(
     return cfg
 
 
-def compute_macro_average(domain_metrics: dict[str, dict[str, Any]]) -> dict[str, float]:
+def compute_macro_average(domain_metrics: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Compute unweighted macro-average across ('librispeech', 'cnceleb2', 'voxceleb1')."""
     keys = ("librispeech", "cnceleb2", "voxceleb1")
     present = [domain_metrics[k] for k in keys if k in domain_metrics]
     if not present:
         return {}
-    out: dict[str, float] = {}
+    out: dict[str, Any] = {}
     for metric_key in ("eer_percent", "min_dcf_001", "min_dcf_01", "roc_auc"):
         vals = [float(m[metric_key]) for m in present if metric_key in m]
         if vals:
             digits = 2 if metric_key == "eer_percent" else 4
             out[metric_key] = round(float(np.mean(vals)), digits)
+    asn_present = [m["as_norm"] for m in present if isinstance(m.get("as_norm"), dict)]
+    if len(asn_present) == len(present):
+        asn_out: dict[str, float] = {}
+        for metric_key in ("eer_percent", "min_dcf_001", "min_dcf_01", "roc_auc"):
+            vals = [float(m[metric_key]) for m in asn_present if metric_key in m]
+            if vals:
+                digits = 2 if metric_key == "eer_percent" else 4
+                asn_out[metric_key] = round(float(np.mean(vals)), digits)
+        if asn_out:
+            out["as_norm"] = asn_out
     return out
+
+
+def compute_training_cohort_embeddings(
+    state: Any,
+    exp_cfg: configs.ExperimentConfig,
+    dname: str,
+    spk_train: dataset.SpkToUtts,
+    cache: feature_extraction.FeatureCache,
+) -> Optional[np.ndarray]:
+    """Compute speaker-centroid imposter cohort from speaker-disjoint training data."""
+    scoring_t = str(
+        getattr(exp_cfg.model.scoring_type, "value", exp_cfg.model.scoring_type)
+    )
+    if scoring_t != "cosine":
+        return None
+    cohort_spk_map: Optional[dataset.SpkToUtts] = None
+    if exp_cfg.data.sharded_cache_dir:
+        resolved_shard = dataset.resolve_data_path(exp_cfg.data.sharded_cache_dir)
+        cohort_json = os.path.join(resolved_shard, "clean_cohort_utts.json")
+        if os.path.isfile(cohort_json):
+            with open(cohort_json, "r", encoding="utf-8") as cf:
+                raw_map = json.load(cf)
+            cohort_spk_map = {
+                s: [dataset.resolve_data_path(u) for u in utts]
+                for s, utts in raw_map.items()
+            }
+    if not cohort_spk_map:
+        cohort_spk_map = {s: sorted(utts)[:5] for s, utts in spk_train.items()}
+    return evaluation.compute_speaker_centroid_cohort(
+        state,
+        cohort_spk_map,
+        exp_cfg,
+        feature_cache=cache,
+        max_utts_per_speaker=5,
+    )
 
 
 def evaluate_all_domains(
@@ -343,10 +404,12 @@ def evaluate_all_domains(
     trials_sets: dict[str, list[dataset.TrialPair]],
     multi_trials_sets: dict[str, list[dataset.MultiEnrollTrial]],
     shared_embs: Optional[dict[str, np.ndarray]] = None,
+    cohort_embeddings: Optional[np.ndarray] = None,
 ) -> dict[str, Any]:
     """Evaluate a trained model across all 3 evaluation domains + universal pooled & macro-avg."""
     if shared_embs is None:
         shared_embs = {}
+    with_asn = cohort_embeddings is not None
     domains_1utt: dict[str, dict[str, Any]] = {}
     domains_3utt: dict[str, dict[str, Any]] = {}
 
@@ -357,6 +420,8 @@ def evaluate_all_domains(
             exp_cfg,
             feature_cache=caches[dom],
             precomputed_embeddings=shared_embs,
+            cohort_embeddings=cohort_embeddings,
+            include_as_norm_breakdown=with_asn,
         )
         if dom in multi_trials_sets:
             domains_3utt[dom] = evaluation.evaluate_multi_enroll_trials(
@@ -365,6 +430,8 @@ def evaluate_all_domains(
                 exp_cfg,
                 feature_cache=caches[dom],
                 precomputed_embeddings=shared_embs,
+                cohort_embeddings=cohort_embeddings,
+                include_as_norm_breakdown=with_asn,
             )
 
     if "universal" in trials_sets:
@@ -374,6 +441,8 @@ def evaluate_all_domains(
             exp_cfg,
             feature_cache=caches["universal"],
             precomputed_embeddings=shared_embs,
+            cohort_embeddings=cohort_embeddings,
+            include_as_norm_breakdown=with_asn,
         )
     if "universal" in multi_trials_sets:
         domains_3utt["universal_pooled"] = evaluation.evaluate_multi_enroll_trials(
@@ -382,6 +451,8 @@ def evaluate_all_domains(
             exp_cfg,
             feature_cache=caches["universal"],
             precomputed_embeddings=shared_embs,
+            cohort_embeddings=cohort_embeddings,
+            include_as_norm_breakdown=with_asn,
         )
 
     macro_1utt = compute_macro_average(domains_1utt)
@@ -512,6 +583,9 @@ def run_all_benchmarks(
     only_models: Optional[set[str]] = None,
     force_retrain: bool = False,
 ) -> dict[str, Any]:
+    resources.configure_polite_resources(
+        max_threads=int(os.environ.get("OMP_NUM_THREADS", "8")), nice_level=10
+    )
     os.makedirs(output_root, exist_ok=True)
     os.makedirs(configs_dir, exist_ok=True)
 
@@ -642,19 +716,20 @@ def run_all_benchmarks(
         yaml_path = os.path.join(configs_dir, f"{exp_name}.yml")
         exp_cfg.to_yaml(yaml_path)
 
-        # Skip only if already trained at target_steps AND convergence_checkpoints are recorded
+        # Skip only if already trained under v0.5.0 at target_steps AND convergence_checkpoints are recorded
         if not force_retrain and os.path.exists(existing_eval) and os.path.exists(st_path):
             with open(existing_eval, "r", encoding="utf-8") as f:
                 cached_rec = json.load(f)
             if (
-                int(cached_rec.get("num_steps", 0)) == target_steps
+                cached_rec.get("flaxspeaker_version") == "0.5.0"
+                and int(cached_rec.get("num_steps", 0)) == target_steps
                 and "multi_domain_eval" in cached_rec
                 and "domains_1utt" in cached_rec["multi_domain_eval"]
                 and "convergence_checkpoints" in cached_rec
             ):
                 print(
                     f"\n[{idx + 1}/{len(EXPERIMENTS)}] Skipping {exp_name} "
-                    f"(already trained to {target_steps} steps with convergence_checkpoints)"
+                    f"(already trained in v0.5.0 to {target_steps} steps)"
                 )
                 results["experiments"][exp_name] = cached_rec
                 if isinstance(cached_rec.get("tflite_exports"), dict):
@@ -674,17 +749,59 @@ def run_all_benchmarks(
 
         # Train
         t_start = time.time()
-        is_cls = loss_type in ("arcface", "cosface", "sphereface", "softmax")
+        is_cls = loss_type in (
+            "arcface",
+            "subcenter_arcface",
+            "cosface",
+            "sphereface",
+            "softmax",
+        )
         spk_train = spk_train_sets[dname]
-        speaker_to_id = {s: i for i, s in enumerate(sorted(spk_train.keys()))}
-        num_classes = len(speaker_to_id) if is_cls else 0
+        resolved_shard_dir = (
+            dataset.resolve_data_path(exp_cfg.data.sharded_cache_dir)
+            if exp_cfg.data.sharded_cache_dir
+            else ""
+        )
+        use_shards = bool(
+            resolved_shard_dir
+            and os.path.isfile(os.path.join(resolved_shard_dir, "metadata.json"))
+        )
+        shard_store: Optional[shard_cache.ShardedFeatureStore] = None
+        if use_shards:
+            shard_store = shard_cache.ShardedFeatureStore(
+                resolved_shard_dir, base_speakers_only=not is_cls
+            )
+            num_classes = shard_store.num_speakers if is_cls else 0
+            speaker_to_id = {}
+        else:
+            speaker_to_id = {s: i for i, s in enumerate(sorted(spk_train.keys()))}
+            num_classes = len(speaker_to_id) if is_cls else 0
 
         _, state = neural_net.get_speaker_encoder(exp_cfg, num_classes=num_classes)
         step_fn = neural_net.make_modern_train_step(exp_cfg)
         rng = np.random.default_rng(exp_cfg.train.seed)
         train_cache = caches[dname]
         if dname not in preloaded_train_domains:
-            if dname == "universal":
+            if use_shards:
+                # Only preload the <=5 clean cohort utterances per speaker for AS-Norm
+                for sub_d in (
+                    ("librispeech", "cnceleb2", "voxceleb1")
+                    if dname == "universal"
+                    else (dname,)
+                ):
+                    sub_cohort = {
+                        s: sorted(u_list)[:5]
+                        for s, u_list in spk_train_sets[sub_d].items()
+                    }
+                    caches[sub_d].precompute_dataset(sub_cohort, num_workers=4)
+                if dname == "universal":
+                    train_cache = feature_extraction.FeatureCache.merged(
+                        frontend,
+                        [caches[d] for d in ("librispeech", "cnceleb2", "voxceleb1")],
+                        cache_dir=os.path.join(data_root, "feature_cache", "universal"),
+                    )
+                    caches["universal"] = train_cache
+            elif dname == "universal":
                 for sub_d in ("librispeech", "cnceleb2", "voxceleb1"):
                     caches[sub_d].precompute_dataset(spk_train_sets[sub_d], num_workers=8)
                 train_cache = feature_extraction.FeatureCache.merged(
@@ -713,6 +830,37 @@ def run_all_benchmarks(
             intermediate_eval_steps.update({400, 800, 1200, 2400, 4000})
 
         def _sample_one_batch():
+            if shard_store is not None:
+                if loss_type == "triplet":
+                    return shard_store.sample_triplet_batch(
+                        batch_size=exp_cfg.train.batch_size,
+                        max_seq_len=exp_cfg.model.seq_len,
+                        min_seq_len=exp_cfg.model.min_seq_len,
+                        variable_length=var_len,
+                        specaug_config=exp_cfg.train.specaug,
+                        rng=rng,
+                    )
+                if is_cls:
+                    return shard_store.sample_classification_batch(
+                        batch_size=exp_cfg.train.batch_size,
+                        max_seq_len=exp_cfg.model.seq_len,
+                        min_seq_len=exp_cfg.model.min_seq_len,
+                        variable_length=var_len,
+                        specaug_config=exp_cfg.train.specaug,
+                        rng=rng,
+                        domain_temp_alpha=temp_alpha,
+                    )
+                return shard_store.sample_nm_batch(
+                    num_speakers=exp_cfg.train.loss.num_speakers_per_batch,
+                    num_utts_per_speaker=exp_cfg.train.loss.num_utts_per_speaker,
+                    max_seq_len=exp_cfg.model.seq_len,
+                    min_seq_len=exp_cfg.model.min_seq_len,
+                    variable_length=var_len,
+                    specaug_config=exp_cfg.train.specaug,
+                    rng=rng,
+                    within_domain_prob=within_prob,
+                    domain_temp_alpha=temp_alpha,
+                )
             if loss_type == "triplet":
                 batch_list = []
                 mask_list = []
@@ -848,9 +996,18 @@ def run_all_benchmarks(
         num_params = neural_net.count_parameters(enc_only_params)
 
         # Evaluate final S_safe model across all 3 domains + universal pooled & macro-avg
+        cohort_embs = compute_training_cohort_embeddings(
+            state, exp_cfg, dname, spk_train, train_cache
+        )
         shared_embs: dict[str, np.ndarray] = {}
         md_eval = evaluate_all_domains(
-            state, exp_cfg, caches, trials_sets, multi_trials_sets, shared_embs=shared_embs
+            state,
+            exp_cfg,
+            caches,
+            trials_sets,
+            multi_trials_sets,
+            shared_embs=shared_embs,
+            cohort_embeddings=cohort_embs,
         )
         primary_dom = "universal_pooled" if dname == "universal" else dname
         in_domain_eval = md_eval["domains_1utt"][primary_dom]
@@ -872,13 +1029,18 @@ def run_all_benchmarks(
             horizon_snapshots[f"steps_{exp_cfg.train.num_steps}"] = final_snap
             convergence_checkpoints["horizon_snapshots"] = horizon_snapshots
 
+        asn_tag = ""
+        if isinstance(md_eval["domains_1utt"]["universal_pooled"].get("as_norm"), dict):
+            asn_tag = (
+                f" | AS-Norm Pooled={md_eval['domains_1utt']['universal_pooled']['as_norm']['eer_percent']:.2f}%"
+            )
         print(
             f"  [{exp_name}] Final S_safe ({exp_cfg.train.num_steps} steps) Multi-Domain 1-Utt EER: "
             f"Macro-Avg={md_eval['universal_macro_avg_1utt']['eer_percent']:.2f}%, "
             f"Pooled={md_eval['domains_1utt']['universal_pooled']['eer_percent']:.2f}% "
             f"(LS={md_eval['domains_1utt']['librispeech']['eer_percent']:.2f}%, "
             f"CN={md_eval['domains_1utt']['cnceleb2']['eer_percent']:.2f}%, "
-            f"VOX={md_eval['domains_1utt']['voxceleb1']['eer_percent']:.2f}%)",
+            f"VOX={md_eval['domains_1utt']['voxceleb1']['eer_percent']:.2f}%){asn_tag}",
             flush=True,
         )
         if md_eval.get("universal_macro_avg_3utt"):
@@ -896,6 +1058,8 @@ def run_all_benchmarks(
             exp_cfg,
             feature_cache=caches["voxceleb1"],
             precomputed_embeddings=shared_embs,
+            cohort_embeddings=cohort_embs,
+            include_as_norm_breakdown=(cohort_embs is not None),
         )
         md_eval["domains_1utt"]["vox1_o_10spk_subset"] = vox_o_metrics
         cross_eval: dict[str, Any] = {"vox1_o_10spk_subset": vox_o_metrics}
@@ -904,6 +1068,7 @@ def run_all_benchmarks(
 
         exp_record: dict[str, Any] = {
             "experiment_name": exp_name,
+            "flaxspeaker_version": "0.5.0",
             "train_dataset": dname,
             "backbone": backbone,
             "size_variant": size_var,
@@ -913,6 +1078,7 @@ def run_all_benchmarks(
             "embedding_dim": exp_cfg.model.output_embedding_dim,
             "num_parameters": num_params,
             "num_steps": exp_cfg.train.num_steps,
+            "batch_size": exp_cfg.train.batch_size,
             "knee_step": knee_step,
             "safety_margin_steps": safety_margin_steps,
             "warmup_steps": exp_cfg.train.warmup_steps,
@@ -943,13 +1109,16 @@ def run_all_benchmarks(
             enc_only_for_apply = {
                 k: v for k, v in state.params.items() if not k.startswith("_aux_")
             }
+            apply_vars: dict[str, Any] = {"params": enc_only_for_apply}
+            if getattr(state, "batch_stats", None):
+                apply_vars["batch_stats"] = state.batch_stats
             sample_utt = trials_sets["librispeech"][0][1]
             sample_feat = _prepare_fixed_window_sample(
                 caches["librispeech"].get(sample_utt), exp_cfg.model.seq_len
             )
             flax_emb = np.asarray(
                 state.apply_fn(
-                    {"params": enc_only_for_apply}, sample_feat[None, :, :]
+                    apply_vars, sample_feat[None, :, :], deterministic=True
                 )[0]
             )
             for quant in (False, True):
@@ -975,7 +1144,11 @@ def run_all_benchmarks(
 
         # Save HuggingFace-compatible pretrained directory
         hf_cfg = hf_compat.FlaxSpeakerConfig.from_experiment_config(exp_cfg)
-        hf_model = hf_compat.FlaxSpeakerModel(config=hf_cfg, params=state.params)
+        hf_model = hf_compat.FlaxSpeakerModel(
+            config=hf_cfg,
+            params=state.params,
+            batch_stats=getattr(state, "batch_stats", None),
+        )
         hf_model.save_pretrained(hf_dir, metrics=exp_record)
 
         results["experiments"][exp_name] = exp_record
@@ -1079,6 +1252,13 @@ def run_parallel_4ccd(
 
     ablation_tasks: list[tuple[int, str, str, float]] = []
     if include_ablations:
+        if force_retrain:
+            ab_cache_dir = os.path.join(output_root, "_ablation_cache")
+            if os.path.isdir(ab_cache_dir):
+                import shutil
+
+                shutil.rmtree(ab_cache_dir)
+                os.makedirs(ab_cache_dir, exist_ok=True)
         raw_ablation_tasks = [
             (1, "r1", "mamba_bidirectional", 8510.0),
             (1, "r1", "ls_mamba_bidirectional", 4500.0),
@@ -1089,7 +1269,7 @@ def run_parallel_4ccd(
             (1, "r1", "interspeech2021_dr_vectors_pure_paper", 1748.0),
             (1, "r1", "dr_vector_3term_sym_skip", 1748.0),
             (1, "r1", "dr_vectors_3term_pure_eq7", 1748.0),
-            (1, "r1", "ecapa_bn_style_after_act", 1656.0),
+            (1, "r1", "ecapa_ln_before_act", 1656.0),
             (1, "r2", "seed_univ_ecapa_tdnn_small_ge2e_s0", 1656.0),
             (1, "r2", "seed_univ_ecapa_tdnn_small_ge2e_s1", 1656.0),
             (1, "r2", "seed_univ_ecapa_tdnn_small_ge2e_s2", 1656.0),
@@ -1173,6 +1353,9 @@ def run_parallel_4ccd(
 
         if kind == "main":
             cmd = [
+                "nice",
+                "-n",
+                "10",
                 "taskset",
                 "-c",
                 core_range,
@@ -1189,6 +1372,9 @@ def run_parallel_4ccd(
                 cmd.append("--force_retrain")
         elif kind == "r1":
             cmd = [
+                "nice",
+                "-n",
+                "10",
                 "taskset",
                 "-c",
                 core_range,
@@ -1201,6 +1387,9 @@ def run_parallel_4ccd(
             ]
         elif kind == "r2":
             cmd = [
+                "nice",
+                "-n",
+                "10",
                 "taskset",
                 "-c",
                 core_range,
@@ -1258,29 +1447,29 @@ def run_parallel_4ccd(
                 print(f"WARNING: assemble_benchmark_results error: {exc}", flush=True)
 
     def _fast_worker_loop(w_idx: int, core_range: str) -> None:
-        log_path = f"/tmp/flaxspeaker_phase2_ccd{w_idx}.log"
+        log_path = f"/tmp/flaxspeaker_v050_ccd{w_idx}.log"
         while True:
             with lock:
                 if not queue:
                     break
                 task_tuple = queue.popleft()
-            _run_one_task(f"CCD {w_idx}", core_range, 8, log_path, task_tuple)
+            _run_one_task(f"CCD {w_idx}", core_range, 7, log_path, task_tuple)
 
     def _heavy_then_split_loop() -> None:
-        heavy_log = "/tmp/flaxspeaker_phase2_ccd0.log"
+        heavy_log = "/tmp/flaxspeaker_v050_ccd0.log"
         while True:
             with lock:
                 if not heavy_queue:
                     break
                 h_task = heavy_queue.popleft()
-            _run_one_task("CCD 0+1", "0-15,32-47", 16, heavy_log, h_task)
+            _run_one_task("CCD 0+1", "0-11", 12, heavy_log, h_task)
 
         print(
-            "[Orchestrator] Both 2D ResNet models completed on CCD 0+1; splitting into CCD 0 (0-7) and CCD 1 (8-15)!",
+            "[Orchestrator] Both 2D ResNet models completed on CCD 0+1; splitting into CCD 0 (0-6) and CCD 1 (8-14)!",
             flush=True,
         )
-        t_ccd0 = threading.Thread(target=_fast_worker_loop, args=(0, "0-7"), daemon=False)
-        t_ccd1 = threading.Thread(target=_fast_worker_loop, args=(1, "8-15"), daemon=False)
+        t_ccd0 = threading.Thread(target=_fast_worker_loop, args=(0, "0-6"), daemon=False)
+        t_ccd1 = threading.Thread(target=_fast_worker_loop, args=(1, "8-14"), daemon=False)
         t_ccd0.start()
         t_ccd1.start()
         t_ccd0.join()
@@ -1288,8 +1477,8 @@ def run_parallel_4ccd(
 
     threads = [
         threading.Thread(target=_heavy_then_split_loop, daemon=False),
-        threading.Thread(target=_fast_worker_loop, args=(2, "16-23"), daemon=False),
-        threading.Thread(target=_fast_worker_loop, args=(3, "24-31"), daemon=False),
+        threading.Thread(target=_fast_worker_loop, args=(2, "16-22"), daemon=False),
+        threading.Thread(target=_fast_worker_loop, args=(3, "24-30"), daemon=False),
     ]
     for t in threads:
         t.start()

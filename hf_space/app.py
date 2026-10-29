@@ -44,9 +44,11 @@ PRETRAINED_ROOT = os.environ.get(
     os.path.join(REPO_ROOT, "pretrained_models"),
 )
 EXAMPLES_DIR = os.path.join(THIS_DIR, "examples")
-DEFAULT_MODEL = "univ_conformer_tiny_ge2e"
+DEFAULT_MODEL = "univ_full_conformer_large_arcface"
+FALLBACK_MODEL = "univ_conformer_small_arcface"
 _MODEL_CACHE: dict[str, hf_compat.FlaxSpeakerModel] = {}
 _THRESHOLD_CACHE: dict[str, dict[str, float]] = {}
+_EVAL_SUMMARY_CACHE: dict[str, dict[str, float]] = {}
 # Threshold slider ranges per scoring back-end (score scales differ: cosine is in
 # [-1, 1]; Dr-Vector adds a residual to the cosine; PFAS is a normalised dot product
 # of attention-weighted value vectors). Defaults come from each model's own pooled
@@ -59,16 +61,22 @@ _SLIDER_RANGE = {
 
 
 def list_available_models() -> list[str]:
+    default_order = (
+        list(hf_compat.FULL_DATA_FLAGSHIP_IDS)
+        + [m for m in hf_compat.CONTROLLED_ABLATION_MODEL_IDS if m.startswith("univ_")]
+        + [m for m in hf_compat.CONTROLLED_ABLATION_MODEL_IDS if not m.startswith("univ_")]
+    )
     if not os.path.isdir(PRETRAINED_ROOT):
-        return list(hf_compat.PRETRAINED_MODEL_IDS)
+        return default_order
     models = sorted(
         d
         for d in os.listdir(PRETRAINED_ROOT)
-        if os.path.exists(os.path.join(PRETRAINED_ROOT, d, "config.json"))
+        if hf_compat.FlaxSpeakerModel._has_local_weights(os.path.join(PRETRAINED_ROOT, d))
     )
-    univ = [m for m in models if m.startswith("univ_")]
+    flagships = [m for m in models if m.startswith("univ_full_")]
+    univ = [m for m in models if m.startswith("univ_") and not m.startswith("univ_full_")]
     others = [m for m in models if not m.startswith("univ_")]
-    return (univ + others) or list(hf_compat.PRETRAINED_MODEL_IDS)
+    return (flagships + univ + others) or default_order
 
 
 def _resolve_model_target(model_name: str) -> str:
@@ -79,18 +87,25 @@ def _resolve_model_target(model_name: str) -> str:
 
 
 def get_model(model_name: str) -> hf_compat.FlaxSpeakerModel:
-    """Loads (and caches) a checkpoint and warms up the JIT so latency is steady-state.
+    """Loads (and caches) a checkpoint and warms up the bucketed JIT kernels.
 
-    Inference goes through `evaluation.encode_features`, the masked fixed-window
-    path of the benchmark evaluation (centre-crop / zero-pad to
-    `model.max_eval_seq_len` frames with a validity mask). Because the window is
-    fixed, one warm-up call compiles the kernel used for every subsequent input;
-    `run_inference` would instead re-trace for each distinct utterance length.
+    Inference goes through `evaluation.encode_features`, the masked power-of-two
+    bucketed full-utterance evaluation path (`256, 512, 1024, 2048, 3000` frames).
+    Warming up the primary duration buckets (`256, 512, 1024` frames) compiles the
+    steady-state XLA kernels ahead of interactive requests.
     """
     if model_name not in _MODEL_CACHE:
         model = hf_compat.FlaxSpeakerModel.from_pretrained(_resolve_model_target(model_name))
-        warm = np.zeros((64, int(model.exp_config.frontend.feature_dim)), dtype=np.float32)
-        warm_emb = evaluation.encode_features(warm, model.state, model.exp_config)
+        feat_dim = int(model.exp_config.frontend.feature_dim)
+        warm_emb = evaluation.encode_features(
+            np.zeros((64, feat_dim), dtype=np.float32), model.state, model.exp_config
+        )
+        for bucket_frames in (300, 600):
+            evaluation.encode_features(
+                np.zeros((bucket_frames, feat_dim), dtype=np.float32),
+                model.state,
+                model.exp_config,
+            )
         # The Dr-Vector / PFAS scorers are JIT-compiled lazily and the PFAS kernel is
         # shape-specialised on the enrollment count; warm 1-, 2- and 3-utt enrollment.
         model.score_embeddings(warm_emb, warm_emb)
@@ -100,18 +115,7 @@ def get_model(model_name: str) -> hf_compat.FlaxSpeakerModel:
     return _MODEL_CACHE[model_name]
 
 
-def get_default_threshold(model_name: str) -> dict[str, float]:
-    """Per-model EER operating points read from the checkpoint's `eval_results.json`.
-
-    Returns `{"pooled": t_pooled_1utt, "pooled_3utt": t_pooled_3utt, "librispeech": ...,
-    "cnceleb2": ..., "voxceleb1": ...}` (whatever is available): the 1-utt operating
-    points from `multi_domain_eval.domains_1utt` and the 3-utt multi-enrollment one
-    from `domains_3utt.universal_pooled`. Falls back to 0.5 when no metrics file is
-    found.
-    """
-    if model_name in _THRESHOLD_CACHE:
-        return _THRESHOLD_CACHE[model_name]
-    out: dict[str, float] = {}
+def _load_eval_results_dict(model_name: str) -> dict[str, Any]:
     target = _resolve_model_target(model_name)
     path = os.path.join(target, "eval_results.json")
     if not os.path.exists(path):
@@ -123,7 +127,17 @@ def get_default_threshold(model_name: str) -> dict[str, float]:
             path = ""
     if path and os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
-            metrics = json.load(f)
+            return json.load(f)
+    return {}
+
+
+def get_default_threshold(model_name: str) -> dict[str, float]:
+    """Per-model raw-score EER operating points read from `eval_results.json`."""
+    if model_name in _THRESHOLD_CACHE:
+        return _THRESHOLD_CACHE[model_name]
+    out: dict[str, float] = {}
+    metrics = _load_eval_results_dict(model_name)
+    if metrics:
         d1 = metrics.get("multi_domain_eval", {}).get("domains_1utt", {})
         for key, name in (
             ("universal_pooled", "pooled"),
@@ -136,12 +150,44 @@ def get_default_threshold(model_name: str) -> dict[str, float]:
         d3 = metrics.get("multi_domain_eval", {}).get("domains_3utt", {})
         if "universal_pooled" in d3 and "eer_threshold" in d3["universal_pooled"]:
             out["pooled_3utt"] = float(d3["universal_pooled"]["eer_threshold"])
+        off = metrics.get("official_benchmarks", {})
+        for key in ("voxceleb1_o", "cnceleb_e", "librispeech_test_clean"):
+            if key in off and "eer_threshold" in off[key]:
+                out[key] = float(off[key]["eer_threshold"])
     if "pooled" not in out:
-        out["pooled"] = 0.5
+        out["pooled"] = out.get("voxceleb1_o", 0.5)
     if "pooled_3utt" not in out:
         out["pooled_3utt"] = out["pooled"]
     _THRESHOLD_CACHE[model_name] = out
     return out
+
+
+def get_model_eval_summary(model_name: str) -> dict[str, float]:
+    """Reads measured EER percentages recorded in the checkpoint's `eval_results.json`."""
+    if model_name in _EVAL_SUMMARY_CACHE:
+        return _EVAL_SUMMARY_CACHE[model_name]
+    summary: dict[str, float] = {}
+    metrics = _load_eval_results_dict(model_name)
+    if metrics:
+        d1 = metrics.get("multi_domain_eval", {}).get("domains_1utt", {})
+        if "universal_pooled" in d1 and "eer_percent" in d1["universal_pooled"]:
+            summary["controlled_pooled_1utt_eer_pct"] = round(
+                float(d1["universal_pooled"]["eer_percent"]), 2
+            )
+        d3 = metrics.get("multi_domain_eval", {}).get("domains_3utt", {})
+        if "universal_pooled" in d3 and "eer_percent" in d3["universal_pooled"]:
+            summary["controlled_pooled_3utt_eer_pct"] = round(
+                float(d3["universal_pooled"]["eer_percent"]), 2
+            )
+        off = metrics.get("official_benchmarks", {})
+        for key in ("voxceleb1_o", "cnceleb_e", "librispeech_test_clean"):
+            if key in off and "eer_percent" in off[key]:
+                best_block = off[key].get("qmf") or off[key].get("as_norm") or off[key]
+                summary[f"official_{key}_eer_pct"] = round(
+                    float(best_block["eer_percent"]), 2
+                )
+    _EVAL_SUMMARY_CACHE[model_name] = summary
+    return summary
 
 
 def threshold_slider_update(model_name: str) -> Any:
@@ -230,9 +276,9 @@ def build_diagnostic_plot(
 
     dims = min(64, enroll_emb.shape[0], test_emb.shape[0])
     x = np.arange(dims)
-    is_pfas = scoring_type.lower() == "pfas" or enroll_emb.shape[0] >= 640
-    enroll_lbl = "Enroll Keys (1..64)" if is_pfas else "Enrollment Emb"
-    test_lbl = "Test Keys (1..64)" if is_pfas else "Test Emb"
+    is_pfas = scoring_type.lower() == "pfas"
+    enroll_lbl = f"Enroll Keys (1..{dims})" if is_pfas else "Enrollment Emb"
+    test_lbl = f"Test Keys (1..{dims})" if is_pfas else "Test Emb"
     axes[3].plot(
         x, enroll_emb[:dims], label=enroll_lbl, color="#2563EB", lw=1.3
     )
@@ -245,13 +291,15 @@ def build_diagnostic_plot(
         alpha=0.85,
     )
     panel4_title = (
-        f"PFAS Key-Value Rep (first {dims}/640 dims, score={score:.4f})"
+        f"PFAS Key-Value Rep (first {dims}/{enroll_emb.shape[0]} dims, score={score:.4f})"
         if is_pfas
-        else f"{model_name} (first {dims} dims, score={score:.4f})"
+        else f"{model_name} (first {dims}/{enroll_emb.shape[0]} dims, score={score:.4f})"
     )
     axes[3].set_title(panel4_title, fontsize=9.2)
     axes[3].set_xlabel(
-        "PFAS Key Slice (4x32 Keys + 4x128 Values)" if is_pfas else "Embedding Dimension"
+        f"PFAS Key-Value Slice ({enroll_emb.shape[0]} total dims)"
+        if is_pfas
+        else "Embedding Dimension"
     )
     axes[3].set_ylabel("Activation")
     axes[3].legend(loc="upper right", fontsize=7.5)
@@ -296,6 +344,7 @@ def verify_pair(
     if not enroll_paths:
         enroll_paths = [enroll_audio]
     operating_points = get_default_threshold(model_name)
+    eval_summary = get_model_eval_summary(model_name)
     op_key = "pooled_3utt" if len(enroll_paths) >= 2 else "pooled"
     if threshold is None or auto_threshold:
         threshold = operating_points[op_key]
@@ -348,8 +397,14 @@ def verify_pair(
     )
 
     display_enroll_emb = np.mean(np.stack(enroll_embs, axis=0), axis=0)
+    tier_label = (
+        "Tier-2 Full-Data Universal Flagship (`universal_full`)"
+        if model_name.startswith("univ_full_")
+        else "Tier-1 Controlled Benchmark Model (381-speaker ablation suite)"
+    )
     details = {
         "model_id": model_name,
+        "model_tier": tier_label,
         "hf_repo_id": f"wq2012/{model_name}",
         "hf_model_url": f"https://huggingface.co/wq2012/{model_name}",
         "hf_collection_url": hf_compat.HF_COLLECTION_URL,
@@ -366,6 +421,7 @@ def verify_pair(
         "threshold": round(float(threshold), 4),
         "threshold_source": threshold_source,
         "model_eer_operating_points": {k: round(v, 4) for k, v in operating_points.items()},
+        "measured_benchmark_eers_percent": eval_summary,
         "decision": "same_speaker" if is_same else "different_speaker",
         "enroll_vad_frames": int(sum(f.shape[0] for f in enroll_feats_list)),
         "test_vad_frames": int(test_feats.shape[0]),
@@ -373,11 +429,9 @@ def verify_pair(
         "model_inference_latency_ms": round(infer_ms, 2),
         "end_to_end_latency_ms": round(elapsed_ms, 2),
         "note": (
-            "Steady-state latency: inference uses the masked fixed-window evaluation "
-            "path, whose single kernel is compiled when the model is loaded. Converged "
-            "S_safe = X + 2 epochs checkpoint (v0.4.0): the 44-model zoo spans "
-            "14.60-22.35% pooled 1-utt EER (19.15-29.96% on the 10-speaker VoxCeleb1-O "
-            "subset); see the model card for corpus-scale limits."
+            "Steady-state latency: inference uses masked power-of-two bucketed full-utterance "
+            "evaluation (up to 30 s per utterance). Check `measured_benchmark_eers_percent` "
+            "and the linked Hugging Face model card for exact evaluation metrics."
         ),
     }
     fig = build_diagnostic_plot(
@@ -400,7 +454,12 @@ def build_demo() -> Any:
     if gr is None:
         raise ImportError("gradio is required to build the web UI (`pip install flaxspeaker[demo]`).")
     models = list_available_models()
-    default_model = DEFAULT_MODEL if DEFAULT_MODEL in models else models[0]
+    if DEFAULT_MODEL in models:
+        default_model = DEFAULT_MODEL
+    elif FALLBACK_MODEL in models:
+        default_model = FALLBACK_MODEL
+    else:
+        default_model = models[0]
     default_threshold = round(get_default_threshold(default_model)["pooled"], 3)
 
     example_rows = []
@@ -423,24 +482,32 @@ def build_demo() -> Any:
 
     with gr.Blocks(title="FlaxSpeaker — Universal Speaker Recognition") as demo:
         gr.Markdown(
-            "# FlaxSpeaker (`v0.4.0`) — Universal Multi-Domain Speaker Verification\n"
+            "# FlaxSpeaker (`v0.5.0`) — Universal Multi-Domain Speaker Verification\n"
             "> **Disclaimer**: **This is not an officially supported Google product.** "
             "FlaxSpeaker is a from-scratch JAX/Flax re-implementation (using only the published "
             "papers, no proprietary code) of "
             "[GE2E (`arXiv:1710.10467`)](https://arxiv.org/abs/1710.10467), "
             "[Dr-Vectors (`arXiv:2104.01989`)](https://arxiv.org/abs/2104.01989), "
             "[ATP pooling (`arXiv:2202.12163`)](https://arxiv.org/abs/2202.12163), and "
-            "[PFAS (`arXiv:2203.05642`)](https://arxiv.org/abs/2203.05642).\n\n"
-            "> **Corpus-scale caveat**: all 44 checkpoints (`v0.4.0`) are trained to convergence "
-            "(`S_safe = X + 2 epochs`, 1,000–4,600 steps) on bounded public subsets (≤381 "
-            "speakers, ≤9,447 utterances), achieving **14.60–22.35% pooled 1-utt EER** "
-            "(10.40–19.03% 3-utt; 19.15–29.96% on a 10-speaker VoxCeleb1-O subset; published "
-            "systems trained on 6,000-speaker VoxCeleb2 reach ~1%). Every verdict "
-            "below is real inference of the selected checkpoint on your audio; the default decision "
-            "threshold is the model's own pooled EER operating point from `eval_results.json` "
-            "(1-utt for one enrollment utterance, 3-utt for two or three).\n\n"
+            "[PFAS (`arXiv:2203.05642`)](https://arxiv.org/abs/2203.05642), together with "
+            "Sub-Center ArcFace (`K=3`), ECAPA-TDNN, Conformer, and Mamba encoders.\n\n"
+            "> **Two-Tier Model Zoo (`48` Pretrained Models)**:\n"
+            "> 1. **Tier 2 — Full-Data Universal Flagships (`univ_full_*`, 4 models)**: "
+            "`Conformer-Large` (`6.98M`) and `ECAPA-TDNN-c1024` (`14.92M`) trained on the full "
+            "speaker-disjoint multi-corpus mixture (`VoxCeleb1/2-dev` + `CN-Celeb 1/2` + "
+            "`LibriSpeech 960h`: `12,193` base speakers, `464,557` clean utterances / "
+            "`1,857,149` augmented items with `MUSAN` + `RIRS_NOISES` + `3x` speed perturbation "
+            "and `3.6s` Large-Margin Fine-Tuning), plus warm-started `PFAS` (`7.31M`) and "
+            "`Dr-Vectors` (`7.15M`) heads.\n"
+            "> 2. **Tier 1 — Controlled Multi-Domain Benchmark (`univ_*`, `ls_*`, `cn_*`, `vox_*`, "
+            "44 models)**: trained on fixed bounded subsets (`<= 381` speakers, `<= 9,447` clean "
+            "utterances) for controlled architectural, pooling, and loss ablations.\n\n"
+            "Every verdict below runs real full-utterance JAX inference on your uploaded audio; "
+            "the default decision threshold is read directly from the selected checkpoint's "
+            "`eval_results.json` operating point (`1-utt` for single enrollment, `3-utt` for "
+            "multi-utterance enrollment).\n\n"
             "**Links**: "
-            "[Hugging Face Collection (44 Pretrained Models)]"
+            "[Hugging Face Collection (48 Pretrained Models)]"
             "(https://huggingface.co/collections/wq2012/flaxspeaker) | "
             "[GitHub Repository (`wq2012/FlaxSpeaker`)](https://github.com/wq2012/FlaxSpeaker) | "
             "[PyPI (`flaxspeaker`)](https://pypi.org/project/flaxspeaker/)"
@@ -474,7 +541,7 @@ def build_demo() -> Any:
                 model_dropdown = gr.Dropdown(
                     choices=models,
                     value=default_model,
-                    label="Pretrained FlaxSpeaker Model (44 Checkpoints)",
+                    label=f"Pretrained FlaxSpeaker Model ({len(models)} Checkpoints)",
                 )
                 auto_threshold_checkbox = gr.Checkbox(
                     value=True,

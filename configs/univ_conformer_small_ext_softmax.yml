@@ -8,6 +8,14 @@ data:
   train_csv: data/speaker_datasets/splits/universal/train.csv
   test_csv: data/speaker_datasets/splits/universal/eval.csv
   trials_file: data/speaker_datasets/splits/universal/trials.tsv
+  sharded_cache_dir: data/speaker_datasets/sharded_caches/controlled_v050/universal
+  musan_dir: ''
+  rirs_dir: ''
+  speed_perturb: false
+  speed_factors:
+  - 1.0
+  - 0.9
+  - 1.1
   audio_format: .flac
   speaker_label_index: -2
   within_domain_prob: 0.75
@@ -53,11 +61,9 @@ model:
   seq_len: 180
   min_seq_len: 90
   max_seq_len: 180
-  max_eval_seq_len: 500
+  max_eval_seq_len: 0
   variable_length_training: true
   sliding_window_step: 50
-  use_transformer: false
-  frame_aggregation_mean: true
   full_sequence_inference: true
   scoring_type: cosine
   saved_model_path: ''
@@ -111,7 +117,8 @@ model:
     - 4
     se_bottleneck_dim: 64
     mfa_dim: 512
-    norm_after_activation: false
+    use_batch_norm: true
+    norm_after_activation: true
   resnet:
     base_channels: 24
     num_blocks:
@@ -121,6 +128,7 @@ model:
     - 2
     use_se: true
     out_dim: 192
+    use_batch_norm: true
   pooling:
     pooling_type: atp
     attention_dim: 128
@@ -137,8 +145,10 @@ model:
     value_dim: 128
     attention_dim: 128
     attention_type: shared_nonlinear
+    attention_weight_mode: exp
     atp_ffn_use_layer_norm: true
     scale_factor: 16.0
+    temperature: 0.0
     use_trainable_scale_factor: true
     normalize_keys_and_values: false
     normalize_overall_output: false
@@ -185,6 +195,7 @@ loss:
   ext_softmax_row_softmax_weight: 0.5
   scale: 30.0
   margin: 0.2
+  subcenter_k: 3
   sphereface_m: 1.35
   sphereface_lambda_min: 5.0
   sphereface_lambda_base: 1000.0
@@ -199,11 +210,16 @@ train:
   learning_rate: 0.0015
   min_learning_rate: 1.5e-05
   optimizer: adamw
+  sgd_momentum: 0.9
+  nesterov: true
   weight_decay: 0.0001
   warmup_steps: 460
   lr_schedule_cosine: true
   grad_clip_norm: 3.0
   ge2e_grad_scale: 0.01
+  init_from_checkpoint: ''
+  freeze_trunk: false
+  trunk_lr_mult: 1.0
   save_model_frequency: 0
   num_steps: 4600
   num_processes: 4
@@ -228,6 +244,20 @@ train:
     reverb_prob: 0.4
     reverb_rt60_min: 0.05
     reverb_rt60_max: 0.2
+    musan_dir: ''
+    rirs_dir: ''
+    noise_snr_range:
+    - 0.0
+    - 15.0
+    music_snr_range:
+    - 5.0
+    - 15.0
+    babble_snr_range:
+    - 13.0
+    - 20.0
+    babble_spk_range:
+    - 3
+    - 7
   loss:
     loss_type: extended_set_softmax
     scoring_type: cosine
@@ -247,6 +277,7 @@ train:
     ext_softmax_row_softmax_weight: 0.5
     scale: 30.0
     margin: 0.2
+    subcenter_k: 3
     sphereface_m: 1.35
     sphereface_lambda_min: 5.0
     sphereface_lambda_base: 1000.0
@@ -255,13 +286,15 @@ train:
     margin_warmup_steps: 0
 eval:
   full_sequence_inference: true
+  max_eval_frames_cap: 3000
   num_triplets: 1000
   threshold_step: 0.001
   num_enroll_utts: 1
   use_as_norm: false
   apply_as_norm: false
-  as_norm_top_k: 100
-  as_norm_cohort_size: 100
+  as_norm_top_k: 300
+  as_norm_cohort_size: 300
+  use_qmf: false
   dcf_c_miss: 1.0
   dcf_c_fa: 1.0
 export:

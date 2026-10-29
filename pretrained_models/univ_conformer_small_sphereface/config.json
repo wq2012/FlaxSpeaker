@@ -8,7 +8,16 @@
       "dataset_name": "universal",
       "dataset_type": "universal",
       "domain_temp_alpha": 0.35,
+      "musan_dir": "",
+      "rirs_dir": "",
+      "sharded_cache_dir": "data/speaker_datasets/sharded_caches/controlled_v050/universal",
       "speaker_label_index": -2,
+      "speed_factors": [
+        1.0,
+        0.9,
+        1.1
+      ],
+      "speed_perturb": false,
       "test_csv": "data/speaker_datasets/splits/universal/eval.csv",
       "test_dir": "",
       "test_librispeech_dir": "",
@@ -20,15 +29,17 @@
     },
     "eval": {
       "apply_as_norm": false,
-      "as_norm_cohort_size": 100,
-      "as_norm_top_k": 100,
+      "as_norm_cohort_size": 300,
+      "as_norm_top_k": 300,
       "dcf_c_fa": 1.0,
       "dcf_c_miss": 1.0,
       "full_sequence_inference": true,
+      "max_eval_frames_cap": 3000,
       "num_enroll_utts": 1,
       "num_triplets": 1000,
       "threshold_step": 0.001,
-      "use_as_norm": false
+      "use_as_norm": false,
+      "use_qmf": false
     },
     "export": {
       "export_tflite": true,
@@ -78,6 +89,7 @@
       "sphereface_lambda_min": 5.0,
       "sphereface_lambda_power": 1.0,
       "sphereface_m": 1.35,
+      "subcenter_k": 3,
       "triplet_alpha": 0.1
     },
     "model": {
@@ -130,12 +142,12 @@
           3
         ],
         "mfa_dim": 512,
-        "norm_after_activation": false,
+        "norm_after_activation": true,
         "scale": 4,
-        "se_bottleneck_dim": 64
+        "se_bottleneck_dim": 64,
+        "use_batch_norm": true
       },
       "embedding_dim": 192,
-      "frame_aggregation_mean": true,
       "full_sequence_inference": true,
       "lstm": {
         "bidirectional": false,
@@ -154,7 +166,7 @@
         "expand_factor": 2,
         "num_layers": 3
       },
-      "max_eval_seq_len": 500,
+      "max_eval_seq_len": 0,
       "max_seq_len": 180,
       "min_seq_len": 90,
       "n_mfcc": 80,
@@ -167,6 +179,7 @@
         "atp_ffn_use_layer_norm": true,
         "attention_dim": 128,
         "attention_type": "shared_nonlinear",
+        "attention_weight_mode": "exp",
         "key_dim": 32,
         "local_value_scale": 0.25,
         "normalize_keys_and_values": false,
@@ -174,6 +187,7 @@
         "num_keys": 4,
         "per_trial_softmax": true,
         "scale_factor": 16.0,
+        "temperature": 0.0,
         "use_global_anchor": true,
         "use_trainable_scale_factor": true,
         "value_dim": 128
@@ -198,6 +212,7 @@
           2
         ],
         "out_dim": 192,
+        "use_batch_norm": true,
         "use_se": true
       },
       "saved_model_path": "",
@@ -213,14 +228,15 @@
         "use_conv_stem": true,
         "use_positional_encoding": false
       },
-      "use_transformer": false,
       "variable_length_training": true
     },
     "train": {
-      "batch_size": 32,
+      "batch_size": 64,
+      "freeze_trunk": false,
       "ge2e_grad_scale": 0.01,
       "grad_clip_norm": 3.0,
-      "learning_rate": 0.0015,
+      "init_from_checkpoint": "",
+      "learning_rate": 0.002,
       "loss": {
         "ext_softmax_normalize_by_num_speakers": true,
         "ext_softmax_row_softmax_weight": 0.5,
@@ -245,10 +261,12 @@
         "sphereface_lambda_min": 5.0,
         "sphereface_lambda_power": 1.0,
         "sphereface_m": 1.35,
+        "subcenter_k": 3,
         "triplet_alpha": 0.1
       },
       "lr_schedule_cosine": true,
-      "min_learning_rate": 1.5e-05,
+      "min_learning_rate": 2e-05,
+      "nesterov": true,
       "num_processes": 4,
       "num_spks_per_batch": 8,
       "num_steps": 4600,
@@ -257,6 +275,7 @@
       "save_model_frequency": 0,
       "saved_model_dir": "",
       "seed": 42,
+      "sgd_momentum": 0.9,
       "specaug": {
         "apply_prob": 0.5,
         "freq_mask_max_width": 8,
@@ -269,13 +288,32 @@
         "use_specaug": true
       },
       "triplet_alpha": 0.1,
+      "trunk_lr_mult": 1.0,
       "warmup_steps": 460,
       "waveform_aug": {
         "aug_prob": 0.35,
+        "babble_snr_range": [
+          13.0,
+          20.0
+        ],
+        "babble_spk_range": [
+          3,
+          7
+        ],
         "enabled": true,
+        "musan_dir": "",
+        "music_snr_range": [
+          5.0,
+          15.0
+        ],
+        "noise_snr_range": [
+          0.0,
+          15.0
+        ],
         "reverb_prob": 0.4,
         "reverb_rt60_max": 0.2,
         "reverb_rt60_min": 0.05,
+        "rirs_dir": "",
         "snr_max_db": 20.0,
         "snr_min_db": 12.0,
         "use_waveform_aug": true
@@ -313,10 +351,10 @@
     "crop_frames": "90-180",
     "training_code": "9accf95 (2026-10-18) or later: variable_length_training honoured by the benchmark driver (T ~ U(min_seq_len, seq_len) crops with an exact validity mask)",
     "step0_fingerprint_match": "variable",
-    "released_initial_loss": 8.9258,
-    "head_fixed_step0_loss": 8.4967,
-    "head_variable_step0_loss": 8.9258,
-    "fingerprint_code_commit": "9b091a5+dirty",
+    "released_initial_loss": 9.3188,
+    "head_fixed_step0_loss": 9.1407,
+    "head_variable_step0_loss": 9.3188,
+    "fingerprint_code_commit": "c39d80c+dirty",
     "fingerprint_source": "pretrained_models/step0_fingerprints.json",
     "note": "How the released weights were actually trained. Evaluating the released weights with the current code reproduces the archived metrics; re-training the shipped recipe reproduces the archived step-0 loss only under 'crop_frames'. See README.md 'Training-crop provenance'."
   },

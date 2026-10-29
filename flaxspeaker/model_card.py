@@ -21,7 +21,13 @@ DOMAIN_TRAIN_STATS: dict[str, dict[str, Any]] = {
         "utts": 9447,
         "spks": 381,
         "safety_margin_steps": 600,
-        "label": "3-domain training pool",
+        "label": "3-domain controlled training pool",
+    },
+    "universal_full": {
+        "utts": 464557,
+        "spks": 12193,
+        "safety_margin_steps": 1000,
+        "label": "full multi-corpus universal training pool (VoxCeleb1/2 + CN-Celeb1/2 + LibriSpeech 960h)",
     },
     "librispeech": {
         "utts": 5788,
@@ -142,6 +148,10 @@ def _provenance_paragraph(save_directory: str, exp_cfg: configs.ExperimentConfig
             "of exact (the PFAS scorer gained numerical changes after this checkpoint was trained); "
             "the variable-length arm is an order of magnitude farther away."
         )
+    elif match == "both" and not prov.get("fingerprint_note"):
+        fp_sentence += (
+            " Both crop regimes reproduce the archived step-0 loss to 4 decimal places."
+        )
     if actual is False:
         head = (
             f"**Training-crop provenance.** This checkpoint was trained with **fixed {seq_len}-frame "
@@ -200,6 +210,12 @@ def objective_label(exp_cfg: configs.ExperimentConfig) -> str:
             f"Blended Extended-Set Softmax (FlaxSpeaker variant: {w:.2f} row-softmax + "
             f"{1 - w:.2f} extended-set with a -log N logit shift; not the paper's Eq. 2)"
         )
+    if lt == "subcenter_arcface":
+        k_sub = int(getattr(loss, "subcenter_k", 3))
+        return (
+            f"Sub-Center ArcFace (Deng et al. 2020; K={k_sub}, "
+            f"scale={float(loss.scale):g}, margin={float(loss.margin):g})"
+        )
     return lt
 
 
@@ -232,7 +248,10 @@ def scorer_label(exp_cfg: configs.ExperimentConfig) -> str:
 
 
 def deviations_from_papers(
-    exp_cfg: configs.ExperimentConfig, train_ds: str = "universal"
+    exp_cfg: configs.ExperimentConfig,
+    train_ds: str = "universal",
+    train_spks_override: Optional[int] = None,
+    train_utts_override: Optional[int] = None,
 ) -> list[str]:
     """Checkpoint-specific list of known deviations from the cited source papers."""
     out: list[str] = []
@@ -243,21 +262,43 @@ def deviations_from_papers(
     num_steps = int(exp_cfg.train.num_steps)
     batch_size = int(exp_cfg.train.batch_size)
     ds_info = DOMAIN_TRAIN_STATS.get(str(train_ds), DOMAIN_TRAIN_STATS["universal"])
-    train_utts = int(ds_info["utts"])
-    train_spks = int(ds_info["spks"])
+    train_utts = (
+        int(train_utts_override)
+        if train_utts_override is not None
+        else int(ds_info["utts"])
+    )
+    train_spks = (
+        int(train_spks_override)
+        if train_spks_override is not None
+        else int(ds_info["spks"])
+    )
     epochs = (num_steps * batch_size) / max(train_utts, 1)
-    out.append(
-        f"**Training regime**: {num_steps:,} gradient steps x {batch_size} utterances "
-        f"(N = {int(exp_cfg.train.num_spks_per_batch)} speakers x "
-        f"M = {int(exp_cfg.train.num_utts_per_spk)}, ~{epochs:.2f} epochs) "
-        f"on <= 25 utterances/speaker from {train_spks} speakers ({train_utts:,} utterances); "
-        "the source papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers."
-    )
-    out.append(
-        "**Augmentation**: synthetic log-Mel-domain noise + one-tap smoothing "
-        "(`specaug.apply_feature_mtr_augmentation`), not waveform MTR with recorded "
-        "noise/RIR corpora."
-    )
+    if str(train_ds) == "universal_full":
+        out.append(
+            f"**Training regime**: {num_steps:,} gradient steps x {batch_size} utterances "
+            f"(~{epochs:.2f} epochs) across {train_spks:,} base speakers ({train_utts:,} clean "
+            "utterances + 3x speed perturbation + MUSAN/RIR)."
+        )
+    else:
+        out.append(
+            f"**Training regime**: {num_steps:,} gradient steps x {batch_size} utterances "
+            f"(N = {int(exp_cfg.train.num_spks_per_batch)} speakers x "
+            f"M = {int(exp_cfg.train.num_utts_per_spk)}, ~{epochs:.2f} epochs) "
+            f"on <= 25 utterances/speaker from {train_spks} speakers ({train_utts:,} utterances); "
+            "the source papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers."
+        )
+    if getattr(exp_cfg.data, "sharded_cache_dir", ""):
+        out.append(
+            "**Augmentation**: corpus-backed MUSAN environmental noise, music, and "
+            "multi-speaker babble + RIRS_NOISES room impulse responses + 3-way polyphase "
+            "speed perturbation (`0.9x`, `1.0x`, `1.1x`) + SpecAugment."
+        )
+    else:
+        out.append(
+            "**Augmentation**: synthetic log-Mel-domain noise + one-tap smoothing "
+            "(`specaug.apply_feature_mtr_augmentation`), not waveform MTR with recorded "
+            "noise/RIR corpora."
+        )
     if lt == "ge2e_contrast" and bool(getattr(loss, "ge2e_contrast_surrogate", False)):
         out.append(
             "**Objective**: hybrid contrast surrogate (gradient = 0.25 Eq. 7 + 0.25 BCE + "
@@ -316,10 +357,21 @@ def deviations_from_papers(
             "and a plain linear output (`icassp2018_ge2e_config(pure_paper_mode=True)`)."
         )
     if bb == "ecapa_tdnn":
-        out.append("**ECAPA-TDNN**: LayerNorm instead of BatchNorm.")
+        if bool(getattr(exp_cfg.model.ecapa_tdnn, "use_batch_norm", True)):
+            out.append(
+                "**ECAPA-TDNN**: mask-aware post-activation BatchNorm (`use_batch_norm=True, "
+                "norm_after_activation=True`)."
+            )
+        else:
+            out.append("**ECAPA-TDNN**: LayerNorm instead of BatchNorm.")
+    max_eval_cap = (
+        int(exp_cfg.model.max_eval_seq_len)
+        if int(exp_cfg.model.max_eval_seq_len) > 0
+        else int(getattr(exp_cfg.eval, "max_eval_frames_cap", 3000))
+    )
     out.append(
         "**Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) "
-        "+ CMVN; evaluation centre-crops to at most 500 frames (5 s)."
+        f"+ CMVN; evaluation processes up to {max_eval_cap} frames ({max_eval_cap / 100:.1f} s)."
     )
     return out
 
@@ -350,8 +402,21 @@ def build_model_card(
     )
     batch_size = int(exp_cfg.train.batch_size)
     ds_info = DOMAIN_TRAIN_STATS.get(str(train_ds), DOMAIN_TRAIN_STATS["universal"])
-    train_utts = int(ds_info["utts"])
-    train_spks = int(ds_info["spks"])
+    ds_stats_override = (
+        metrics.get("dataset_stats") if isinstance(metrics, dict) else None
+    )
+    train_utts = (
+        int(ds_stats_override["total_utterances"])
+        if isinstance(ds_stats_override, dict)
+        and "total_utterances" in ds_stats_override
+        else int(ds_info["utts"])
+    )
+    train_spks = (
+        int(ds_stats_override["num_speakers"])
+        if isinstance(ds_stats_override, dict)
+        and "num_speakers" in ds_stats_override
+        else int(ds_info["spks"])
+    )
     corpus_label = str(ds_info["label"])
     epochs = (num_steps * batch_size) / max(train_utts, 1)
     margin_warmup_steps = int(getattr(exp_cfg.train.loss, "margin_warmup_steps", 0))
@@ -363,6 +428,10 @@ def build_model_card(
 
     train_domain_desc = {
         "universal": "LibriSpeech + CN-Celeb2 + VoxCeleb1 (universal multi-domain, 381 speakers, 9,447 utterances)",
+        "universal_full": (
+            f"VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech 960h "
+            f"(full multi-domain SOTA flagship, {train_spks:,} speakers, {train_utts:,} utterances)"
+        ),
         "librispeech": "LibriSpeech only (232 speakers, 5,788 utterances)",
         "cnceleb2": "CN-Celeb2 only (119 speakers, 2,909 utterances)",
         "voxceleb1": "VoxCeleb1 only (30 speakers, 750 utterances from the VoxCeleb1 test partition)",
@@ -382,6 +451,20 @@ def build_model_card(
             "Losses are not converged at this budget. All EERs below are therefore far from "
             "state of the art and are only meaningful for *relative* comparisons between "
             "FlaxSpeaker checkpoints trained under the same budget."
+        )
+    elif str(train_ds) == "universal_full":
+        disclaimer_tail = (
+            "> The original papers were run on Google-internal infrastructure and data; "
+            f"this checkpoint is a **full-data open-corpus universal flagship** trained on "
+            f"**{train_spks:,} speakers ({train_utts:,} clean utterances + MUSAN/RIR/speed "
+            "augmentation)** across VoxCeleb2-dev, VoxCeleb1-dev, CN-Celeb 1+2, and "
+            "LibriSpeech 960h with zero speaker overlap against official evaluation sets."
+        )
+        budget_paragraph = (
+            f"This flagship model was trained for **{num_steps:,} gradient steps** "
+            f"(warmup `{int(exp_cfg.train.warmup_steps)}` steps, batch size `{batch_size}`) "
+            f"over the {corpus_label} ({train_spks:,} base speakers, {train_utts:,} clean "
+            "utterances, expanded via 3-way speed perturbation + MUSAN/RIR)."
         )
     else:
         disclaimer_tail = (
@@ -522,8 +605,7 @@ def build_model_card(
         "",
         _provenance_paragraph(save_directory, exp_cfg),
         "",
-        SOTA_ANCHOR,
-        "",
+        *([] if str(train_ds) == "universal_full" else [SOTA_ANCHOR, ""]),
         "## Model Summary",
         "",
         "| Property | Value |",
@@ -576,8 +658,8 @@ def build_model_card(
                 f"- `model_fp32.tflite` / `model_int8.tflite`: `jax2tf` exports of the **encoder only** "
                 f"with a **fixed, unmasked {export_window}-frame ({export_window / 100:.1f} s) input "
                 f"window** `[1, {export_window}, 80]` -> `[1, {m_cfg.output_embedding_dim}]`. "
-                "All EERs in the main tables below come from full-sequence masked JAX inference (up to 500 "
-                "frames); the TFLite models see a centre crop and the reported cosine fidelity "
+                "All EERs in the main tables below come from full-sequence masked JAX inference (up to 3000 "
+                "frames / 30 s); the TFLite models see a centre crop and the reported cosine fidelity "
                 f"(>= 0.9999 vs. JAX) was measured on {export_window}-frame inputs."
             ),
         ]
@@ -589,7 +671,7 @@ def build_model_card(
                 else ""
             )
             jax_part = (
-                f" (vs. full-sequence <=500-frame masked JAX: `{tfl['jax_full_seq_eer_percent']:.2f}%`)"
+                f" (vs. full-sequence masked JAX: `{tfl['jax_full_seq_eer_percent']:.2f}%`)"
                 if "jax_full_seq_eer_percent" in tfl
                 else ""
             )
@@ -613,9 +695,7 @@ def build_model_card(
         "",
         "### Python API (from Hugging Face Hub or Local Directory)",
         "",
-        "Requires `flaxspeaker >= 0.4.0` (`pip install -U flaxspeaker`) for full `margin_warmup_steps` "
-        "config compatibility with the v0.4.0 converged checkpoints (`>= 0.3.0` introduced `load_pretrained`; "
-        "the legacy `0.2.0` wheel cannot load Hub checkpoints).",
+        "Requires `flaxspeaker >= 0.5.0` (`pip install -U flaxspeaker`).",
         "",
         "```python",
         "from flaxspeaker import load_pretrained",
@@ -634,9 +714,87 @@ def build_model_card(
         "```",
     ]
     if isinstance(metrics, dict):
+        off_eval = metrics.get("official_benchmarks", {})
+        if isinstance(off_eval, dict) and off_eval:
+            lines += [
+                "",
+                "## Official Zero-Shot Speaker Verification Benchmarks",
+                "",
+                "| Benchmark | Trials | Raw EER (%) | AS-Norm EER (%) | "
+                "AS-Norm + QMF EER (%) | minDCF@0.01 | ROC-AUC |",
+                "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
+            ]
+            for b_label, b_key in [
+                ("VoxCeleb1-O (`veri_test2.txt`, 40 spks)", "voxceleb1_o"),
+                ("CN-Celeb-E (`eval/lists/trials.lst`, 200 spks)", "cnceleb_e"),
+                ("LibriSpeech `test-clean` (40 spks)", "librispeech_test_clean"),
+            ]:
+                b_m = off_eval.get(b_key)
+                if isinstance(b_m, dict) and "eer_percent" in b_m:
+                    asn_s = (
+                        f"**{b_m['as_norm']['eer_percent']:.2f}%**"
+                        if isinstance(b_m.get("as_norm"), dict)
+                        else "—"
+                    )
+                    qmf_s = (
+                        f"**{b_m['qmf']['eer_percent']:.2f}%**"
+                        if isinstance(b_m.get("qmf"), dict)
+                        else "—"
+                    )
+                    lines.append(
+                        f"| **{b_label}** | {b_m.get('num_trials', 0):,} | "
+                        f"**{b_m['eer_percent']:.2f}%** | {asn_s} | {qmf_s} | "
+                        f"{b_m.get('min_dcf_001', 0.0):.4f} | {b_m.get('roc_auc', 0.0):.4f} |"
+                    )
+                    if b_key == "cnceleb_e" and isinstance(
+                        b_m.get("multi_enroll_map"), dict
+                    ):
+                        mm = b_m["multi_enroll_map"]
+                        mm_asn = (
+                            f"**{mm['as_norm']['eer_percent']:.2f}%**"
+                            if isinstance(mm.get("as_norm"), dict)
+                            else "—"
+                        )
+                        lines.append(
+                            f"| **CN-Celeb-E Multi-Enroll (`enroll.map`)** | "
+                            f"{mm.get('num_trials', 0):,} | **{mm['eer_percent']:.2f}%** | "
+                            f"{mm_asn} | — | {mm.get('min_dcf_001', 0.0):.4f} | "
+                            f"{mm.get('roc_auc', 0.0):.4f} |"
+                        )
+                    if b_key == "librispeech_test_clean" and isinstance(
+                        b_m.get("multi_enroll_3utt"), dict
+                    ):
+                        m3 = b_m["multi_enroll_3utt"]
+                        m3_asn = (
+                            f"**{m3['as_norm']['eer_percent']:.2f}%**"
+                            if isinstance(m3.get("as_norm"), dict)
+                            else "—"
+                        )
+                        lines.append(
+                            f"| **LibriSpeech `test-clean` (3-Utt)** | "
+                            f"{m3.get('num_trials', 0):,} | **{m3['eer_percent']:.2f}%** | "
+                            f"{m3_asn} | — | {m3.get('min_dcf_001', 0.0):.4f} | "
+                            f"{m3.get('roc_auc', 0.0):.4f} |"
+                        )
         lines += ["", "## Multi-Domain Evaluation Results", ""]
         md_eval = metrics.get("multi_domain_eval", {})
         if md_eval and "domains_1utt" in md_eval:
+            has_asn_1utt = any(
+                isinstance((md_eval["domains_1utt"].get(k) or {}).get("as_norm"), dict)
+                for k in ("librispeech", "cnceleb2", "voxceleb1", "universal_pooled")
+            )
+            hdr_1 = (
+                "| Evaluation Split | Trials | Raw EER (%) | AS-Norm EER (%) | "
+                "95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |"
+                if has_asn_1utt
+                else "| Evaluation Split | Trials | EER (%) | "
+                "95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |"
+            )
+            sep_1 = (
+                "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+                if has_asn_1utt
+                else "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |"
+            )
             lines += [
                 "### 1-Utterance Verification Across Evaluation Domains",
                 "",
@@ -646,11 +804,8 @@ def build_model_card(
                     "close to its trivial ceiling of 1.0 for every model under this trial mix."
                 ),
                 "",
-                (
-                    "| Evaluation Split | Trials | EER (%) | 95% Bootstrap CI (%) "
-                    "| minDCF@0.01 | minDCF@0.10 | ROC-AUC |"
-                ),
-                "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
+                hdr_1,
+                sep_1,
             ]
             for dom_label, dom_key in [
                 ("LibriSpeech (English Read)", "librispeech"),
@@ -660,23 +815,38 @@ def build_model_card(
             ]:
                 d_m = md_eval["domains_1utt"].get(dom_key)
                 if d_m:
+                    asn_col = (
+                        f" **{d_m['as_norm']['eer_percent']:.2f}%** |"
+                        if has_asn_1utt and isinstance(d_m.get("as_norm"), dict)
+                        else (" — |" if has_asn_1utt else "")
+                    )
                     lines.append(
-                        f"| **{dom_label}** | {d_m['num_trials']:,} | **{d_m['eer_percent']:.2f}%** | "
+                        f"| **{dom_label}** | {d_m['num_trials']:,} | **{d_m['eer_percent']:.2f}%** |{asn_col} "
                         f"{_fmt_ci(d_m)} | {d_m['min_dcf_001']:.4f} | {d_m['min_dcf_01']:.4f} | {d_m['roc_auc']:.4f} |"
                     )
             macro_1 = md_eval.get("universal_macro_avg_1utt")
             if macro_1:
+                asn_m_col = (
+                    f" **{macro_1['as_norm']['eer_percent']:.2f}%** |"
+                    if has_asn_1utt and isinstance(macro_1.get("as_norm"), dict)
+                    else (" — |" if has_asn_1utt else "")
+                )
                 lines.append(
-                    f"| **Universal Macro-Average (3 Domains)** | — | **{macro_1['eer_percent']:.2f}%** | "
+                    f"| **Universal Macro-Average (3 Domains)** | — | **{macro_1['eer_percent']:.2f}%** |{asn_m_col} "
                     f"— | {macro_1['min_dcf_001']:.4f} | {macro_1['min_dcf_01']:.4f} | {macro_1['roc_auc']:.4f} |"
                 )
             vox_sub = md_eval["domains_1utt"].get(VOX1_SUBSET_KEY) or (
                 metrics.get("cross_dataset_eval", {}) or {}
             ).get(VOX1_SUBSET_KEY)
-            if vox_sub:
+            if vox_sub and str(train_ds) != "universal_full":
+                asn_v_col = (
+                    f" **{vox_sub['as_norm']['eer_percent']:.2f}%** |"
+                    if has_asn_1utt and isinstance(vox_sub.get("as_norm"), dict)
+                    else (" — |" if has_asn_1utt else "")
+                )
                 lines.append(
                     f"| **VoxCeleb1-O 10-speaker subset** (see caveat) | {vox_sub['num_trials']:,} | "
-                    f"**{vox_sub['eer_percent']:.2f}%** | {_fmt_ci(vox_sub)} | "
+                    f"**{vox_sub['eer_percent']:.2f}%** |{asn_v_col} {_fmt_ci(vox_sub)} | "
                     f"{vox_sub['min_dcf_001']:.4f} | {vox_sub['min_dcf_01']:.4f} | {vox_sub['roc_auc']:.4f} |"
                 )
                 lines += ["", f"Caveat: {VOX1_SUBSET_CAVEAT}"]
@@ -723,7 +893,15 @@ def build_model_card(
             ),
         ]
     lines += ["", "## Deviations from the Source Papers", ""]
-    lines += [f"- {d}" for d in deviations_from_papers(exp_cfg, train_ds=str(train_ds))]
+    lines += [
+        f"- {d}"
+        for d in deviations_from_papers(
+            exp_cfg,
+            train_ds=str(train_ds),
+            train_spks_override=train_spks,
+            train_utts_override=train_utts,
+        )
+    ]
     lines += [
         "",
         "## Citation",

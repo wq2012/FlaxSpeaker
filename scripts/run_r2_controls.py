@@ -43,6 +43,8 @@ from flaxspeaker import configs  # noqa: E402
 from flaxspeaker import dataset  # noqa: E402
 from flaxspeaker import feature_extraction  # noqa: E402
 from flaxspeaker import neural_net  # noqa: E402
+from flaxspeaker import resources  # noqa: E402
+from flaxspeaker import shard_cache  # noqa: E402
 from scripts import run_research_benchmarks as rrb  # noqa: E402
 
 
@@ -128,8 +130,9 @@ def _load_env(data_root: str = DEFAULT_DATA_ROOT):
         c = feature_extraction.FeatureCache(
             fe, cache_dir=os.path.join(data_root, "feature_cache", d)
         )
-        c.precompute_dataset(spk_eval, num_workers=8)
-        c.precompute_dataset(spk_train[d], num_workers=8)
+        c.precompute_dataset(spk_eval, num_workers=4)
+        sub_cohort = {s: sorted(u)[:5] for s, u in spk_train[d].items()}
+        c.precompute_dataset(sub_cohort, num_workers=4)
         caches[d] = c
     spk_train["universal"] = dataset.get_csv_spk_to_utts(ds["universal"]["train_csv"])
     trials["universal"] = dataset.load_trials_file(ds["universal"]["trials_file"])
@@ -161,8 +164,33 @@ def _train_and_eval(
     step_fn = neural_net.make_modern_train_step(cfg)
     rng = np.random.default_rng(int(init_seed))
     losses_list: list[float] = []
+    resolved_shard = (
+        dataset.resolve_data_path(cfg.data.sharded_cache_dir)
+        if cfg.data.sharded_cache_dir
+        else ""
+    )
+    shard_store = (
+        shard_cache.ShardedFeatureStore(resolved_shard, base_speakers_only=True)
+        if (
+            resolved_shard
+            and os.path.isfile(os.path.join(resolved_shard, "metadata.json"))
+        )
+        else None
+    )
 
     def _sample():
+        if shard_store is not None:
+            return shard_store.sample_nm_batch(
+                num_speakers=cfg.train.loss.num_speakers_per_batch,
+                num_utts_per_speaker=cfg.train.loss.num_utts_per_speaker,
+                max_seq_len=cfg.model.seq_len,
+                min_seq_len=cfg.model.min_seq_len,
+                variable_length=bool(cfg.model.variable_length_training),
+                specaug_config=cfg.train.specaug,
+                rng=rng,
+                within_domain_prob=cfg.data.within_domain_prob,
+                domain_temp_alpha=cfg.data.domain_temp_alpha,
+            )
         return feature_extraction.get_batched_nm_input(
             spk_map,
             num_speakers=cfg.train.loss.num_speakers_per_batch,
@@ -197,8 +225,12 @@ def _train_and_eval(
             )
 
     train_time_sec = round(time.time() - t0, 2)
+    dname_cohort = str(getattr(cfg.data, "dataset_name", "universal") or "universal")
+    cohort_embs = rrb.compute_training_cohort_embeddings(
+        state, cfg, dname_cohort, spk_map, train_cache
+    )
     md_eval = rrb.evaluate_all_domains(
-        state, cfg, caches, trials, multi_trials, shared_embs={}
+        state, cfg, caches, trials, multi_trials, shared_embs={}, cohort_embeddings=cohort_embs
     )
     d1 = md_eval["domains_1utt"]
     d3 = md_eval["domains_3utt"]
@@ -303,13 +335,17 @@ def run_single_r2_task(
     data_root: str = DEFAULT_DATA_ROOT,
 ) -> dict[str, Any]:
     """Execute one atomic R2 control task and save its JSON to `_ablation_cache`."""
+    resources.configure_polite_resources(
+        max_threads=int(os.environ.get("OMP_NUM_THREADS", "7")), nice_level=10
+    )
     os.makedirs(CACHE_DIR, exist_ok=True)
     cache_file = os.path.join(CACHE_DIR, f"r2_{task_name}.json")
     if os.path.exists(cache_file):
         with open(cache_file, "r", encoding="utf-8") as f:
             cached = json.load(f)
-        print(f"[R2 Control] Skipping {task_name} (already cached)")
-        return cached
+        if cached.get("flaxspeaker_version") == "0.5.0":
+            print(f"[R2 Control] Skipping {task_name} (already cached in v0.5.0)")
+            return cached
 
     ds, fe, caches, spk_train, trials, multi_trials = _load_env(data_root)
 
@@ -364,6 +400,14 @@ def run_single_r2_task(
             "atp",
             num_steps=n_steps,
         )
+        cfg.data.sharded_cache_dir = ""
+        for sub_d in ("librispeech", "cnceleb2", "voxceleb1"):
+            caches[sub_d].precompute_dataset(spk_train[sub_d], num_workers=4)
+        caches["universal"] = feature_extraction.FeatureCache.merged(
+            fe,
+            [caches[d] for d in ("librispeech", "cnceleb2", "voxceleb1")],
+            cache_dir=os.path.join(data_root, "feature_cache", "universal"),
+        )
         print(
             f"\n[R2 Matched-Data] universal subsample ({actual_utts} utts / {len(sub_univ)} spks) "
             f"steps={n_steps} seed=42 ...",
@@ -415,6 +459,7 @@ def run_single_r2_task(
     else:
         raise ValueError(f"Unknown R2 task: {task_name}")
 
+    res["flaxspeaker_version"] = "0.5.0"
     with open(cache_file, "w", encoding="utf-8") as f:
         json.dump(res, f, indent=2)
     return res

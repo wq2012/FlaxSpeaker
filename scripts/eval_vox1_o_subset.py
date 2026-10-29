@@ -156,6 +156,35 @@ def evaluate_all_models_on_vox1_subset(
         ds_entry[f"{PROTOCOL_KEY}_trials_file"] = subset_trials_path
         ds_entry[f"{PROTOCOL_KEY}_note"] = PROTOCOL_NOTE
 
+    # Preload <=5 clean training utterances per speaker for speaker-centroid AS-Norm cohorts
+    cohort_caches: dict[str, feature_extraction.FeatureCache] = {}
+    cohort_spk_maps: dict[str, dataset.SpkToUtts] = {}
+    for dname in ("librispeech", "cnceleb2", "voxceleb1"):
+        d_csv = os.path.join(data_root, "splits", dname, "train.csv")
+        s_map = {
+            s: sorted(u)[:5] for s, u in dataset.get_csv_spk_to_utts(d_csv).items()
+        }
+        c_obj = (
+            cache
+            if dname == "voxceleb1"
+            else feature_extraction.FeatureCache(
+                frontend, cache_dir=os.path.join(data_root, "feature_cache", dname)
+            )
+        )
+        c_obj.precompute_dataset(s_map, num_workers=8)
+        cohort_caches[dname] = c_obj
+        cohort_spk_maps[dname] = s_map
+    cohort_caches["universal"] = feature_extraction.FeatureCache.merged(
+        frontend,
+        [cohort_caches[d] for d in ("librispeech", "cnceleb2", "voxceleb1")],
+        cache_dir=os.path.join(data_root, "feature_cache", "universal"),
+    )
+    cohort_spk_maps["universal"] = {
+        f"{d}:{s}" if not s.startswith(f"{d}:") else s: u
+        for d in ("librispeech", "cnceleb2", "voxceleb1")
+        for s, u in cohort_spk_maps[d].items()
+    }
+
     t0 = time.time()
     per_model_results: dict[str, Any] = {}
     experiments_dict = bench_data["experiments"]
@@ -164,11 +193,30 @@ def evaluate_all_models_on_vox1_subset(
         model_dir = os.path.join(models_dir, exp_id)
         t_m = time.time()
         model = hf_compat.FlaxSpeakerModel.from_pretrained(model_dir)
+        train_d = str(entry.get("train_dataset", "universal"))
+        scoring_t = str(
+            getattr(
+                model.exp_config.model.scoring_type,
+                "value",
+                model.exp_config.model.scoring_type,
+            )
+        )
+        cohort_embs = None
+        if scoring_t == "cosine" and train_d in cohort_spk_maps:
+            cohort_embs = evaluation.compute_speaker_centroid_cohort(
+                model.state,
+                cohort_spk_maps[train_d],
+                model.exp_config,
+                feature_cache=cohort_caches[train_d],
+                max_utts_per_speaker=5,
+            )
         metrics = evaluation.evaluate_verification_trials(
             model.state,
             subset_trials,
             model.exp_config,
             feature_cache=cache,
+            cohort_embeddings=cohort_embs,
+            include_as_norm_breakdown=(cohort_embs is not None),
         )
         metrics["num_target_trials"] = n_pos
         metrics["num_impostor_trials"] = n_neg

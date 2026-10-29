@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Generate every number and table of the FlaxSpeaker v0.4.0 paper from JSON archives.
+"""Generate every number and table of the FlaxSpeaker v0.5.0 paper from JSON archives.
 
 Truth-in-reporting: the paper (`~/Code/github/flax_speaker_paper`) `\\input`s the files
 written here, so no benchmark number is typed by hand. Sources:
 
-- `pretrained_models/benchmark_results.json`           (44 converged v0.4.0 models + TFLite exports)
+- `pretrained_models/benchmark_results.json`           (48 converged v0.5.0 models + 16 TFLite exports)
+- `pretrained_models/full_data_flagship_results.json`  (4 Tier-2 full-data flagship models + score fusion)
+- `pretrained_models/pfas_hparam_sweep.json`           (16-config PFAS hyperparameter sweep)
 - `pretrained_models/ablation_results.json`            (7 converged ablation groups incl. pure_paper_mode)
-- `pretrained_models/vox1_o_10spk_subset_results.json` (VoxCeleb1-O 10-speaker subset)
+- `pretrained_models/vox1_o_10spk_subset_results.json` (VoxCeleb1-O 10-speaker subset across all 48 models)
 - `pretrained_models/r2_seed_and_control_results.json` (3-seed stability, own-schedule horizon, matched data)
 - `pretrained_models/phase1_convergence_pilot.json`    (5,000-step Phase-1 convergence pilot)
-- `pretrained_models/step0_fingerprints.json`          (step-0 loss fingerprints of all 44 checkpoints)
+- `pretrained_models/step0_fingerprints.json`          (step-0 loss fingerprints of all 48 checkpoints)
 
 Usage: python scripts/generate_paper_tables.py --paper_dir ~/Code/github/flax_speaker_paper
 """
@@ -47,7 +49,15 @@ HIGHLIGHT_UNIV_ORDER = [
     "univ_transformer_small_ge2e",
     "univ_mamba_small_ge2e",
 ]
+FLAGSHIP_ORDER = [
+    "univ_full_conformer_large_dr_vectors",
+    "univ_full_conformer_large_pfas",
+    "univ_full_ecapa_c1024_arcface",
+    "univ_full_conformer_large_arcface",
+]
 TFLITE_REPOS = {
+    "univ_full_conformer_large_arcface",
+    "univ_full_ecapa_c1024_arcface",
     "univ_conformer_small_ge2e",
     "univ_lstm_small_ge2e",
     "univ_ecapa_tdnn_small_ge2e",
@@ -146,16 +156,20 @@ def main(paper_dir: str) -> None:
     r2 = load("r2_seed_and_control_results.json")
     p1_pilot = load("phase1_convergence_pilot.json")
     fps = load("step0_fingerprints.json")
+    flagship = load("full_data_flagship_results.json")
+    pfas_sweep = load("pfas_hparam_sweep.json")
 
     ex = bench["experiments"]
-    assert len(ex) == 44, len(ex)
+    assert len(ex) in (44, 48), len(ex)
+    controlled_ex = {k: v for k, v in ex.items() if not k.startswith("univ_full_")}
+    assert len(controlled_ex) == 44, len(controlled_ex)
 
     univ_order = sorted(
-        [k for k in ex if k.startswith("univ_")],
+        [k for k in controlled_ex if k.startswith("univ_")],
         key=lambda k: (d1(ex[k], "universal_pooled")["eer_percent"], macro(ex[k], 1)["eer_percent"]),
     )
     single_order = sorted(
-        [k for k in ex if not k.startswith("univ_")],
+        [k for k in controlled_ex if not k.startswith("univ_")],
         key=lambda k: (
             {"librispeech": 0, "cnceleb2": 1, "voxceleb1": 2}[ex[k]["train_dataset"]],
             d1(ex[k], ex[k]["train_dataset"])["eer_percent"],
@@ -164,32 +178,38 @@ def main(paper_dir: str) -> None:
 
     # ------------------------------------------------------------------ numbers.tex
     nums: list[str] = []
-    times = sorted(float(e["train_time_sec"]) / 60.0 for e in ex.values())
-    total_hours = sum(float(e["train_time_sec"]) for e in ex.values()) / 3600.0
-    tmin = min(ex.items(), key=lambda kv: kv[1]["train_time_sec"])
-    tmax = max(ex.items(), key=lambda kv: kv[1]["train_time_sec"])
-    nums.append(macro_def("numModels", str(len(ex))))
+    times = sorted(float(e["train_time_sec"]) / 60.0 for e in controlled_ex.values())
+    total_hours = sum(float(e["train_time_sec"]) for e in controlled_ex.values()) / 3600.0
+    all_hours = sum(float(e["train_time_sec"]) for e in ex.values()) / 3600.0
+    tmin = min(controlled_ex.items(), key=lambda kv: kv[1]["train_time_sec"])
+    tmax = max(controlled_ex.items(), key=lambda kv: kv[1]["train_time_sec"])
+    nums.append(macro_def("numModels", str(len(controlled_ex))))
+    nums.append(macro_def("numTotalModels", str(len(ex))))
+    nums.append(macro_def("numFlagshipModels", str(len(FLAGSHIP_ORDER))))
     nums.append(macro_def("trainMinMinutes", f"{times[0]:.1f}"))
     nums.append(macro_def("trainMaxMinutes", f"{times[-1]:.1f}"))
     nums.append(macro_def("trainMedianMinutes", f"{statistics.median(times):.1f}"))
     nums.append(macro_def("trainTotalHours", f"{total_hours:.2f}"))
+    nums.append(macro_def("trainAllModelsHours", f"{all_hours:.2f}"))
     nums.append(macro_def("trainMinModel", tex_escape(tmin[0])))
     nums.append(macro_def("trainMaxModel", tex_escape(tmax[0])))
 
-    params = [int(e["num_parameters"]) for e in ex.values()]
+    params = [int(e["num_parameters"]) for e in controlled_ex.values()]
+    all_params = [int(e["num_parameters"]) for e in ex.values()]
     nums.append(macro_def("paramsMinM", f"{min(params) / 1e6:.2f}"))
     nums.append(macro_def("paramsMaxM", f"{max(params) / 1e6:.2f}"))
+    nums.append(macro_def("allParamsMaxM", f"{max(all_params) / 1e6:.2f}"))
 
-    pooled_all = [d1(e, "universal_pooled")["eer_percent"] for e in ex.values()]
+    pooled_all = [d1(e, "universal_pooled")["eer_percent"] for e in controlled_ex.values()]
     pooled_univ = [d1(ex[k], "universal_pooled")["eer_percent"] for k in univ_order]
-    pooled3_all = [d3(e, "universal_pooled")["eer_percent"] for e in ex.values()]
+    pooled3_all = [d3(e, "universal_pooled")["eer_percent"] for e in controlled_ex.values()]
     nums.append(macro_def("zooPooledOneMin", f2(min(pooled_all))))
     nums.append(macro_def("zooPooledOneMax", f2(max(pooled_all))))
     nums.append(macro_def("zooUnivPooledOneMin", f2(min(pooled_univ))))
     nums.append(macro_def("zooUnivPooledOneMax", f2(max(pooled_univ))))
     nums.append(macro_def("zooPooledThreeMin", f2(min(pooled3_all))))
     nums.append(macro_def("zooPooledThreeMax", f2(max(pooled3_all))))
-    losses_used = sorted({e["loss_type"] for e in ex.values()})
+    losses_used = sorted({e["loss_type"] for e in controlled_ex.values()})
     nums.append(macro_def("numLossesBenchmarked", str(len(losses_used))))
 
     def add_model_nums(prefix: str, mid: str) -> None:
@@ -245,8 +265,65 @@ def main(paper_dir: str) -> None:
         ("lsResnet", "ls_resnet_small_ge2e"),
         ("cnDr", "cn_conformer_small_dr_vectors"),
         ("voxEcapaXs", "vox_ecapa_tdnn_small_ext_softmax"),
+        ("flagConf", "univ_full_conformer_large_arcface"),
+        ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
+        ("flagPfas", "univ_full_conformer_large_pfas"),
+        ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ]:
-        add_model_nums(prefix, mid)
+        if mid in ex:
+            add_model_nums(prefix, mid)
+
+    # Tier-2 Flagship & Score Fusion macros.
+    sm = flagship["shard_metadata"]
+    nums.append(macro_def("flagshipSpks", f"{sm['num_base_speakers']:,}"))
+    nums.append(macro_def("flagshipClasses", f"{sm['num_speakers']:,}"))
+    nums.append(macro_def("flagshipUtts", f"{sm['clean_utterances']:,}"))
+    nums.append(macro_def("flagshipItems", f"{sm['num_items']:,}"))
+    nums.append(macro_def("flagshipShards", str(sm["num_shards"])))
+
+    fm = flagship["models"]
+    for ftag, fmid in (
+        ("flagConf", "univ_full_conformer_large_arcface"),
+        ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
+        ("flagPfas", "univ_full_conformer_large_pfas"),
+        ("flagDr", "univ_full_conformer_large_dr_vectors"),
+    ):
+        ob = fm[fmid]["official_benchmarks"]
+        vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
+        nums.append(macro_def(ftag + "VoxRaw", f2(vx["eer_percent"])))
+        nums.append(macro_def(ftag + "VoxQmf", f2(vx["qmf"]["eer_percent"])))
+        nums.append(macro_def(ftag + "CnRaw", f2(cn["eer_percent"])))
+        nums.append(macro_def(ftag + "CnQmf", f2(cn["qmf"]["eer_percent"])))
+        cn_me = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
+        nums.append(macro_def(ftag + "CnMulti", f2(cn_me)))
+        nums.append(macro_def(ftag + "LsRaw", f2(ls["eer_percent"])))
+        nums.append(macro_def(ftag + "LsQmf", f2(ls["qmf"]["eer_percent"])))
+        nums.append(macro_def(ftag + "LsMulti", f2(ls["multi_enroll_3utt"]["eer_percent"])))
+        if "as_norm" in vx:
+            nums.append(macro_def(ftag + "VoxAsn", f2(vx["as_norm"]["eer_percent"])))
+            nums.append(macro_def(ftag + "CnAsn", f2(cn["as_norm"]["eer_percent"])))
+            nums.append(macro_def(ftag + "LsAsn", f2(ls["as_norm"]["eer_percent"])))
+
+    fus = flagship["heterogeneous_fusion"]
+    fus2 = fus["official_benchmarks"]
+    fus3 = fus["multi_enroll_3way_fusion"]
+    nums.append(macro_def("fusionTwoVoxAsn", f2(fus2["voxceleb1_o"]["eer_percent"])))
+    nums.append(macro_def("fusionTwoVoxQmf", f2(fus2["voxceleb1_o"]["qmf"]["eer_percent"])))
+    nums.append(macro_def("fusionTwoCnAsn", f2(fus2["cnceleb_e"]["eer_percent"])))
+    nums.append(macro_def("fusionTwoCnQmf", f2(fus2["cnceleb_e"]["qmf"]["eer_percent"])))
+    nums.append(macro_def("fusionTwoLsAsn", f2(fus2["librispeech_test_clean"]["eer_percent"])))
+    nums.append(macro_def("fusionTwoLsQmf", f2(fus2["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    nums.append(macro_def("fusionThreeCnMulti", f2(fus3["cnceleb_e_multi_enroll_map"]["eer_percent"])))
+    nums.append(macro_def("fusionThreeCnMultiAuc", f4(fus3["cnceleb_e_multi_enroll_map"]["roc_auc"])))
+    nums.append(macro_def("fusionThreeLsMulti", f2(fus3["librispeech_test_clean_3utt"]["eer_percent"])))
+    nums.append(macro_def("fusionThreeLsMultiAuc", f4(fus3["librispeech_test_clean_3utt"]["roc_auc"])))
+
+    pw = pfas_sweep["winner"]
+    nums.append(macro_def("pfasSweepNumCands", str(len(pfas_sweep["candidates"]))))
+    nums.append(macro_def("pfasWinnerValOne", f2(pw["val_1utt_eer_percent"])))
+    nums.append(macro_def("pfasWinnerValThree", f2(pw["val_3utt_eer_percent"])))
+    nums.append(macro_def("pfasWinnerValComp", f2(pw["composite_val_eer_percent"])))
+    nums.append(macro_def("pfasWorstValComp", f2(pfas_sweep["ranking"][-1]["composite_val_eer_percent"])))
 
     # Phase-1 pilot summary macros.
     p1_cap = p1_pilot["capacity_scaling_comparison"]["best_converged"]
@@ -257,11 +334,11 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("pOneArcConstPooled", f2(p1_mw["constant_margin_best_pooled_1utt_eer"])))
     nums.append(macro_def("pOneArcWarmPooled", f2(p1_mw["warmup500_best_pooled_1utt_eer"])))
 
-    # Matched univ_* vs ls_* pairs.
+    # Matched univ_* vs ls_* pairs (19 Tier-1 controlled pairs).
     pairs = []
     for mid in univ_order:
         twin = "ls_" + mid[len("univ_"):]
-        if twin in ex:
+        if twin in controlled_ex:
             pairs.append((mid, twin))
     worse_macro1 = [m for m, t in pairs if macro(ex[m], 1)["eer_percent"] > macro(ex[t], 1)["eer_percent"]]
     worse_pool1 = [
@@ -325,16 +402,22 @@ def main(paper_dir: str) -> None:
             obj = "PFAS-SN$^{*}$/\\allowbreak " + ("GE2E" if e["loss_type"] == "ge2e_softmax" else "BXS")
         return f"{backbone}-{e['size_variant'][0].upper()}/\\allowbreak {obj}"
 
-    # VoxCeleb1-O subset summary + Spearman vs pooled.
-    vox_eers = {k: v["eer_percent"] for k, v in vox["models"].items()}
-    pooled = {k: d1(ex[k], "universal_pooled")["eer_percent"] for k in vox_eers}
+    # VoxCeleb1-O subset summary + Spearman vs pooled (over all 48 models and over the 44 Tier-1 models).
+    vox_eers_44 = {k: v["eer_percent"] for k, v in vox["models"].items() if k in controlled_ex}
+    vox_eers_all = {k: v["eer_percent"] for k, v in vox["models"].items() if k in ex}
+    pooled_44 = {k: d1(ex[k], "universal_pooled")["eer_percent"] for k in vox_eers_44}
+    pooled_all_vox = {k: d1(ex[k], "universal_pooled")["eer_percent"] for k in vox_eers_all}
     from scipy import stats as sstats
 
-    rho, pval = sstats.spearmanr([pooled[k] for k in vox_eers], [vox_eers[k] for k in vox_eers])
-    vox_in = {k: d1(ex[k], "voxceleb1")["eer_percent"] for k in vox_eers}
-    rho_v, pval_v = sstats.spearmanr([vox_in[k] for k in vox_eers], [vox_eers[k] for k in vox_eers])
-    best_vox = min(vox_eers.items(), key=lambda kv: kv[1])
-    worst_vox = max(vox_eers.items(), key=lambda kv: kv[1])
+    rho, pval = sstats.spearmanr([pooled_44[k] for k in vox_eers_44], [vox_eers_44[k] for k in vox_eers_44])
+    vox_in = {k: d1(ex[k], "voxceleb1")["eer_percent"] for k in vox_eers_44}
+    rho_v, pval_v = sstats.spearmanr([vox_in[k] for k in vox_eers_44], [vox_eers_44[k] for k in vox_eers_44])
+    rho_all, pval_all = sstats.spearmanr([pooled_all_vox[k] for k in vox_eers_all], [vox_eers_all[k] for k in vox_eers_all])
+    vox_in_all = {k: d1(ex[k], "voxceleb1")["eer_percent"] for k in vox_eers_all}
+    rho_v_all, pval_v_all = sstats.spearmanr([vox_in_all[k] for k in vox_eers_all], [vox_eers_all[k] for k in vox_eers_all])
+    best_vox = min(vox_eers_44.items(), key=lambda kv: kv[1])
+    worst_vox = max(vox_eers_44.items(), key=lambda kv: kv[1])
+    best_vox_all = min(vox_eers_all.items(), key=lambda kv: kv[1])
     nums.append(macro_def("voxSubsetTrials", f"{vox['num_trials']:,}"))
     nums.append(macro_def("voxSubsetTarget", f"{vox['num_target_trials']:,}"))
     nums.append(macro_def("voxSubsetImpostor", f"{vox['num_impostor_trials']:,}"))
@@ -345,14 +428,20 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("voxSubsetVadDb", f"{vox['vad_energy_db_threshold']:.0f}"))
     nums.append(macro_def("voxSubsetMinEer", f2(best_vox[1])))
     nums.append(macro_def("voxSubsetMinModel", tex_escape(best_vox[0])))
+    nums.append(macro_def("voxSubsetAllMinEer", f2(best_vox_all[1])))
+    nums.append(macro_def("voxSubsetAllMinModel", tex_escape(best_vox_all[0])))
     nums.append(macro_def("voxSubsetMaxEer", f2(worst_vox[1])))
     nums.append(macro_def("voxSubsetMaxModel", tex_escape(worst_vox[0])))
     nums.append(macro_def("spearmanPooledVox", f"{rho:.2f}"))
     nums.append(macro_def("spearmanPooledVoxP", fmt_sci(pval)))
     nums.append(macro_def("spearmanInVoxVox", f"{rho_v:.2f}"))
     nums.append(macro_def("spearmanInVoxVoxP", fmt_sci(pval_v)))
+    nums.append(macro_def("spearmanAllPooledVox", f"{rho_all:.2f}"))
+    nums.append(macro_def("spearmanAllPooledVoxP", fmt_sci(pval_all)))
+    nums.append(macro_def("spearmanAllInVoxVox", f"{rho_v_all:.2f}"))
+    nums.append(macro_def("spearmanAllInVoxVoxP", fmt_sci(pval_v_all)))
 
-    # Ablations (all converged v0.4.0).
+    # Ablations (all converged v0.5.0).
     st = abl.get("studies", {})
     dm = abl["domain_mixing_ablation"]
     for k, tag in (("p_within_0.0", "mixZero"), ("p_within_0.75", "mixDefault"), ("p_within_1.0", "mixOne")):
@@ -431,9 +520,10 @@ def main(paper_dir: str) -> None:
         )
     )
 
-    # TFLite.
+    # TFLite (6 Tier-1 + 2 Tier-2 models = 16 binaries).
     tf = bench["tflite_exports"]
     ratios, fp32_mb, int8_mb, cos = [], [], [], []
+    tier1_fp32_mb, tier1_int8_mb = [], []
     for k, v in tf.items():
         if k.endswith("_int8"):
             base = k[:-len("_int8")]
@@ -441,14 +531,20 @@ def main(paper_dir: str) -> None:
             ratios.append(fp / v["size_bytes"])
             fp32_mb.append(fp / 1e6)
             int8_mb.append(v["size_bytes"] / 1e6)
+            if not base.startswith("univ_full_"):
+                tier1_fp32_mb.append(fp / 1e6)
+                tier1_int8_mb.append(v["size_bytes"] / 1e6)
             cos.append(v["cosine_fidelity_vs_flax"])
     nums.append(macro_def("numTflite", str(len(tf))))
+    nums.append(macro_def("numTfliteTierOne", "12"))
     nums.append(macro_def("tfliteRatioMin", f"{min(ratios):.2f}"))
     nums.append(macro_def("tfliteRatioMax", f"{max(ratios):.2f}"))
-    nums.append(macro_def("tfliteFpMinMB", f"{min(fp32_mb):.2f}"))
-    nums.append(macro_def("tfliteFpMaxMB", f"{max(fp32_mb):.2f}"))
-    nums.append(macro_def("tfliteIntMinMB", f"{min(int8_mb):.2f}"))
-    nums.append(macro_def("tfliteIntMaxMB", f"{max(int8_mb):.2f}"))
+    nums.append(macro_def("tfliteFpMinMB", f"{min(tier1_fp32_mb):.2f}"))
+    nums.append(macro_def("tfliteFpMaxMB", f"{max(tier1_fp32_mb):.2f}"))
+    nums.append(macro_def("tfliteAllFpMaxMB", f"{max(fp32_mb):.2f}"))
+    nums.append(macro_def("tfliteIntMinMB", f"{min(tier1_int8_mb):.2f}"))
+    nums.append(macro_def("tfliteIntMaxMB", f"{max(tier1_int8_mb):.2f}"))
+    nums.append(macro_def("tfliteAllIntMaxMB", f"{max(int8_mb):.2f}"))
     nums.append(macro_def("tfliteCosMin", f"{min(cos):.6f}"))
     nums.append(macro_def("tfliteWindowFrames", "180"))
     nums.append(macro_def("tfliteWindowSec", "1.8"))
@@ -573,6 +669,84 @@ def main(paper_dir: str) -> None:
     )
     emit(os.path.join(out_dir, "table_highlights.tex"), tbl)
 
+    # ------------------------------------ Table: Tier-2 Full-Data Flagships & Fusion
+    flines = []
+    for mid in FLAGSHIP_ORDER:
+        m = fm[mid]
+        ob = m["official_benchmarks"]
+        vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
+        vx_as = f2(vx["as_norm"]["eer_percent"]) if "as_norm" in vx else "---"
+        vx_qmf = f"\\textbf{{{f2(vx['qmf']['eer_percent'])}}}" if round(vx["qmf"]["eer_percent"], 2) == 13.92 else f2(vx["qmf"]["eer_percent"])
+        cn_qmf = f"\\textbf{{{f2(cn['qmf']['eer_percent'])}}}" if round(cn["qmf"]["eer_percent"], 2) == 18.83 else f2(cn["qmf"]["eer_percent"])
+        cn_me = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
+        ls_qmf = f"\\textbf{{{f2(ls['qmf']['eer_percent'])}}}" if round(ls["qmf"]["eer_percent"], 2) == 8.06 else f2(ls["qmf"]["eer_percent"])
+        ls_3 = f"\\textbf{{{f2(ls['multi_enroll_3utt']['eer_percent'])}}}" if round(ls["multi_enroll_3utt"]["eer_percent"], 2) == 5.43 else f2(ls["multi_enroll_3utt"]["eer_percent"])
+        p1 = f2(d1(m, "universal_pooled")["eer_percent"])
+        p3_raw = d3(m, "universal_pooled")["eer_percent"]
+        p3_best = min(p3_raw, d3(m, "universal_pooled").get("as_norm", {}).get("eer_percent", p3_raw))
+        m1 = f2(macro(m, 1)["eer_percent"])
+        m3 = f2(macro(m, 3)["eer_percent"])
+        name = f"\\href{{https://huggingface.co/wq2012/{mid}}}{{\\texttt{{{tex_escape(mid)}}}}}"
+        if mid in TFLITE_REPOS:
+            name += "$^{\\dagger}$"
+        flines.append(
+            f"{name} & {int(m['num_parameters'])/1e6:.2f} & {int(m['num_steps']):,} & "
+            f"{f2(vx['eer_percent'])} / {vx_as} / {vx_qmf} & "
+            f"{f2(cn['eer_percent'])} / {cn_qmf} / {f2(cn_me)} & "
+            f"{f2(ls['eer_percent'])} / {ls_qmf} / {ls_3} & "
+            f"{p1} / {f2(p3_best)} & {m1} / {m3} \\\\"
+        )
+    flines.append("\\midrule")
+    flines.append(
+        f"2-Way Fusion ($0.1\\,\\text{{Conf-L}} + 0.9\\,\\text{{ECAPA}}$) & 21.91 & --- & "
+        f"--- / {f2(fus2['voxceleb1_o']['eer_percent'])} / \\textbf{{{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}}} & "
+        f"--- / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])} / --- & "
+        f"{f2(fus2['librispeech_test_clean']['eer_percent'])} / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
+        f"--- & --- \\\\"
+    )
+    flines.append(
+        f"3-Way Multi-Enroll ($0.5\\,\\text{{Conf-L}} + 0.3\\,\\text{{ECAPA}} + 0.2\\,\\text{{PFAS}}$) & 29.22 & --- & "
+        f"--- & --- / --- / \\textbf{{{f2(fus3['cnceleb_e_multi_enroll_map']['eer_percent'])}}} & "
+        f"--- / --- / \\textbf{{{f2(fus3['librispeech_test_clean_3utt']['eer_percent'])}}} & "
+        f"--- & --- \\\\"
+    )
+    ftbl = (
+        "\\begin{tabular}{@{}lrrccccc@{}}\n\\toprule\n"
+        "\\textbf{Tier-2 Flagship / Fusion} & \\textbf{M par.} & \\textbf{Steps} & "
+        "\\textbf{Vox1-O (Raw/ASN/QMF)} & \\textbf{CN-E (Raw/QMF/Multi)} & "
+        "\\textbf{LS-clean (Raw/QMF/3u)} & \\textbf{Pooled 1/3} & \\textbf{Macro 1/3} \\\\\n\\midrule\n"
+        + "\n".join(flines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
+    emit(os.path.join(out_dir, "table_flagship_official.tex"), ftbl)
+
+    # ------------------------------------------------ Table: 16-config PFAS sweep
+    plines = []
+    cands = pfas_sweep["candidates"]
+    for item in pfas_sweep["ranking"]:
+        cname = item["name"]
+        c = cands[cname]
+        sp = c["spec"]
+        v1, v3 = c["val_1utt_metrics"], c["val_3utt_metrics"]
+        anchor = f"Yes ({sp['local_value_scale']:.2f})" if sp["use_global_anchor"] else "No"
+        lstr = "GE2E" if sp["loss_type"] == "ge2e_softmax" else ("Pure ES" if sp["pure_extended_set"] else "BXS$^{*}$")
+        comp_s = f"\\textbf{{{f2(c['composite_val_eer_percent'])}}}" if item["rank"] == 1 else f2(c["composite_val_eer_percent"])
+        v1_s = f"\\textbf{{{f2(v1['eer_percent'])}}}" if item["rank"] == 1 else f2(v1["eer_percent"])
+        v3_s = f"\\textbf{{{f2(v3['eer_percent'])}}}" if item["rank"] == 1 else f2(v3["eer_percent"])
+        plines.append(
+            f"{item['rank']} & \\texttt{{{tex_escape(cname)}}} & \\texttt{{{tex_escape(sp['attention_type'])}}} & "
+            f"${sp['num_keys']}\\times({sp['key_dim']},{sp['value_dim']})$ & {c['representation_dim']} & "
+            f"{anchor} & {lstr} & {v1_s} [{f2(v1['eer_ci95_low_percent'])}, {f2(v1['eer_ci95_high_percent'])}] & "
+            f"{v3_s} [{f2(v3['eer_ci95_low_percent'])}, {f2(v3['eer_ci95_high_percent'])}] & {comp_s} \\\\"
+        )
+    ptbl = (
+        "\\begin{tabular}{@{}rlllrllccc@{}}\n\\toprule\n"
+        "\\textbf{Rk} & \\textbf{Candidate ID} & \\textbf{Attn.} & \\textbf{$K{\\times}(d_k,d_v)$} & "
+        "\\textbf{Dim} & \\textbf{Anchor} & \\textbf{Loss} & \\textbf{Val 1-utt [95\\% CI]} & "
+        "\\textbf{Val 3-utt [95\\% CI]} & \\textbf{Comp.} \\\\\n\\midrule\n"
+        + "\n".join(plines) + "\n\\bottomrule\n\\end{tabular}\n"
+    )
+    emit(os.path.join(out_dir, "table_pfas_sweep.tex"), ptbl)
+
     # ---------------------------------------------------- Table: all univ / single
     def zoo_table(mids: list[str], with_train: bool) -> str:
         rows = []
@@ -630,9 +804,10 @@ def main(paper_dir: str) -> None:
     emit(os.path.join(out_dir, "table_univ_all.tex"), zoo_table(univ_order, with_train=False))
     emit(os.path.join(out_dir, "table_single_all.tex"), zoo_table(single_order, with_train=True))
 
-    # ------------------------------- Table: minDCF / AUC / Vox1-O subset for all 44
+    # ------------------------------- Table: minDCF / AUC / Vox1-O subset for all 48
     rows = []
-    for mid in univ_order + single_order:
+    all_48_order = FLAGSHIP_ORDER + univ_order + single_order
+    for mid in all_48_order:
         e = ex[mid]
         v = e["cross_dataset_eval"]["vox1_o_10spk_subset"]
         rows.append((
@@ -655,7 +830,7 @@ def main(paper_dir: str) -> None:
     bvd = bold_min(list(cols[8]), f4)
     lines = []
     for i, r in enumerate(rows):
-        if i == len(univ_order):
+        if i in (len(FLAGSHIP_ORDER), len(FLAGSHIP_ORDER) + len(univ_order)):
             lines.append("\\midrule")
         lines.append(
             f"\\texttt{{{tex_escape(r[0])}}} & {b1[i]} / {b2[i]} & {a1[i]} / {a2[i]} & "
@@ -745,8 +920,8 @@ def main(paper_dir: str) -> None:
     s6_rows = []
     if "ecapa_norm_order_ablation" in st:
         ec = st["ecapa_norm_order_ablation"]
-        s6_rows.append(("ECAPA-TDNN LayerNorm before activation (default)", ec["ecapa_ln_before_act"]["multi_domain_eval"], True))
-        s6_rows.append(("ECAPA-TDNN LayerNorm after activation (BN-style)", ec["ecapa_bn_style_after_act"]["multi_domain_eval"], False))
+        s6_rows.append(("ECAPA-TDNN BatchNorm after activation (v0.5.0 default)", ec["ecapa_bn_style_after_act"]["multi_domain_eval"], True))
+        s6_rows.append(("ECAPA-TDNN LayerNorm before activation (legacy v0.4.0)", ec["ecapa_ln_before_act"]["multi_domain_eval"], False))
     if "vad_and_agc_ablation" in st:
         va = st["vad_and_agc_ablation"]
         s6_rows.append(("Frontend VAD 26\\,dB + peak AGC (default)", va["vad_26db_with_agc"]["multi_domain_eval"], True))
@@ -775,6 +950,17 @@ def main(paper_dir: str) -> None:
 
     # ------------------------------------------------------------- Table: TFLite
     tfl_lines = []
+    for fmid in ("univ_full_conformer_large_arcface", "univ_full_ecapa_c1024_arcface"):
+        te = ex[fmid].get("tflite_eval", {})
+        if te:
+            tfl_lines.append(
+                f"\\texttt{{{tex_escape(fmid)}}} & \\texttt{{voxceleb1\\_o}} & {f2(te['jax_full_seq_eer_percent'])} & "
+                f"{f2(te['eer_percent'])} & {f2(te['eer_percent_int8'])} & {te['eer_percent_int8'] - te['eer_percent']:+.2f} & "
+                f"--- & {te['cos_fp32_int8_mean']:.6f} / --- & "
+                f"{f2(te['latency_ms_fp32_mean_50runs'])} / {f2(te['latency_ms_int8_mean_50runs'])} \\\\"
+            )
+    if tfl_lines:
+        tfl_lines.append("\\midrule")
     for ttag, tmid in tfl_tags:
         te = ex[tmid].get("tflite_eval", {})
         if not te:

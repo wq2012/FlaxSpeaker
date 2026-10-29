@@ -5,7 +5,7 @@ Measures:
   1. 180-frame fixed-window 1-utterance EER (%) for both `model_fp32.tflite` and
      `model_int8.tflite` across `librispeech` (3,000 trials), `cnceleb2` (3,000 trials),
      `voxceleb1` (2,000 trials), `universal_pooled` (8,000 trials), and the 3-domain
-     macro-average, alongside the full-sequence (<=500-frame) masked JAX EER.
+     macro-average, alongside the full-sequence (<=3000-frame) masked JAX EER.
      Every EER carries a stratified trial-bootstrap 95 % CI
      (`evaluation.compute_bootstrap_eer_ci`, 500 resamples, seed 42) under
      `eer_ci95_low` / `eer_ci95_high` of the per-domain records.

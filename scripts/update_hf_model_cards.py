@@ -70,8 +70,8 @@ def main() -> None:
     parser.add_argument(
         "--commit_message",
         default=(
-            "v0.4.0: full-convergence checkpoints (S_safe = X + 2 epochs), "
-            "TFLite exports, and updated evaluation archives"
+            "v0.5.0: SOTA upgrade, MUSAN+RIR+speed shards, BatchNorm ECAPA, "
+            "AS-Norm, TFLite exports, and full-data flagships"
         ),
     )
     args = parser.parse_args()
