@@ -313,6 +313,11 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("fusionTwoCnQmf", f2(fus2["cnceleb_e"]["qmf"]["eer_percent"])))
     nums.append(macro_def("fusionTwoLsAsn", f2(fus2["librispeech_test_clean"]["eer_percent"])))
     nums.append(macro_def("fusionTwoLsQmf", f2(fus2["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    if "two_way_official_benchmarks" in fus:
+        fus_2w_m = fus["two_way_official_benchmarks"]
+        nums.append(macro_def("fusionTwoWVoxAsn", f2(fus_2w_m["voxceleb1_o"]["eer_percent"])))
+        nums.append(macro_def("fusionTwoWVoxQmf", f2(fus_2w_m["voxceleb1_o"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionTwoWLsQmf", f2(fus_2w_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
     nums.append(macro_def("fusionThreeCnMulti", f2(fus3["cnceleb_e_multi_enroll_map"]["eer_percent"])))
     nums.append(macro_def("fusionThreeCnMultiAuc", f4(fus3["cnceleb_e_multi_enroll_map"]["roc_auc"])))
     nums.append(macro_def("fusionThreeLsMulti", f2(fus3["librispeech_test_clean_3utt"]["eer_percent"])))
@@ -670,17 +675,31 @@ def main(paper_dir: str) -> None:
     emit(os.path.join(out_dir, "table_highlights.tex"), tbl)
 
     # ------------------------------------ Table: Tier-2 Full-Data Flagships & Fusion
+    min_vx_qmf = min(round(fm[mid]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_cn_qmf = min(round(fm[mid]["official_benchmarks"]["cnceleb_e"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_cn_me = min(
+        round(
+            fm[mid]["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"].get(
+                "as_norm", fm[mid]["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"]
+            )["eer_percent"],
+            2,
+        )
+        for mid in FLAGSHIP_ORDER
+    )
+    min_ls_qmf = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_ls_3 = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["multi_enroll_3utt"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
     flines = []
     for mid in FLAGSHIP_ORDER:
         m = fm[mid]
         ob = m["official_benchmarks"]
         vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
         vx_as = f2(vx["as_norm"]["eer_percent"]) if "as_norm" in vx else "---"
-        vx_qmf = f"\\textbf{{{f2(vx['qmf']['eer_percent'])}}}" if round(vx["qmf"]["eer_percent"], 2) == 13.92 else f2(vx["qmf"]["eer_percent"])
-        cn_qmf = f"\\textbf{{{f2(cn['qmf']['eer_percent'])}}}" if round(cn["qmf"]["eer_percent"], 2) == 18.83 else f2(cn["qmf"]["eer_percent"])
-        cn_me = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
-        ls_qmf = f"\\textbf{{{f2(ls['qmf']['eer_percent'])}}}" if round(ls["qmf"]["eer_percent"], 2) == 8.06 else f2(ls["qmf"]["eer_percent"])
-        ls_3 = f"\\textbf{{{f2(ls['multi_enroll_3utt']['eer_percent'])}}}" if round(ls["multi_enroll_3utt"]["eer_percent"], 2) == 5.43 else f2(ls["multi_enroll_3utt"]["eer_percent"])
+        vx_qmf = f"\\textbf{{{f2(vx['qmf']['eer_percent'])}}}" if round(vx["qmf"]["eer_percent"], 2) == min_vx_qmf else f2(vx["qmf"]["eer_percent"])
+        cn_qmf = f"\\textbf{{{f2(cn['qmf']['eer_percent'])}}}" if round(cn["qmf"]["eer_percent"], 2) == min_cn_qmf else f2(cn["qmf"]["eer_percent"])
+        cn_me_val = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
+        cn_me_s = f"\\textbf{{{f2(cn_me_val)}}}" if round(cn_me_val, 2) == min_cn_me else f2(cn_me_val)
+        ls_qmf = f"\\textbf{{{f2(ls['qmf']['eer_percent'])}}}" if round(ls["qmf"]["eer_percent"], 2) == min_ls_qmf else f2(ls["qmf"]["eer_percent"])
+        ls_3 = f"\\textbf{{{f2(ls['multi_enroll_3utt']['eer_percent'])}}}" if round(ls["multi_enroll_3utt"]["eer_percent"], 2) == min_ls_3 else f2(ls["multi_enroll_3utt"]["eer_percent"])
         p1 = f2(d1(m, "universal_pooled")["eer_percent"])
         p3_raw = d3(m, "universal_pooled")["eer_percent"]
         p3_best = min(p3_raw, d3(m, "universal_pooled").get("as_norm", {}).get("eer_percent", p3_raw))
@@ -692,20 +711,46 @@ def main(paper_dir: str) -> None:
         flines.append(
             f"{name} & {int(m['num_parameters'])/1e6:.2f} & {int(m['num_steps']):,} & "
             f"{f2(vx['eer_percent'])} / {vx_as} / {vx_qmf} & "
-            f"{f2(cn['eer_percent'])} / {cn_qmf} / {f2(cn_me)} & "
+            f"{f2(cn['eer_percent'])} / {cn_qmf} / {cn_me_s} & "
             f"{f2(ls['eer_percent'])} / {ls_qmf} / {ls_3} & "
             f"{p1} / {f2(p3_best)} & {m1} / {m3} \\\\"
         )
     flines.append("\\midrule")
-    flines.append(
-        f"2-Way Fusion ($0.1\\,\\text{{Conf-L}} + 0.9\\,\\text{{ECAPA}}$) & 21.91 & --- & "
-        f"--- / {f2(fus2['voxceleb1_o']['eer_percent'])} / \\textbf{{{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}}} & "
-        f"--- / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])} / --- & "
-        f"{f2(fus2['librispeech_test_clean']['eer_percent'])} / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
-        f"--- & --- \\\\"
+    all4_params = sum(int(fm[m]["num_parameters"]) for m in FLAGSHIP_ORDER) / 1e6
+    if "two_way_official_benchmarks" in fus:
+        fus_2w = fus["two_way_official_benchmarks"]
+        w2 = fus.get("two_way_weights_selected_on_val", [0.5, 0.5])
+        flines.append(
+            f"2-Way Fusion (${w2[0]:.2g}\\,\\text{{Conf-L}} + {w2[1]:.2g}\\,\\text{{ECAPA}}$) & 21.91 & --- & "
+            f"--- / {f2(fus_2w['voxceleb1_o']['eer_percent'])} / {f2(fus_2w['voxceleb1_o']['qmf']['eer_percent'])} & "
+            f"--- / {f2(fus_2w['cnceleb_e']['qmf']['eer_percent'])} / --- & "
+            f"{f2(fus_2w['librispeech_test_clean']['eer_percent'])} / {f2(fus_2w['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
+            f"--- & --- \\\\"
+        )
+        flines.append(
+            f"4-Way Flagship Fusion (Conf-L + ECAPA + PFAS + DrV) & {all4_params:.2f} & --- & "
+            f"--- / \\textbf{{{f2(fus2['voxceleb1_o']['eer_percent'])}}} / \\textbf{{{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}}} & "
+            f"--- / \\textbf{{{f2(fus2['cnceleb_e']['qmf']['eer_percent'])}}} / --- & "
+            f"\\textbf{{{f2(fus2['librispeech_test_clean']['eer_percent'])}}} / \\textbf{{{f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}}} / --- & "
+            f"--- & --- \\\\"
+        )
+    else:
+        flines.append(
+            f"2-Way Fusion ($0.1\\,\\text{{Conf-L}} + 0.9\\,\\text{{ECAPA}}$) & 21.91 & --- & "
+            f"--- / {f2(fus2['voxceleb1_o']['eer_percent'])} / \\textbf{{{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}}} & "
+            f"--- / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])} / --- & "
+            f"{f2(fus2['librispeech_test_clean']['eer_percent'])} / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
+            f"--- & --- \\\\"
+        )
+    me_mids = fus3.get("models", ["univ_full_conformer_large_arcface", "univ_full_ecapa_c1024_arcface", "univ_full_conformer_large_pfas"])
+    me_params = sum(int(fm[m]["num_parameters"]) for m in me_mids if m in fm) / 1e6
+    me_lbl = (
+        "4-Way Multi-Enroll (Conf-L + ECAPA + PFAS + DrV)"
+        if len(me_mids) == 4
+        else "3-Way Multi-Enroll (Conf-L + ECAPA + PFAS)"
     )
     flines.append(
-        f"3-Way Multi-Enroll ($0.5\\,\\text{{Conf-L}} + 0.3\\,\\text{{ECAPA}} + 0.2\\,\\text{{PFAS}}$) & 29.22 & --- & "
+        f"{me_lbl} & {me_params:.2f} & --- & "
         f"--- & --- / --- / \\textbf{{{f2(fus3['cnceleb_e_multi_enroll_map']['eer_percent'])}}} & "
         f"--- / --- / \\textbf{{{f2(fus3['librispeech_test_clean_3utt']['eer_percent'])}}} & "
         f"--- & --- \\\\"

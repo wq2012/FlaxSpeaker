@@ -421,18 +421,29 @@ def compute_speaker_centroid_cohort(
         feature_cache=feature_cache,
         precomputed_embeddings=precomputed_embeddings,
     )
+    scoring_t = str(
+        getattr(exp_cfg.model.scoring_type, "value", exp_cfg.model.scoring_type)
+    )
     centroids: list[np.ndarray] = []
     for s in spks:
-        u_embs = [
-            utt_to_emb[u] / (np.linalg.norm(utt_to_emb[u]) + 1e-6)
-            for u in selected_map[s]
-            if u in utt_to_emb
-        ]
-        if not u_embs:
-            continue
-        c = np.mean(u_embs, axis=0)
-        c = (c / (np.linalg.norm(c) + 1e-6)).astype(np.float32)
-        centroids.append(c)
+        if scoring_t == "pfas":
+            u_embs = [
+                utt_to_emb[u] for u in selected_map[s] if u in utt_to_emb
+            ]
+            if not u_embs:
+                continue
+            centroids.append(np.mean(u_embs, axis=0).astype(np.float32))
+        else:
+            u_embs = [
+                utt_to_emb[u] / (np.linalg.norm(utt_to_emb[u]) + 1e-6)
+                for u in selected_map[s]
+                if u in utt_to_emb
+            ]
+            if not u_embs:
+                continue
+            c = np.mean(u_embs, axis=0)
+            c = (c / (np.linalg.norm(c) + 1e-6)).astype(np.float32)
+            centroids.append(c)
     if not centroids:
         raise ValueError("No valid cohort speaker centroids could be computed.")
     return np.stack(centroids, axis=0)
@@ -526,12 +537,26 @@ def _apply_unique_utt_as_norm(
     utt_to_emb: dict[str, np.ndarray],
     cohort: np.ndarray,
     top_k: int,
+    scoring_type: str = "cosine",
+    pfas_cfg: Any = None,
+    pfas_scale: float = 16.0,
 ) -> np.ndarray:
     """Computes exact AS-Norm in `O(U * C + N_trials)` via unique-utterance cohort stats."""
     u_keys = list(utt_to_emb.keys())
     u_idx = {u: i for i, u in enumerate(u_keys)}
     u_mat = np.stack([utt_to_emb[u] for u in u_keys], axis=0)
-    mu_u, std_u = scoring.compute_cohort_topk_stats(u_mat, cohort, top_k=top_k)
+    if scoring_type == "pfas" and pfas_cfg is not None:
+        mu_u, std_u = scoring.compute_pfas_cohort_topk_stats(
+            u_mat,
+            cohort,
+            pfas_cfg=pfas_cfg,
+            scale_factor=pfas_scale,
+            top_k=top_k,
+        )
+    else:
+        mu_u, std_u = scoring.compute_cohort_topk_stats(
+            u_mat, cohort, top_k=top_k
+        )
 
     e_indices = np.fromiter(
         (u_idx[u1] for _, u1, _ in trials), dtype=np.int64, count=len(trials)
@@ -690,7 +715,13 @@ def evaluate_verification_trials(
     c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
 
     as_norm_subdict: Optional[dict[str, Any]] = None
-    if use_as_norm and scoring_type == "cosine":
+    pfas_cfg_opt = exp_cfg.model.pfas if scoring_type == "pfas" else None
+    pfas_scale_opt = (
+        float(np.exp(float(state.params["_aux_pfas_log_scale"])))
+        if (scoring_type == "pfas" and "_aux_pfas_log_scale" in state.params)
+        else float(exp_cfg.model.pfas.scale_factor)
+    )
+    if use_as_norm and scoring_type in ("cosine", "dr_vector", "pfas"):
         cohort = require_disjoint_cohort(
             cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
         )
@@ -700,11 +731,14 @@ def evaluate_verification_trials(
             {u: utt_to_emb[u] for u in unique_utts},
             cohort,
             top_k=top_k,
+            scoring_type=scoring_type,
+            pfas_cfg=pfas_cfg_opt,
+            pfas_scale=pfas_scale_opt,
         )
     elif (
         include_as_norm_breakdown
         and cohort_embeddings is not None
-        and scoring_type == "cosine"
+        and scoring_type in ("cosine", "dr_vector", "pfas")
     ):
         cohort = require_disjoint_cohort(
             cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
@@ -715,6 +749,9 @@ def evaluate_verification_trials(
             {u: utt_to_emb[u] for u in unique_utts},
             cohort,
             top_k=top_k,
+            scoring_type=scoring_type,
+            pfas_cfg=pfas_cfg_opt,
+            pfas_scale=pfas_scale_opt,
         )
         as_norm_subdict = _compute_metrics_dict(
             labels, asn_scores, c_miss=c_miss, c_fa=c_fa, compute_ci=len(trials) <= 50000
@@ -866,6 +903,21 @@ def evaluate_multi_enroll_trials(
                 c = (c / (np.linalg.norm(c) + 1e-6)).astype(np.float32)
                 enroll_key_to_centroid[key] = c
 
+        c_keys = list(enroll_key_to_centroid.keys())
+        c_idx = {k: i for i, k in enumerate(c_keys)}
+        c_mat = np.stack([enroll_key_to_centroid[k] for k in c_keys], axis=0)
+
+        u_keys = unique_utts
+        u_idx = {u: i for i, u in enumerate(u_keys)}
+        u_mat = np.stack([utt_to_emb[u] for u in u_keys], axis=0).astype(
+            np.float32
+        )
+        u_norm = u_mat / (
+            np.linalg.norm(u_mat, axis=-1, keepdims=True) + 1e-6
+        )
+        e_arr_np = c_mat
+        t_arr_np = u_norm
+
         if scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
             dr_net = scoring.build_decision_residual_network(
                 exp_cfg.model.dr_vector
@@ -892,19 +944,6 @@ def evaluate_multi_enroll_trials(
                     )
                 )
         else:
-            c_keys = list(enroll_key_to_centroid.keys())
-            c_idx = {k: i for i, k in enumerate(c_keys)}
-            c_mat = np.stack([enroll_key_to_centroid[k] for k in c_keys], axis=0)
-
-            u_keys = unique_utts
-            u_idx = {u: i for i, u in enumerate(u_keys)}
-            u_mat = np.stack([utt_to_emb[u] for u in u_keys], axis=0).astype(
-                np.float32
-            )
-            u_norm = u_mat / (
-                np.linalg.norm(u_mat, axis=-1, keepdims=True) + 1e-6
-            )
-
             n_tr = len(trials)
             scores_arr = np.empty((n_tr,), dtype=np.float64)
             for s_i in range(0, n_tr, 131072):
@@ -923,8 +962,6 @@ def evaluate_multi_enroll_trials(
                 scores_arr[s_i:e_i] = np.sum(
                     c_mat[ci] * u_norm[ti], axis=-1, dtype=np.float64
                 )
-            e_arr_np = c_mat
-            t_arr_np = u_norm
 
     use_as_norm = bool(
         getattr(exp_cfg.eval, "use_as_norm", False)
@@ -944,7 +981,7 @@ def evaluate_multi_enroll_trials(
     as_norm_subdict: Optional[dict[str, Any]] = None
     if (
         (use_as_norm or (include_as_norm_breakdown and cohort_embeddings is not None))
-        and scoring_type == "cosine"
+        and scoring_type in ("cosine", "dr_vector")
         and e_arr_np is not None
         and t_arr_np is not None
     ):
@@ -956,6 +993,70 @@ def evaluate_multi_enroll_trials(
         c_keys = list(enroll_key_to_centroid.keys())
         c_idx = {k: i for i, k in enumerate(c_keys)}
         u_idx = {u: i for i, u in enumerate(unique_utts)}
+        ci_all = np.fromiter(
+            (c_idx[tuple(eu)] for _, eu, _ in trials),
+            dtype=np.int64,
+            count=len(trials),
+        )
+        ti_all = np.fromiter(
+            (u_idx[tu] for _, _, tu in trials),
+            dtype=np.int64,
+            count=len(trials),
+        )
+        norm_scores = 0.5 * (
+            (scores_arr - mu_c[ci_all]) / std_c[ci_all]
+            + (scores_arr - mu_u[ti_all]) / std_u[ti_all]
+        )
+        best_scores_out = norm_scores
+        if use_as_norm:
+            scores_arr = norm_scores
+        else:
+            as_norm_subdict = _compute_metrics_dict(
+                labels,
+                norm_scores,
+                c_miss=c_miss,
+                c_fa=c_fa,
+                compute_ci=len(trials) <= 50000,
+            )
+            as_norm_subdict["top_k"] = top_k
+    elif (
+        (use_as_norm or (include_as_norm_breakdown and cohort_embeddings is not None))
+        and scoring_type == "pfas"
+    ):
+        cohort = require_disjoint_cohort(
+            cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
+        )
+        u_mat_pf = np.stack([utt_to_emb[u] for u in unique_utts], axis=0).astype(
+            np.float32
+        )
+        mu_u, std_u = scoring.compute_pfas_cohort_topk_stats(
+            u_mat_pf,
+            cohort,
+            pfas_cfg=pfas_cfg,
+            scale_factor=pfas_scale,
+            top_k=top_k,
+        )
+        u_idx = {u: i for i, u in enumerate(unique_utts)}
+        c_keys = list(enroll_key_to_stacked.keys())
+        c_idx = {k: i for i, k in enumerate(c_keys)}
+        mu_c = np.empty((len(c_keys),), dtype=np.float64)
+        std_c = np.empty((len(c_keys),), dtype=np.float64)
+        c_by_len: dict[int, list[int]] = {}
+        for i_c, k_tup in enumerate(c_keys):
+            c_by_len.setdefault(len(k_tup), []).append(i_c)
+        for _, c_idxs in c_by_len.items():
+            c_sub = np.stack(
+                [enroll_key_to_stacked[c_keys[i_c]] for i_c in c_idxs], axis=0
+            )
+            m_sub, s_sub = scoring.compute_pfas_cohort_topk_stats(
+                c_sub,
+                cohort,
+                pfas_cfg=pfas_cfg,
+                scale_factor=pfas_scale,
+                top_k=top_k,
+            )
+            mu_c[np.asarray(c_idxs, dtype=np.int64)] = m_sub
+            std_c[np.asarray(c_idxs, dtype=np.int64)] = s_sub
         ci_all = np.fromiter(
             (c_idx[tuple(eu)] for _, eu, _ in trials),
             dtype=np.int64,

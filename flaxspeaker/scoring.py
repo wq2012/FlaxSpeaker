@@ -214,9 +214,14 @@ def pfas_score_matrix(
     Implements Eq. 5-6 of Pelecanos et al. (`arXiv:2203.05642v3`).
     """
     kv_unit = key_dim + value_dim
+    num_test_keys = (
+        test_packed.shape[-1] // kv_unit
+        if test_packed.shape[-1] % kv_unit == 0
+        else num_keys
+    )
     num_enroll_keys = enroll_packed.shape[-1] // kv_unit
     t_keys, t_vals = unpack_pfas_representation(
-        test_packed, num_keys, key_dim, value_dim
+        test_packed, num_test_keys, key_dim, value_dim
     )
     e_keys, e_vals = unpack_pfas_representation(
         enroll_packed, num_enroll_keys, key_dim, value_dim
@@ -503,6 +508,67 @@ def compute_cohort_topk_stats(
     for start in range(0, n, step):
         end = min(n, start + step)
         sims = np.matmul(x_norm[start:end], c_t)  # (chunk, N_cohort)
+        if k < sims.shape[1]:
+            topk = np.partition(sims, sims.shape[1] - k, axis=-1)[:, -k:]
+        else:
+            topk = sims
+        mu[start:end] = np.mean(topk, axis=-1, dtype=np.float64)
+        std[start:end] = np.maximum(
+            np.std(topk, axis=-1, dtype=np.float64), eps
+        )
+    return mu, std
+
+
+def compute_pfas_cohort_topk_stats(
+    embs: np.ndarray,
+    cohort_embs: np.ndarray,
+    pfas_cfg: Any,
+    scale_factor: float = 16.0,
+    top_k: int = 100,
+    chunk_size: int = 256,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute top-`top_k` PFAS cohort mean and std for `(N, D)` packed embeddings."""
+    import functools
+
+    x = np.asarray(embs, dtype=np.float32)
+    c_j = jnp.asarray(cohort_embs, dtype=jnp.float32)
+    score_mat_fn = jax.jit(
+        functools.partial(
+            pfas_score_matrix,
+            num_keys=int(pfas_cfg.num_keys),
+            key_dim=int(pfas_cfg.key_dim),
+            value_dim=int(pfas_cfg.value_dim),
+            scale_factor=float(scale_factor),
+            per_trial_softmax=bool(pfas_cfg.per_trial_softmax),
+            apply_softmax_per_test_key=bool(
+                getattr(pfas_cfg, "apply_softmax_per_test_key", False)
+            ),
+            apply_l2_norm_to_keys=bool(
+                getattr(pfas_cfg, "apply_l2_norm_to_keys", True)
+            ),
+            apply_l2_norm_to_values=bool(
+                getattr(pfas_cfg, "apply_l2_norm_to_values", False)
+            ),
+            apply_global_l2_norm_to_concat_form=bool(
+                getattr(pfas_cfg, "apply_global_l2_norm_to_concat_form", True)
+            ),
+            attention_weight_mode=str(
+                getattr(pfas_cfg, "attention_weight_mode", "exp")
+            ),
+            eps=eps,
+        )
+    )
+    n = x.shape[0]
+    k = max(1, min(int(top_k), cohort_embs.shape[0]))
+    mu = np.empty((n,), dtype=np.float64)
+    std = np.empty((n,), dtype=np.float64)
+    step = max(1, int(chunk_size))
+    for start in range(0, n, step):
+        end = min(n, start + step)
+        sims = np.asarray(
+            score_mat_fn(jnp.asarray(x[start:end]), c_j), dtype=np.float64
+        )
         if k < sims.shape[1]:
             topk = np.partition(sims, sims.shape[1] - k, axis=-1)[:, -k:]
         else:

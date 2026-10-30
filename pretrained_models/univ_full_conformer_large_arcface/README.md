@@ -69,7 +69,7 @@ This flagship model was trained for **4,500 gradient steps** (warmup `150` steps
 - `config.json`: `FlaxSpeakerConfig` (full `ExperimentConfig`, incl. the frontend/VAD settings)
 - `eval_results.json`: multi-domain evaluation metrics (1-utt & 3-utt EER, minDCF, ROC-AUC, 95% bootstrap CIs, VoxCeleb1-O 10-speaker subset)
 - `model_fp32.tflite` / `model_int8.tflite`: `jax2tf` exports of the **encoder only** with a **fixed, unmasked 180-frame (1.8 s) input window** `[1, 180, 80]` -> `[1, 256]`. All EERs in the main tables below come from full-sequence masked JAX inference (up to 3000 frames / 30 s); the TFLite models see a centre crop and the reported cosine fidelity (>= 0.9999 vs. JAX) was measured on 180-frame inputs.
-  - Measured 180-frame TFLite 1-utt EER (VoxCeleb1-O official (37,611 trials, 180-frame center crop)): FP32 **18.46%**, INT8 **18.45%**, mean `cos(FP32, INT8)` = `0.999986` (vs. full-sequence masked JAX: `15.20%`)
+  - Measured 180-frame TFLite 1-utt EER (VoxCeleb1-O official (37,611 trials, 180-frame center crop)): FP32 **17.24%**, INT8 **17.25%**, mean `cos(FP32, INT8)` = `0.999977` (vs. full-sequence masked JAX: `14.59%`)
 
 ## Quickstart Usage
 
@@ -97,11 +97,11 @@ python scripts/inference.py --model_dir wq2012/univ_full_conformer_large_arcface
 
 | Benchmark | Trials | Raw EER (%) | AS-Norm EER (%) | AS-Norm + QMF EER (%) | minDCF@0.01 | ROC-AUC |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **VoxCeleb1-O (`veri_test2.txt`, 40 spks)** | 37,611 | **15.20%** | **14.56%** | **14.58%** | 0.9464 | 0.9320 |
-| **CN-Celeb-E (`eval/lists/trials.lst`, 200 spks)** | 3,484,292 | **21.11%** | **20.29%** | **19.94%** | 0.9901 | 0.8792 |
-| **CN-Celeb-E Multi-Enroll (`enroll.map`)** | 3,484,292 | **20.00%** | **18.89%** | — | 0.9886 | 0.8869 |
-| **LibriSpeech `test-clean` (40 spks)** | 10,000 | **9.90%** | **8.93%** | **8.73%** | 0.7500 | 0.9657 |
-| **LibriSpeech `test-clean` (3-Utt)** | 3,000 | **6.13%** | **6.30%** | — | 0.4733 | 0.9853 |
+| **VoxCeleb1-O (`veri_test2.txt`, 40 spks)** | 37,611 | **14.59%** | **13.90%** | **13.87%** | 0.9300 | 0.9386 |
+| **CN-Celeb-E (`eval/lists/trials.lst`, 200 spks)** | 3,484,292 | **20.12%** | **19.73%** | **19.49%** | 0.9689 | 0.8921 |
+| **CN-Celeb-E Multi-Enroll (`enroll.map`)** | 3,484,292 | **18.60%** | **17.69%** | — | 0.9733 | 0.9025 |
+| **LibriSpeech `test-clean` (40 spks)** | 10,000 | **9.48%** | **8.50%** | **7.95%** | 0.7330 | 0.9667 |
+| **LibriSpeech `test-clean` (3-Utt)** | 3,000 | **6.23%** | **5.53%** | — | 0.4113 | 0.9867 |
 
 ## Multi-Domain Evaluation Results
 
@@ -111,21 +111,21 @@ Trial lists are 50/50 target/impostor over held-out speakers (LibriSpeech 40, CN
 
 | Evaluation Split | Trials | Raw EER (%) | AS-Norm EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | minDCF@0.10 | ROC-AUC |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **LibriSpeech (English Read)** | 3,000 | **9.43%** | **9.20%** | [8.53, 10.50] | 0.8193 | 0.4433 | 0.9678 |
-| **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **17.43%** | **17.27%** | [15.82, 18.83] | 0.9720 | 0.7940 | 0.9071 |
-| **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **17.00%** | **16.00%** | [15.32, 18.85] | 0.8020 | 0.7460 | 0.9187 |
-| **Universal Pooled (All 3 Domains)** | 8,000 | **14.55%** | **14.99%** | [13.72, 15.36] | 0.9780 | 0.6683 | 0.9337 |
-| **Universal Macro-Average (3 Domains)** | — | **14.62%** | **14.16%** | — | 0.8644 | 0.6611 | 0.9312 |
+| **LibriSpeech (English Read)** | 3,000 | **9.03%** | **8.73%** | [8.07, 10.10] | 0.7227 | 0.4360 | 0.9686 |
+| **CN-Celeb2 (Chinese Multi-Genre)** | 3,000 | **16.43%** | **16.77%** | [15.16, 17.99] | 0.9173 | 0.7040 | 0.9178 |
+| **VoxCeleb1 (In-the-Wild Celebrity)** | 2,000 | **15.40%** | **14.80%** | [13.80, 17.35] | 0.7380 | 0.7160 | 0.9281 |
+| **Universal Pooled (All 3 Domains)** | 8,000 | **13.89%** | **14.15%** | [13.12, 14.64] | 0.8965 | 0.6140 | 0.9413 |
+| **Universal Macro-Average (3 Domains)** | — | **13.62%** | **13.43%** | — | 0.7927 | 0.6187 | 0.9382 |
 
 ### 3-Utterance Multi-Enrollment Verification Across Evaluation Domains
 
 | Evaluation Split | Trials | 3-Utt EER (%) | 95% Bootstrap CI (%) | minDCF@0.01 | ROC-AUC |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **LibriSpeech (3-Utt)** | 1,000 | **7.20%** | [5.10, 8.65] | 0.3420 | 0.9854 |
-| **CN-Celeb2 (3-Utt)** | 1,000 | **12.90%** | [10.15, 14.40] | 0.8180 | 0.9518 |
-| **VoxCeleb1 (3-Utt)** | 1,000 | **12.80%** | [10.65, 14.80] | 0.8220 | 0.9466 |
-| **Universal Pooled (3-Utt)** | 3,000 | **11.50%** | [10.13, 12.47] | 0.8520 | 0.9603 |
-| **Universal Macro-Average (3-Utt)** | — | **10.97%** | — | 0.6607 | 0.9613 |
+| **LibriSpeech (3-Utt)** | 1,000 | **6.80%** | [5.20, 8.40] | 0.4140 | 0.9850 |
+| **CN-Celeb2 (3-Utt)** | 1,000 | **11.60%** | [9.65, 13.30] | 0.8380 | 0.9576 |
+| **VoxCeleb1 (3-Utt)** | 1,000 | **11.70%** | [9.60, 13.80] | 0.8020 | 0.9566 |
+| **Universal Pooled (3-Utt)** | 3,000 | **9.97%** | [8.90, 11.07] | 0.7933 | 0.9668 |
+| **Universal Macro-Average (3-Utt)** | — | **10.03%** | — | 0.6847 | 0.9664 |
 
 Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences below about 1% absolute EER between FlaxSpeaker checkpoints are within the seed-to-seed variation measured in `pretrained_models/r2_seed_and_control_results.json` (see the GitHub README) and should not be interpreted as rankings.
 
@@ -135,7 +135,7 @@ Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences b
 - **Augmentation**: corpus-backed MUSAN environmental noise, music, and multi-speaker babble + RIRS_NOISES room impulse responses + 3-way polyphase speed perturbation (`0.9x`, `1.0x`, `1.1x`) + SpecAugment.
 - **Conformer**: parallel linear + Conv1D stem, no positional encoding, 4 blocks x 320-D, 8 heads, kernel 15, mask-aware GroupNorm(2), no dropout, multi-layer feature aggregation; the Google papers use 12 x 512 blocks, 4-8 heads, kernel 32, relative positional encoding and dropout.
 - **ATP pooling**: 4 heads with a tanh bottleneck (128-D) and `subspace_heads = True`; the papers use a single head with a linear-sigmoid weight (`attention_dim = 0`). Note that arXiv:2202.12163 is a language-identification paper whose pooling head is repurposed here.
-- **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation processes up to 3000 frames (30.0 s).
+- **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation processes up to 1024 frames (10.2 s).
 
 ## Citation
 

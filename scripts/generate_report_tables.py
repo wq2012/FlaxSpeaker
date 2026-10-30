@@ -70,6 +70,10 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
     )
     out.append("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
+    min_vx_qmf = min(round(fm[mid]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_cn_qmf = min(round(fm[mid]["official_benchmarks"]["cnceleb_e"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_ls_qmf = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_ls_3 = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["multi_enroll_3utt"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
     for mid in FLAGSHIP_ORDER:
         m = fm[mid]
         ob = m["official_benchmarks"]
@@ -77,11 +81,11 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
         cn = ob["cnceleb_e"]
         ls = ob["librispeech_test_clean"]
         vx_as = f"{f2(vx['as_norm']['eer_percent'])}%" if "as_norm" in vx else "—"
-        vx_qmf = f"**{f2(vx['qmf']['eer_percent'])}%**" if round(vx["qmf"]["eer_percent"], 2) == 13.92 else f"{f2(vx['qmf']['eer_percent'])}%"
+        vx_qmf = f"**{f2(vx['qmf']['eer_percent'])}%**" if round(vx["qmf"]["eer_percent"], 2) == min_vx_qmf else f"{f2(vx['qmf']['eer_percent'])}%"
         cn_me = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
-        cn_qmf = f"**{f2(cn['qmf']['eer_percent'])}%**" if round(cn["qmf"]["eer_percent"], 2) == 18.83 else f"{f2(cn['qmf']['eer_percent'])}%"
-        ls_qmf = f"**{f2(ls['qmf']['eer_percent'])}%**" if round(ls["qmf"]["eer_percent"], 2) == 8.06 else f"{f2(ls['qmf']['eer_percent'])}%"
-        ls_3 = f"**{f2(ls['multi_enroll_3utt']['eer_percent'])}%**" if round(ls["multi_enroll_3utt"]["eer_percent"], 2) == 5.43 else f"{f2(ls['multi_enroll_3utt']['eer_percent'])}%"
+        cn_qmf = f"**{f2(cn['qmf']['eer_percent'])}%**" if round(cn["qmf"]["eer_percent"], 2) == min_cn_qmf else f"{f2(cn['qmf']['eer_percent'])}%"
+        ls_qmf = f"**{f2(ls['qmf']['eer_percent'])}%**" if round(ls["qmf"]["eer_percent"], 2) == min_ls_qmf else f"{f2(ls['qmf']['eer_percent'])}%"
+        ls_3 = f"**{f2(ls['multi_enroll_3utt']['eer_percent'])}%**" if round(ls["multi_enroll_3utt"]["eer_percent"], 2) == min_ls_3 else f"{f2(ls['multi_enroll_3utt']['eer_percent'])}%"
         p1 = d1(m, "universal_pooled")["eer_percent"]
         p3_raw = d3(m, "universal_pooled")["eer_percent"]
         p3_best = d3(m, "universal_pooled").get("as_norm", {}).get("eer_percent", p3_raw)
@@ -99,16 +103,36 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             f"{f2(m1_raw)}% / {f2(m3_raw)}% |"
         )
 
+    if "two_way_official_benchmarks" in fus:
+        fus_2w = fus["two_way_official_benchmarks"]
+        w2 = fus.get("two_way_weights_selected_on_val", [0.5, 0.5])
+        out.append(
+            f"| **2-Way Score Fusion (`{w2[0]:.2g}·Conformer-L + {w2[1]:.2g}·ECAPA-c1024`)** | "
+            f"Heterogeneous Cosine + AS-Norm + QMF | `21,906,500` | — | "
+            f"— / {f2(fus_2w['voxceleb1_o']['eer_percent'])}% / {f2(fus_2w['voxceleb1_o']['qmf']['eer_percent'])}% | "
+            f"— / {f2(fus_2w['cnceleb_e']['qmf']['eer_percent'])}% / — | "
+            f"{f2(fus_2w['librispeech_test_clean']['eer_percent'])}% / {f2(fus_2w['librispeech_test_clean']['qmf']['eer_percent'])}% / — | "
+            f"— | — |"
+        )
+        out.append(
+            f"| **4-Way Flagship Fusion (`Conf-L + ECAPA + PFAS + DrV`)** | "
+            f"Heterogeneous 4-Way AS-Norm + QMF | `36,367,570` | — | "
+            f"— / **{f2(fus2['voxceleb1_o']['eer_percent'])}%** / **{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}%** | "
+            f"— / **{f2(fus2['cnceleb_e']['qmf']['eer_percent'])}%** / — | "
+            f"**{f2(fus2['librispeech_test_clean']['eer_percent'])}%** / **{f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}%** / — | "
+            f"— | — |"
+        )
+    else:
+        out.append(
+            f"| **2-Way Score Fusion (`0.1·Conformer-L + 0.9·ECAPA-c1024`)** | "
+            f"Heterogeneous Cosine + AS-Norm + QMF | `21,906,500` | — | "
+            f"— / {f2(fus2['voxceleb1_o']['eer_percent'])}% / **{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}%** | "
+            f"— / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])}% / — | "
+            f"{f2(fus2['librispeech_test_clean']['eer_percent'])}% / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}% / — | "
+            f"— | — |"
+        )
     out.append(
-        f"| **2-Way Score Fusion (`0.1·Conformer-L + 0.9·ECAPA-c1024`)** | "
-        f"Heterogeneous Cosine + AS-Norm + QMF | `21,906,500` | — | "
-        f"— / {f2(fus2['voxceleb1_o']['eer_percent'])}% / **{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}%** | "
-        f"— / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])}% / — | "
-        f"{f2(fus2['librispeech_test_clean']['eer_percent'])}% / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}% / — | "
-        f"— | — |"
-    )
-    out.append(
-        f"| **3-Way Multi-Enroll Fusion (`0.5·Conf-L + 0.3·ECAPA + 0.2·PFAS`)** | "
+        f"| **3-Way Multi-Enroll Fusion (`0.4·Conf-L + 0.4·ECAPA + 0.2·PFAS`)** | "
         f"Cosine AS-Norm + Frame-Level PFAS | `29,218,827` | — | "
         f"— | — / — / **{f2(fus3['cnceleb_e_multi_enroll_map']['eer_percent'])}%** (`AUC {f4(fus3['cnceleb_e_multi_enroll_map']['roc_auc'])}`) | "
         f"— / — / **{f2(fus3['librispeech_test_clean_3utt']['eer_percent'])}%** (`AUC {f4(fus3['librispeech_test_clean_3utt']['roc_auc'])}`) | "

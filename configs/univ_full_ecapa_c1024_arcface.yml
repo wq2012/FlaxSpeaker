@@ -286,7 +286,7 @@ train:
     margin_warmup_steps: 300
 eval:
   full_sequence_inference: true
-  max_eval_frames_cap: 3000
+  max_eval_frames_cap: 1024
   num_triplets: 1000
   threshold_step: 0.001
   num_enroll_utts: 1

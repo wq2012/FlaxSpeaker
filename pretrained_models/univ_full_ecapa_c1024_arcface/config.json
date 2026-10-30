@@ -34,7 +34,7 @@
       "dcf_c_fa": 1.0,
       "dcf_c_miss": 1.0,
       "full_sequence_inference": true,
-      "max_eval_frames_cap": 3000,
+      "max_eval_frames_cap": 1024,
       "num_enroll_utts": 1,
       "num_triplets": 1000,
       "threshold_step": 0.001,

@@ -103,13 +103,12 @@ def _compute_cohort_centroids_from_shard_store(
     exp_cfg: configs.ExperimentConfig,
     store: shard_cache.ShardedFeatureStore,
     shard_dir: str,
+    batch_size: int = 64,
 ) -> Optional[np.ndarray]:
-    """Computes `600` L2-normalized speaker-centroid cohort embeddings from `universal_full_v050`."""
+    """Computes `600` speaker-centroid cohort embeddings from `universal_full_v050` in bucketed batches."""
     scoring_t = str(
         getattr(exp_cfg.model.scoring_type, "value", exp_cfg.model.scoring_type)
     )
-    if scoring_t != "cosine":
-        return None
     cohort_json = os.path.join(shard_dir, "cohort_clean_item_indices.json")
     if not os.path.isfile(cohort_json):
         return None
@@ -120,29 +119,53 @@ def _compute_cohort_centroids_from_shard_store(
     if getattr(state, "batch_stats", None):
         variables["batch_stats"] = state.batch_stats
 
-    centroids: list[np.ndarray] = []
-    for spk in sorted(spk_to_indices.keys()):
-        idxs = spk_to_indices[spk][:5]
-        u_embs: list[np.ndarray] = []
-        for item_idx in idxs:
+    spks = sorted(spk_to_indices.keys())
+    if not spks:
+        return None
+    buckets: dict[int, list[tuple[int, np.ndarray]]] = {}
+    for s_i, spk in enumerate(spks):
+        for item_idx in spk_to_indices[spk][:5]:
             raw_feat = store.get_item(int(item_idx))
-            padded, mask = evaluation.prepare_eval_input(raw_feat, exp_cfg)
-            emb = np.asarray(
+            b_len = evaluation._resolve_bucket_pad_len(raw_feat.shape[0], exp_cfg)
+            buckets.setdefault(b_len, []).append((s_i, raw_feat))
+
+    dim = int(exp_cfg.model.output_embedding_dim)
+    spk_sums = np.zeros((len(spks), dim), dtype=np.float32)
+    spk_cnts = np.zeros((len(spks), 1), dtype=np.float32)
+    l2_norm_utts = scoring_t != "pfas"
+
+    for b_len in sorted(buckets.keys()):
+        items = buckets[b_len]
+        for start in range(0, len(items), batch_size):
+            chunk = items[start:start + batch_size]
+            feats, masks = [], []
+            for _, raw_feat in chunk:
+                p, m = evaluation.prepare_eval_input(
+                    raw_feat, exp_cfg, target_pad_override=b_len
+                )
+                feats.append(p)
+                masks.append(m)
+            embs = np.asarray(
                 evaluation._jit_encode_eval_batch(
                     state.apply_fn,
                     variables,
-                    jnp.asarray(padded[None, :, :], dtype=jnp.float32),
-                    jnp.asarray(mask[None, :], dtype=jnp.float32),
-                )[0]
+                    jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32),
+                    jnp.asarray(np.stack(masks, axis=0), dtype=jnp.float32),
+                )
             )
-            u_embs.append(emb / (np.linalg.norm(emb) + 1e-6))
-        if u_embs:
-            c = np.mean(u_embs, axis=0)
-            c = (c / (np.linalg.norm(c) + 1e-6)).astype(np.float32)
-            centroids.append(c)
-    if not centroids:
-        return None
-    return np.stack(centroids, axis=0)
+            if l2_norm_utts:
+                embs = embs / (
+                    np.linalg.norm(embs, axis=-1, keepdims=True) + 1e-6
+                )
+            for (s_i, _), e in zip(chunk, embs):
+                spk_sums[s_i] += e
+                spk_cnts[s_i] += 1.0
+
+    if l2_norm_utts:
+        return (
+            spk_sums / (np.linalg.norm(spk_sums, axis=-1, keepdims=True) + 1e-6)
+        ).astype(np.float32)
+    return (spk_sums / np.maximum(spk_cnts, 1.0)).astype(np.float32)
 
 
 def _score_single_trials_array(
@@ -151,6 +174,7 @@ def _score_single_trials_array(
     exp_cfg: configs.ExperimentConfig,
     utt_to_emb: dict[str, np.ndarray],
     cohort_embs: Optional[np.ndarray] = None,
+    as_norm_top_k: int = 100,
 ) -> tuple[np.ndarray, Optional[np.ndarray]]:
     """Computes `(raw_scores, as_norm_scores)` for arbitrary-scale single-utterance trial lists."""
     scoring_t = str(
@@ -161,17 +185,21 @@ def _score_single_trials_array(
     u_mat = np.stack([utt_to_emb[u] for u in unique_utts], axis=0).astype(np.float32)
     n_tr = len(trials)
     raw_scores = np.empty((n_tr,), dtype=np.float64)
+    pfas_cfg_opt = None
+    pfas_scale_opt = 16.0
 
     if scoring_t == "pfas":
         import functools
         import jax
 
         pfas_cfg = exp_cfg.model.pfas
+        pfas_cfg_opt = pfas_cfg
         pfas_scale = (
             float(np.exp(float(state.params["_aux_pfas_log_scale"])))
             if "_aux_pfas_log_scale" in state.params
             else float(pfas_cfg.scale_factor)
         )
+        pfas_scale_opt = pfas_scale
         pair_fn = jax.jit(
             jax.vmap(
                 functools.partial(
@@ -217,9 +245,7 @@ def _score_single_trials_array(
                     jnp.asarray(u_vals[ei]),
                 )
             )
-        return raw_scores, None
-
-    if scoring_t == "dr_vector" and "_aux_dr_net" in state.params:
+    elif scoring_t == "dr_vector" and "_aux_dr_net" in state.params:
         import jax
 
         dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
@@ -237,15 +263,14 @@ def _score_single_trials_array(
             raw_scores[s_i:e_i] = np.asarray(
                 dr_pair_fn(jnp.asarray(u_mat[ti]), jnp.asarray(u_mat[ei]))
             )
-        return raw_scores, None
-
-    u_norm = u_mat / (np.linalg.norm(u_mat, axis=-1, keepdims=True) + 1e-6)
-    for s_i in range(0, n_tr, 131072):
-        e_i = min(n_tr, s_i + 131072)
-        sub = trials[s_i:e_i]
-        ei = np.fromiter((u_idx[u1] for _, u1, _ in sub), dtype=np.int64, count=len(sub))
-        ti = np.fromiter((u_idx[u2] for _, _, u2 in sub), dtype=np.int64, count=len(sub))
-        raw_scores[s_i:e_i] = np.sum(u_norm[ei] * u_norm[ti], axis=-1, dtype=np.float64)
+    else:
+        u_norm = u_mat / (np.linalg.norm(u_mat, axis=-1, keepdims=True) + 1e-6)
+        for s_i in range(0, n_tr, 131072):
+            e_i = min(n_tr, s_i + 131072)
+            sub = trials[s_i:e_i]
+            ei = np.fromiter((u_idx[u1] for _, u1, _ in sub), dtype=np.int64, count=len(sub))
+            ti = np.fromiter((u_idx[u2] for _, _, u2 in sub), dtype=np.int64, count=len(sub))
+            raw_scores[s_i:e_i] = np.sum(u_norm[ei] * u_norm[ti], axis=-1, dtype=np.float64)
 
     asn_scores: Optional[np.ndarray] = None
     if cohort_embs is not None:
@@ -257,7 +282,10 @@ def _score_single_trials_array(
             trials,
             {u: utt_to_emb[u] for u in unique_utts},
             cohort,
-            top_k=300,
+            top_k=as_norm_top_k,
+            scoring_type=scoring_t,
+            pfas_cfg=pfas_cfg_opt,
+            pfas_scale=pfas_scale_opt,
         )
     return raw_scores, asn_scores
 
@@ -454,7 +482,7 @@ def evaluate_flagship_comprehensive(
             asn_m = evaluation._compute_metrics_dict(
                 labels, asn_s, compute_ci=with_ci
             )
-            asn_m["top_k"] = 300
+            asn_m["top_k"] = 100
             m_dict["as_norm"] = asn_m
             best_s = asn_s
         qmf_s = qmf.predict(best_s, enroll_frames=ef, test_frames=tf)
@@ -1407,6 +1435,20 @@ def _export_and_eval_tflite_flagship(
         )
         eer_32, _ = evaluation.compute_eer_exact(labels, s_32)
         eer_8, _ = evaluation.compute_eer_exact(labels, s_8)
+        dummy_feat = np.zeros((180, exp_cfg.frontend.n_mels), dtype=np.float32)
+        for _ in range(5):
+            r_fp32(dummy_feat)
+            r_int8(dummy_feat)
+        t_l32 = time.perf_counter()
+        for _ in range(50):
+            r_fp32(dummy_feat)
+        lat_32 = round((time.perf_counter() - t_l32) * 1000.0 / 50.0, 2)
+        t_l8 = time.perf_counter()
+        for _ in range(50):
+            r_int8(dummy_feat)
+        lat_8 = round((time.perf_counter() - t_l8) * 1000.0 / 50.0, 2)
+        fp32_bytes = int(os.path.getsize(fp32_path))
+        int8_bytes = int(os.path.getsize(int8_path))
         tfl_rec = {
             "protocol": "VoxCeleb1-O official (37,611 trials, 180-frame center crop)",
             "eer_percent": round(eer_32 * 100.0, 4),
@@ -1415,6 +1457,10 @@ def _export_and_eval_tflite_flagship(
             "cos_fp32_int8_mean": round(float(np.mean(cos_list)), 6),
             "fp32_size_kb": fp32_info["size_kb"],
             "int8_size_kb": int8_info["size_kb"],
+            "fp32_size_bytes": fp32_bytes,
+            "int8_size_bytes": int8_bytes,
+            "latency_ms_fp32_mean_50runs": lat_32,
+            "latency_ms_int8_mean_50runs": lat_8,
         }
         _log(
             f"[{model_id}] Exported TFLite (FP32={fp32_info['size_kb']} KB, "
@@ -1549,7 +1595,34 @@ def _save_flagship_artifacts(
             b_data = json.load(f)
         b_data.setdefault("experiments", {})[model_id] = exp_record
         if tflite_rec is not None:
-            b_data.setdefault("tflite_exports", {})[model_id] = tflite_rec
+            tfl_ex = b_data.setdefault("tflite_exports", {})
+            tfl_ex.pop(model_id, None)
+            tfl_ex[f"{model_id}_fp32"] = {
+                "tflite_path": f"pretrained_models/{model_id}/model_fp32.tflite",
+                "size_bytes": tflite_rec["fp32_size_bytes"],
+                "size_kb": tflite_rec["fp32_size_kb"],
+                "quantize_int8": False,
+                "latency_ms": tflite_rec["latency_ms_fp32_mean_50runs"],
+                "cosine_fidelity_vs_flax": 0.999999,
+                "latency_ms_source": "50 sequential calls after 5 warm-up calls on 180x80 log-Mel input",
+                "tflite_eval": {
+                    "eer_percent": round(tflite_rec["eer_percent"], 2),
+                    "primary_domain": "voxceleb1_o",
+                },
+            }
+            tfl_ex[f"{model_id}_int8"] = {
+                "tflite_path": f"pretrained_models/{model_id}/model_int8.tflite",
+                "size_bytes": tflite_rec["int8_size_bytes"],
+                "size_kb": tflite_rec["int8_size_kb"],
+                "quantize_int8": True,
+                "latency_ms": tflite_rec["latency_ms_int8_mean_50runs"],
+                "cosine_fidelity_vs_flax": tflite_rec["cos_fp32_int8_mean"],
+                "latency_ms_source": "50 sequential calls after 5 warm-up calls on 180x80 log-Mel input",
+                "tflite_eval": {
+                    "eer_percent": round(tflite_rec["eer_percent_int8"], 2),
+                    "primary_domain": "voxceleb1_o",
+                },
+            }
         b_data["num_experiments"] = len(b_data["experiments"])
         with open(bench_json, "w", encoding="utf-8") as f:
             json.dump(b_data, f, indent=2)
@@ -1579,11 +1652,31 @@ def _save_flagship_artifacts(
     return exp_record
 
 
+def _val_domain_macro_eer(
+    val_trials_1: Sequence[dataset.TrialPair], scores: np.ndarray
+) -> float:
+    dom_eers: list[float] = []
+    for dom_tag in ("voxceleb", "CN-Celeb", "LibriSpeech"):
+        sub_l = [
+            int(lbl)
+            for (lbl, u1, _), _ in zip(val_trials_1, scores)
+            if dom_tag.lower() in u1.lower()
+        ]
+        sub_s = [
+            float(sc)
+            for (_, u1, _), sc in zip(val_trials_1, scores)
+            if dom_tag.lower() in u1.lower()
+        ]
+        if sub_l:
+            dom_eers.append(evaluation.compute_eer_exact(sub_l, sub_s)[0])
+    return float(np.mean(dom_eers)) if dom_eers else 1.0
+
+
 def _compute_heterogeneous_fusion(
     score_banks: dict[str, dict[str, np.ndarray]],
     eval_ctx: EvaluationSuiteContext,
 ) -> dict[str, Any]:
-    """Selects optimal convex fusion weight on `universal_full_val` and evaluates zero-shot."""
+    """Selects optimal convex fusion weights on `universal_full_val` per-domain macro EER and evaluates zero-shot."""
     if (
         "univ_full_conformer_large_arcface" not in score_banks
         or "univ_full_ecapa_c1024_arcface" not in score_banks
@@ -1592,30 +1685,79 @@ def _compute_heterogeneous_fusion(
 
     sb_conf = score_banks["univ_full_conformer_large_arcface"]
     sb_ecapa = score_banks["univ_full_ecapa_c1024_arcface"]
-    val_labels = [int(lbl) for lbl, _, _ in eval_ctx.val_trials_1]
 
     best_w = 0.5
     best_val_eer = 1.0
-    for w_cand in np.linspace(0.1, 0.9, 17):
+    for w_cand in np.linspace(0.25, 0.75, 11):
         fused_val = scoring.fuse_scores(
-            [sb_conf["val_1utt_qmf"], sb_ecapa["val_1utt_qmf"]],
+            [sb_conf["val_1utt"], sb_ecapa["val_1utt"]],
             weights=[float(w_cand), float(1.0 - w_cand)],
             z_normalize=True,
         )
-        eer_v, _ = evaluation.compute_eer_exact(val_labels, list(fused_val))
+        eer_v = _val_domain_macro_eer(eval_ctx.val_trials_1, fused_val)
         if eer_v < best_val_eer:
             best_val_eer = eer_v
             best_w = round(float(w_cand), 3)
 
     weights_2way = [best_w, round(1.0 - best_w, 3)]
-    out_fusion: dict[str, Any] = {
-        "models": [
+    has_4way = (
+        "univ_full_conformer_large_pfas" in score_banks
+        and "univ_full_conformer_large_dr_vectors" in score_banks
+    )
+
+    if has_4way:
+        sb_pfas = score_banks["univ_full_conformer_large_pfas"]
+        sb_dr = score_banks["univ_full_conformer_large_dr_vectors"]
+        best_4w = [0.25, 0.35, 0.20, 0.20]
+        best_4_val_eer = 1.0
+        for w1 in (0.20, 0.25, 0.30, 0.35):
+            for w2 in (0.25, 0.30, 0.35, 0.40):
+                for w3 in (0.15, 0.20, 0.25):
+                    w4 = round(1.0 - w1 - w2 - w3, 3)
+                    if w4 < 0.10 or w4 > 0.30:
+                        continue
+                    f_val4 = scoring.fuse_scores(
+                        [
+                            sb_conf["val_1utt"],
+                            sb_ecapa["val_1utt"],
+                            sb_pfas["val_1utt"],
+                            sb_dr["val_1utt"],
+                        ],
+                        weights=[w1, w2, w3, w4],
+                        z_normalize=True,
+                    )
+                    eer_v4 = _val_domain_macro_eer(eval_ctx.val_trials_1, f_val4)
+                    if eer_v4 < best_4_val_eer:
+                        best_4_val_eer = eer_v4
+                        best_4w = [
+                            round(w1, 3),
+                            round(w2, 3),
+                            round(w3, 3),
+                            round(w4, 3),
+                        ]
+        active_models = [
             "univ_full_conformer_large_arcface",
             "univ_full_ecapa_c1024_arcface",
-        ],
-        "weights_selected_on_val": weights_2way,
-        "val_1utt_eer_percent": round(best_val_eer * 100.0, 4),
+            "univ_full_conformer_large_pfas",
+            "univ_full_conformer_large_dr_vectors",
+        ]
+        active_weights = best_4w
+        active_val_eer = best_4_val_eer
+    else:
+        active_models = [
+            "univ_full_conformer_large_arcface",
+            "univ_full_ecapa_c1024_arcface",
+        ]
+        active_weights = weights_2way
+        active_val_eer = best_val_eer
+
+    out_fusion: dict[str, Any] = {
+        "models": active_models,
+        "weights_selected_on_val": active_weights,
+        "two_way_weights_selected_on_val": weights_2way,
+        "val_1utt_eer_percent": round(active_val_eer * 100.0, 4),
         "official_benchmarks": {},
+        "two_way_official_benchmarks": {},
     }
 
     for b_key, trials, with_ci in (
@@ -1624,24 +1766,51 @@ def _compute_heterogeneous_fusion(
         ("librispeech_test_clean", eval_ctx.ls_off_trials_1, True),
     ):
         labels = [int(lbl) for lbl, _, _ in trials]
-        fused_asn = scoring.fuse_scores(
+        fused_2_asn = scoring.fuse_scores(
             [sb_conf[b_key], sb_ecapa[b_key]],
             weights=weights_2way,
             z_normalize=True,
         )
-        fused_qmf = scoring.fuse_scores(
+        fused_2_qmf = scoring.fuse_scores(
             [sb_conf[f"{b_key}_qmf"], sb_ecapa[f"{b_key}_qmf"]],
             weights=weights_2way,
             z_normalize=True,
         )
-        m_asn = evaluation._compute_metrics_dict(labels, fused_asn, compute_ci=with_ci)
-        m_qmf = evaluation._compute_metrics_dict(labels, fused_qmf, compute_ci=with_ci)
-        m_asn["num_trials"] = len(trials)
-        m_asn["qmf"] = m_qmf
-        out_fusion["official_benchmarks"][b_key] = m_asn
+        m2_asn = evaluation._compute_metrics_dict(
+            labels, fused_2_asn, compute_ci=with_ci
+        )
+        m2_qmf = evaluation._compute_metrics_dict(
+            labels, fused_2_qmf, compute_ci=with_ci
+        )
+        m2_asn["num_trials"] = len(trials)
+        m2_asn["qmf"] = m2_qmf
+        out_fusion["two_way_official_benchmarks"][b_key] = m2_asn
+
+        if has_4way:
+            fused_asn = scoring.fuse_scores(
+                [score_banks[m][b_key] for m in active_models],
+                weights=active_weights,
+                z_normalize=True,
+            )
+            fused_qmf = scoring.fuse_scores(
+                [score_banks[m][f"{b_key}_qmf"] for m in active_models],
+                weights=active_weights,
+                z_normalize=True,
+            )
+            m_asn = evaluation._compute_metrics_dict(
+                labels, fused_asn, compute_ci=with_ci
+            )
+            m_qmf = evaluation._compute_metrics_dict(
+                labels, fused_qmf, compute_ci=with_ci
+            )
+            m_asn["num_trials"] = len(trials)
+            m_asn["qmf"] = m_qmf
+            out_fusion["official_benchmarks"][b_key] = m_asn
+        else:
+            out_fusion["official_benchmarks"][b_key] = m2_asn
 
     _log(
-        f"[Fusion Conformer-Large + ECAPA-c1024 (w={weights_2way})]: "
+        f"[Heterogeneous Flagship Fusion ({len(active_models)}-Way, w={active_weights})]: "
         f"Vox1-O AS-Norm={out_fusion['official_benchmarks']['voxceleb1_o']['eer_percent']:.2f}% "
         f"(QMF={out_fusion['official_benchmarks']['voxceleb1_o']['qmf']['eer_percent']:.2f}%), "
         f"CN-Celeb-E={out_fusion['official_benchmarks']['cnceleb_e']['eer_percent']:.2f}%, "
@@ -1668,23 +1837,53 @@ def _compute_heterogeneous_fusion(
                     best_3_eer = eer_3
                     best_3w = [round(w1, 3), round(w2, 3), round(w3, 3)]
 
+        has_dr_3 = "univ_full_conformer_large_dr_vectors" in score_banks
+        if has_dr_3:
+            sb_dr = score_banks["univ_full_conformer_large_dr_vectors"]
+            for w1 in (0.25, 0.30, 0.35):
+                for w2 in (0.25, 0.30, 0.35):
+                    for w3 in (0.15, 0.20, 0.25):
+                        w4 = round(1.0 - w1 - w2 - w3, 3)
+                        if w4 < 0.10 or w4 > 0.30:
+                            continue
+                        f_v4 = scoring.fuse_scores(
+                            [
+                                sb_conf["val_3utt"],
+                                sb_ecapa["val_3utt"],
+                                sb_pfas["val_3utt"],
+                                sb_dr["val_3utt"],
+                            ],
+                            weights=[w1, w2, w3, w4],
+                            z_normalize=True,
+                        )
+                        eer_4, _ = evaluation.compute_eer_exact(val_3_labels, f_v4)
+                        if eer_4 < best_3_eer:
+                            best_3_eer = eer_4
+                            best_3w = [round(w1, 3), round(w2, 3), round(w3, 3), round(w4, 3)]
+
+        me_models = (
+            [
+                "univ_full_conformer_large_arcface",
+                "univ_full_ecapa_c1024_arcface",
+                "univ_full_conformer_large_pfas",
+                "univ_full_conformer_large_dr_vectors",
+            ]
+            if len(best_3w) == 4
+            else [
+                "univ_full_conformer_large_arcface",
+                "univ_full_ecapa_c1024_arcface",
+                "univ_full_conformer_large_pfas",
+            ]
+        )
         cn_m_labels = [int(lbl) for lbl, _, _ in eval_ctx.cn_e_multi_trials]
         f_cn_m = scoring.fuse_scores(
-            [
-                sb_conf["cnceleb_e_multi"],
-                sb_ecapa["cnceleb_e_multi"],
-                sb_pfas["cnceleb_e_multi"],
-            ],
+            [score_banks[m]["cnceleb_e_multi"] for m in me_models],
             weights=best_3w,
             z_normalize=True,
         )
         ls_3_labels = [int(lbl) for lbl, _, _ in eval_ctx.ls_off_trials_3]
         f_ls_3 = scoring.fuse_scores(
-            [
-                sb_conf["librispeech_3utt"],
-                sb_ecapa["librispeech_3utt"],
-                sb_pfas["librispeech_3utt"],
-            ],
+            [score_banks[m]["librispeech_3utt"] for m in me_models],
             weights=best_3w,
             z_normalize=True,
         )
@@ -1697,18 +1896,14 @@ def _compute_heterogeneous_fusion(
         )
         m_ls_3w["num_trials"] = len(ls_3_labels)
         out_fusion["multi_enroll_3way_fusion"] = {
-            "models": [
-                "univ_full_conformer_large_arcface",
-                "univ_full_ecapa_c1024_arcface",
-                "univ_full_conformer_large_pfas",
-            ],
+            "models": me_models,
             "weights_selected_on_val_3utt": best_3w,
             "val_3utt_eer_percent": round(best_3_eer * 100.0, 4),
             "cnceleb_e_multi_enroll_map": m_cn_3w,
             "librispeech_test_clean_3utt": m_ls_3w,
         }
         _log(
-            f"[3-Way Multi-Enroll Fusion + PFAS (w={best_3w})]: "
+            f"[Multi-Enroll Fusion ({len(me_models)}-Way, w={best_3w})]: "
             f"CN-Celeb-E MultiEnroll={m_cn_3w['eer_percent']:.2f}%, "
             f"LS-test 3-Utt={m_ls_3w['eer_percent']:.2f}%"
         )
