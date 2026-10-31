@@ -682,8 +682,8 @@ class TestExportAndHuggingFaceCompat(TestBase):
         from unittest import mock
 
         self.assertEqual(len(hf_compat.CONTROLLED_ABLATION_MODEL_IDS), 44)
-        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 6)
-        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 50)
+        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 4)
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 48)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
             "https://huggingface.co/collections/wq2012/flaxspeaker",
@@ -1648,7 +1648,7 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
         fp_path = os.path.join(pm, "step0_fingerprints.json")
         with open(fp_path, "r", encoding="utf-8") as f:
             fps = json.load(f)["checkpoints"]
-        self.assertIn(len(fps), (48, 50))
+        self.assertEqual(len(fps), 48)
         for mid in hf_compat.PRETRAINED_MODEL_IDS:
             with open(os.path.join(pm, mid, "config.json"), "r", encoding="utf-8") as f:
                 cfg_json = json.load(f)
@@ -1959,8 +1959,8 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
             bench = json.load(f)
 
-        self.assertIn(len(bench["experiments"]), (44, 48, 50))
-        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16, 18))
+        self.assertIn(len(bench["experiments"]), (44, 48))
+        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16))
 
         vox_ds = bench["datasets"]["voxceleb1"]
         self.assertIn("vox1_o_10spk_subset_note", vox_ds)
@@ -2487,44 +2487,98 @@ class TestV050SotaFeatures(unittest.TestCase):
         )
         self.assertTrue(np.allclose(e_short, e_pad, atol=1e-5))
 
-    def test_wavlm_ssl_kaldi_fbank_and_hybrid_2d_flagships(self):
-        # 1. Kaldi HTK non-VAD fbank frontend
-        rng = np.random.default_rng(123)
-        wav = rng.standard_normal(16000).astype(np.float32) * 0.1
-        fe = feature_extraction.AudioFrontend(
-            configs.FrontendConfig(kaldi_fbank=True, apply_cmvn=True),
-            configs.VadConfig(enabled=False, mode="none"),
-        )
-        fbank = fe.extract_from_waveform(wav)
-        self.assertEqual(fbank.ndim, 2)
-        self.assertEqual(fbank.shape[1], 80)
-        self.assertGreater(fbank.shape[0], 95)
 
-        # 2. WavLM-Base+ SSL backbone (Path A)
-        cfg_w = configs.ExperimentConfig()
-        cfg_w.model.backbone = configs.BackboneType.WAVLM
-        cfg_w.model.wavlm.num_layers = 2
-        cfg_w.model.wavlm.d_model = 64
-        cfg_w.model.wavlm.num_heads = 4
-        cfg_w.model.wavlm.ffn_dim = 128
-        cfg_w.model.wavlm.tdnn_channels = (64, 64)
-        cfg_w.model.wavlm.tdnn_kernels = (3, 3)
-        cfg_w.model.wavlm.tdnn_dilations = (1, 2)
-        cfg_w.model.wavlm.tdnn_out_dim = 128
-        cfg_w.model.wavlm.acoustic_resnet_channels = 16
-        cfg_w.model.seq_len = 24
-        cfg_w.model.embedding_dim = 32
-        enc_w, st_w = neural_net.get_speaker_encoder(cfg_w)
-        x = jnp.ones((2, 24, 80), dtype=jnp.float32)
-        m = jnp.ones((2, 24), dtype=jnp.float32)
-        out_w = enc_w.apply(
-            {"params": st_w.params, "batch_stats": st_w.batch_stats},
-            x,
-            mask=m,
-            deterministic=True,
+class TestAntiCheatingAndProvenanceIntegrity(unittest.TestCase):
+    """Permanent guardrails banning weight transplantation, fake loss logs, and metadata spoofing."""
+
+    def test_no_external_checkpoint_transplantation_or_banned_scripts(self):
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        for banned_rel in (
+            "scripts/build_v050_sota_flagships.py",
+            "scripts/eval_v050_sota_flagships.py",
+            "configs/univ_full_resnet34_arcface.yml",
+            "configs/univ_full_wavlm_base_arcface.yml",
+            "pretrained_models/univ_full_resnet34_arcface",
+            "pretrained_models/univ_full_wavlm_base_arcface",
+        ):
+            self.assertFalse(
+                os.path.exists(os.path.join(repo_root, banned_rel)),
+                f"Banned artifact must not exist: {banned_rel}",
+            )
+
+        banned_markers = (
+            "load_pt_state_dict",
+            "Wespeaker/wespeaker-",
+            "microsoft/wavlm-base-plus-sv",
+            '"step_loss": 2.85',
         )
-        self.assertEqual(out_w.shape, (2, 32))
-        self.assertTrue(np.allclose(np.linalg.norm(np.asarray(out_w), axis=-1), 1.0, atol=1e-4))
+        for sub in ("flaxspeaker", "scripts"):
+            sub_dir = os.path.join(repo_root, sub)
+            for fname in sorted(os.listdir(sub_dir)):
+                if not fname.endswith(".py"):
+                    continue
+                fpath = os.path.join(sub_dir, fname)
+                with open(fpath, "r", encoding="utf-8") as f:
+                    src = f.read()
+                for marker in banned_markers:
+                    self.assertNotIn(
+                        marker,
+                        src,
+                        f"Banned anti-cheating marker {marker!r} found in {sub}/{fname}",
+                    )
+
+    def test_all_released_checkpoints_genuine_weights_and_trajectories(self):
+        import json
+        import safetensors.numpy as stnp
+
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        pm_dir = os.path.join(repo_root, "pretrained_models")
+        cfg_dir = os.path.join(repo_root, "configs")
+        with open(os.path.join(pm_dir, "benchmark_results.json"), "r", encoding="utf-8") as f:
+            bench = json.load(f)
+
+        model_ids = sorted(
+            d
+            for d in os.listdir(pm_dir)
+            if os.path.isdir(os.path.join(pm_dir, d))
+            and os.path.isfile(os.path.join(pm_dir, d, "config.json"))
+        )
+        cfg_ids = sorted(
+            f[:-4] for f in os.listdir(cfg_dir) if f.endswith(".yml")
+        )
+        self.assertEqual(model_ids, cfg_ids)
+        self.assertEqual(set(model_ids), set(bench["experiments"].keys()))
+
+        for mid in model_ids:
+            with open(os.path.join(pm_dir, mid, "eval_results.json"), "r", encoding="utf-8") as f:
+                ev = json.load(f)
+            lc = ev.get("loss_curve_100", [])
+            self.assertGreaterEqual(
+                len(lc), 10, f"{mid}: loss_curve_100 must have >=10 real logged steps"
+            )
+            self.assertGreater(float(ev.get("train_time_sec", 0.0)), 1.0)
+            st_path = os.path.join(pm_dir, mid, "model.safetensors")
+            if os.path.isfile(st_path):
+                tensors = stnp.load_file(st_path)
+                enc_param_cnt = sum(
+                    int(arr.size)
+                    for k, arr in tensors.items()
+                    if not k.startswith("_batch_stats.")
+                    and not k.startswith("_aux_class_weights")
+                )
+                self.assertEqual(
+                    enc_param_cnt,
+                    int(ev["num_parameters"]),
+                    f"{mid}: safetensors param count {enc_param_cnt} != eval_results {ev['num_parameters']}",
+                )
+                for k, arr in tensors.items():
+                    if k.endswith(".kernel") and arr.size >= 4096:
+                        zero_frac = float((arr == 0.0).mean())
+                        self.assertLess(
+                            zero_frac,
+                            0.45,
+                            f"{mid}:{k} has suspicious exact-zero fraction {zero_frac:.3f}",
+                        )
 
 
 if __name__ == "__main__":
