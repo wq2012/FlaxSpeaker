@@ -426,6 +426,7 @@ class ConformerBackbone(nn.Module):
     layer_order: str = "mhsa_before_conv"
     subsample_factor: int = 1
     subsample_after_layer: int = 3
+    resnet_stem_channels: int = 0
 
     @nn.compact
     def __call__(
@@ -433,6 +434,7 @@ class ConformerBackbone(nn.Module):
         x: jax.Array,
         deterministic: bool = True,
         mask: Optional[jax.Array] = None,
+        use_running_average: Optional[bool] = None,
     ) -> jax.Array:
         """Returns frame representations `(B, T', D)`.
 
@@ -441,6 +443,40 @@ class ConformerBackbone(nn.Module):
         `T' = ceil(T / subsample_factor)`; callers must then use
         `subsample_mask(mask, subsample_factor)` for downstream pooling.
         """
+        if self.resnet_stem_channels > 0:
+            h_stem = ResNetBackbone(
+                base_channels=self.resnet_stem_channels,
+                num_blocks=(3, 4, 6, 3),
+                use_se=False,
+                out_dim=0,
+                use_batch_norm=True,
+                wespeaker_mode=True,
+                name="resnet_stem",
+            )(
+                x,
+                deterministic=deterministic,
+                mask=mask,
+                use_running_average=use_running_average,
+            )
+            sub_mask = (
+                mask[:, ::8][:, : h_stem.shape[1]]
+                if mask is not None
+                else None
+            )
+            h = nn.Dense(self.dim, name="stem_proj")(h_stem)
+            for i in range(self.num_layers):
+                h = ConformerBlock(
+                    dim=self.dim,
+                    num_heads=self.num_heads,
+                    ffn_dim=self.ffn_dim,
+                    conv_kernel_size=self.conv_kernel_size,
+                    use_group_norm=self.use_group_norm,
+                    normalize_output=False,
+                    layer_order=self.layer_order,
+                    name=f"conformer_{i}",
+                )(h, deterministic=deterministic, mask=sub_mask)
+            return jnp.concatenate([h_stem, h], axis=-1)
+
         factor = max(1, int(self.subsample_factor))
         sub_after = min(max(0, int(self.subsample_after_layer)), self.num_layers)
         mask_f = (
@@ -1093,6 +1129,7 @@ class ResNetBasicBlock2D(nn.Module):
     stride: tuple[int, int] = (1, 1)
     use_se: bool = True
     use_batch_norm: bool = True
+    wespeaker_mode: bool = False
 
     def _norm(
         self,
@@ -1114,35 +1151,47 @@ class ResNetBasicBlock2D(nn.Module):
         use_running_average: bool = True,
         mask: Optional[jax.Array] = None,
     ) -> jax.Array:
-        mask_f = (
-            (mask > 0).astype(x.dtype)[:, :, None, None]
-            if mask is not None
-            else None
-        )
-        if mask_f is not None:
-            x = x * mask_f
+        if mask is not None:
+            if self.wespeaker_mode:
+                mask_in = (mask > 0).astype(x.dtype)[:, None, :, None]
+            else:
+                mask_in = (mask > 0).astype(x.dtype)[:, :, None, None]
+            x = x * mask_in
+        else:
+            mask_in = None
         residual = x
         norm_tag = "bn" if self.use_batch_norm else "ln"
+        pad_3x3: Any = ((1, 1), (1, 1)) if self.wespeaker_mode else "SAME"
+        pad_1x1: Any = ((0, 0), (0, 0)) if self.wespeaker_mode else "SAME"
+        bn_mask = None if self.wespeaker_mode else mask
         h = nn.Conv(
             features=self.channels,
             kernel_size=(3, 3),
             strides=self.stride,
-            padding="SAME",
+            padding=pad_3x3,
             use_bias=False,
             name="conv1",
         )(x)
-        h = nn.relu(self._norm(h, f"{norm_tag}1", use_running_average, mask))
+        if mask is not None:
+            if self.wespeaker_mode:
+                sub_m = mask[:, :: self.stride[1]][:, : h.shape[2]]
+                mask_f = (sub_m > 0).astype(x.dtype)[:, None, :, None]
+            else:
+                mask_f = mask_in
+        else:
+            mask_f = None
+        h = nn.relu(self._norm(h, f"{norm_tag}1", use_running_average, bn_mask))
         if mask_f is not None:
             h = h * mask_f
         h = nn.Conv(
             features=self.channels,
             kernel_size=(3, 3),
             strides=(1, 1),
-            padding="SAME",
+            padding=pad_3x3,
             use_bias=False,
             name="conv2",
         )(h)
-        h = self._norm(h, f"{norm_tag}2", use_running_average, mask)
+        h = self._norm(h, f"{norm_tag}2", use_running_average, bn_mask)
         if mask_f is not None:
             h = h * mask_f
 
@@ -1150,7 +1199,7 @@ class ResNetBasicBlock2D(nn.Module):
             if mask_f is not None:
                 denom = jnp.maximum(
                     jnp.sum(mask_f, axis=(1, 2), keepdims=True)
-                    * float(h.shape[2]),
+                    * float(h.shape[1] if self.wespeaker_mode else h.shape[2]),
                     1.0,
                 )
                 se = jnp.sum(h * mask_f, axis=(1, 2), keepdims=True) / denom
@@ -1161,18 +1210,20 @@ class ResNetBasicBlock2D(nn.Module):
             se = jax.nn.sigmoid(nn.Dense(self.channels, name="se2")(se))
             h = h * se
 
-        if residual.shape != h.shape:
+        if residual.shape != h.shape or self.stride != (1, 1):
             residual = nn.Conv(
                 features=self.channels,
                 kernel_size=(1, 1),
                 strides=self.stride,
-                padding="SAME",
+                padding=pad_1x1,
                 use_bias=False,
                 name="downsample",
             )(residual)
             residual = self._norm(
-                residual, f"downsample_{norm_tag}", use_running_average, mask
+                residual, f"downsample_{norm_tag}", use_running_average, bn_mask
             )
+            if mask_f is not None:
+                residual = residual * mask_f
 
         out = nn.relu(residual + h)
         if mask_f is not None:
@@ -1181,13 +1232,14 @@ class ResNetBasicBlock2D(nn.Module):
 
 
 class ResNetBackbone(nn.Module):
-    """2D Time-Frequency SE-ResNet backbone (Thin-ResNet / r-vector style)."""
+    """2D Time-Frequency SE-ResNet backbone (Thin-ResNet / ResNet-34 r-vector style)."""
 
     base_channels: int = 32
     num_blocks: Sequence[int] = (2, 2, 2, 2)
     use_se: bool = True
     out_dim: int = 256
     use_batch_norm: bool = True
+    wespeaker_mode: bool = False
 
     @nn.compact
     def __call__(
@@ -1208,20 +1260,30 @@ class ResNetBackbone(nn.Module):
         )
         if mask_f is not None:
             x = x * mask_f
-        # x: (B, T, F) -> (B, T, F, 1)
-        h = x[..., None]
+
+        if self.wespeaker_mode:
+            # x: (B, T, F) -> (B, F, T, 1) matching 2D (freq, time) r-vector convention
+            h = jnp.transpose(x, (0, 2, 1))[..., None]
+            stem_pad: Any = ((1, 1), (1, 1))
+            bn_mask = None
+        else:
+            # x: (B, T, F) -> (B, T, F, 1)
+            h = x[..., None]
+            stem_pad = "SAME"
+            bn_mask = mask
+
         h = nn.Conv(
             features=self.base_channels,
             kernel_size=(3, 3),
             strides=(1, 1),
-            padding="SAME",
+            padding=stem_pad,
             use_bias=False,
             name="stem_conv",
         )(h)
         if self.use_batch_norm:
             h = nn.relu(
                 MaskedBatchNorm2D(name=f"stem_{norm_tag}")(
-                    h, use_running_average=use_ra, mask=mask
+                    h, use_running_average=use_ra, mask=bn_mask
                 )
             )
         else:
@@ -1230,35 +1292,309 @@ class ResNetBackbone(nn.Module):
                     h
                 )
             )
-        if mask_f is not None:
-            h = h * mask_f[..., None]
+        if mask is not None:
+            if self.wespeaker_mode:
+                h = h * (mask > 0).astype(h.dtype)[:, None, :, None]
+            else:
+                h = h * mask_f[..., None]
 
+        cur_mask = mask
         for stage_idx, n_blocks in enumerate(self.num_blocks):
             ch = self.base_channels * (2 ** stage_idx)
             for b_idx in range(n_blocks):
-                # Downsample frequency axis at start of stages 1..3, preserve time resolution
-                stride = (1, 2) if (stage_idx > 0 and b_idx == 0) else (1, 1)
+                if self.wespeaker_mode:
+                    stride = (2, 2) if (stage_idx > 0 and b_idx == 0) else (1, 1)
+                else:
+                    # Downsample frequency axis at start of stages 1..3, preserve time resolution
+                    stride = (1, 2) if (stage_idx > 0 and b_idx == 0) else (1, 1)
                 h = ResNetBasicBlock2D(
                     channels=ch,
                     stride=stride,
                     use_se=self.use_se,
                     use_batch_norm=self.use_batch_norm,
+                    wespeaker_mode=self.wespeaker_mode,
                     name=f"stage{stage_idx}_block{b_idx}",
-                )(h, use_running_average=use_ra, mask=mask)
+                )(h, use_running_average=use_ra, mask=cur_mask)
+                if (
+                    self.wespeaker_mode
+                    and stride[1] > 1
+                    and cur_mask is not None
+                ):
+                    cur_mask = cur_mask[:, :: stride[1]][:, : h.shape[2]]
+
+        if self.wespeaker_mode:
+            # h: (B, F', T', C) -> (B, T', C, F') -> (B, T', C * F')
+            bsz, freq_bins, seq_len, ch = h.shape
+            h = jnp.transpose(h, (0, 2, 3, 1)).reshape(
+                bsz, seq_len, ch * freq_bins
+            )
+            if cur_mask is not None:
+                h = h * (cur_mask > 0).astype(h.dtype)[..., None]
+            if self.out_dim <= 0:
+                return h
 
         # Collapse frequency & channel dimensions: (B, T, F', C) -> (B, T, F'*C)
-        bsz, seq_len, freq_bins, ch = h.shape
-        h = h.reshape(bsz, seq_len, freq_bins * ch)
+        if not self.wespeaker_mode:
+            bsz, seq_len, freq_bins, ch = h.shape
+            h = h.reshape(bsz, seq_len, freq_bins * ch)
         h = nn.relu(nn.Dense(self.out_dim, name="out_proj")(h))
         if self.use_batch_norm:
             h = MaskedBatchNorm1D(name=f"out_{norm_tag}")(
-                h, use_running_average=use_ra, mask=mask
+                h, use_running_average=use_ra, mask=bn_mask
             )
         else:
             h = nn.LayerNorm(name=f"out_{norm_tag}")(h)
-        if mask_f is not None:
+        if mask_f is not None and not self.wespeaker_mode:
             h = h * mask_f
         return h
+
+
+def _wavlm_relative_position_bucket(
+    relative_position: jax.Array,
+    num_buckets: int = 320,
+    max_distance: int = 800,
+) -> jax.Array:
+    """Computes WavLM gated relative position bucket indices (Chen et al., JSTSP 2022)."""
+    half_buckets = num_buckets // 2
+    ret = (relative_position > 0).astype(jnp.int32) * half_buckets
+    rel_pos = jnp.abs(relative_position)
+    max_exact = half_buckets // 2
+    is_small = rel_pos < max_exact
+    rel_pos_float = jnp.maximum(rel_pos.astype(jnp.float32), 1.0)
+    val_if_large = max_exact + (
+        jnp.log(rel_pos_float / max_exact)
+        / jnp.log(float(max_distance) / max_exact)
+        * (half_buckets - max_exact)
+    ).astype(jnp.int32)
+    val_if_large = jnp.minimum(val_if_large, half_buckets - 1)
+    ret = ret + jnp.where(is_small, rel_pos, val_if_large)
+    return ret
+
+
+class WavLMEncoderLayer(nn.Module):
+    """Single WavLM Transformer layer with Gated Relative Position Bias (Chen et al., JSTSP 2022)."""
+
+    dim: int = 768
+    num_heads: int = 12
+    ffn_dim: int = 3072
+    num_buckets: int = 320
+    max_distance: int = 800
+    has_relative_position_bias: bool = False
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        position_bias: Optional[jax.Array] = None,
+        mask: Optional[jax.Array] = None,
+    ) -> tuple[jax.Array, jax.Array]:
+        bsz, seq_len, _ = x.shape
+        head_dim = self.dim // self.num_heads
+        scaling = head_dim ** -0.5
+
+        if self.has_relative_position_bias or position_bias is None:
+            ctx_pos = jnp.arange(seq_len, dtype=jnp.int32)[:, None]
+            mem_pos = jnp.arange(seq_len, dtype=jnp.int32)[None, :]
+            rp_bucket = _wavlm_relative_position_bucket(
+                mem_pos - ctx_pos,
+                num_buckets=self.num_buckets,
+                max_distance=self.max_distance,
+            )
+            rel_embed = self.param(
+                "rel_attn_embed",
+                nn.initializers.normal(stddev=0.02),
+                (self.num_buckets, self.num_heads),
+            )
+            values = jnp.take(rel_embed.astype(x.dtype), rp_bucket, axis=0)
+            position_bias = jnp.transpose(values, (2, 0, 1))[None, :, :, :]
+
+        # Gated relative position bias
+        gated_hs = x.reshape(bsz, seq_len, self.num_heads, head_dim).transpose(
+            0, 2, 1, 3
+        )
+        rel_pos_proj = nn.Dense(8, name="gru_rel_pos_linear")(gated_hs)
+        rel_pos_proj = jnp.sum(
+            rel_pos_proj.reshape(bsz, self.num_heads, seq_len, 2, 4), axis=-1
+        )
+        gru_const = self.param(
+            "gru_rel_pos_const",
+            nn.initializers.ones,
+            (1, self.num_heads, 1, 1),
+        ).astype(x.dtype)
+        gate_a, gate_b = jnp.split(jax.nn.sigmoid(rel_pos_proj), 2, axis=-1)
+        gate = gate_a * (gate_b * gru_const - 1.0) + 2.0  # (B, H, T, 1)
+        gated_pos_bias = gate * position_bias
+
+        q = (
+            nn.Dense(self.dim, name="q_proj")(x)
+            .reshape(bsz, seq_len, self.num_heads, head_dim)
+            .transpose(0, 2, 1, 3)
+            * scaling
+        )
+        k = (
+            nn.Dense(self.dim, name="k_proj")(x)
+            .reshape(bsz, seq_len, self.num_heads, head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+        v = (
+            nn.Dense(self.dim, name="v_proj")(x)
+            .reshape(bsz, seq_len, self.num_heads, head_dim)
+            .transpose(0, 2, 1, 3)
+        )
+
+        attn_weights = jnp.matmul(q, jnp.swapaxes(k, -2, -1)) + gated_pos_bias
+        if mask is not None:
+            key_mask = (mask > 0)[:, None, None, :]
+            attn_weights = jnp.where(key_mask, attn_weights, -1e9)
+        attn_probs = jax.nn.softmax(attn_weights, axis=-1)
+        attn_out = (
+            jnp.matmul(attn_probs, v)
+            .transpose(0, 2, 1, 3)
+            .reshape(bsz, seq_len, self.dim)
+        )
+        attn_out = nn.Dense(self.dim, name="out_proj")(attn_out)
+        x = nn.LayerNorm(epsilon=1e-5, name="layer_norm")(x + attn_out)
+
+        ffn_out = nn.Dense(self.ffn_dim, name="intermediate_dense")(x)
+        ffn_out = jax.nn.gelu(ffn_out, approximate=False)
+        ffn_out = nn.Dense(self.dim, name="output_dense")(ffn_out)
+        x = nn.LayerNorm(epsilon=1e-5, name="final_layer_norm")(x + ffn_out)
+        return x, position_bias
+
+
+class WavLMBackbone(nn.Module):
+    """WavLM self-supervised Transformer + X-Vector TDNN speaker backbone (Chen et al., JSTSP 2022).
+
+    Maps 10 ms acoustic features `(B, T, F)` to 20 ms SSL frame rate `(B, T//2, dim)` via a
+    convolutional stem, applies grouped convolutional relative positional encoding and 12
+    `WavLMEncoderLayer` blocks with Gated Relative Position Bias, computes a learnable
+    weighted sum across all `num_layers + 1` hidden states, and extracts frame-level
+    speaker features through a 5-layer dilated X-Vector TDNN head.
+    """
+
+    dim: int = 768
+    num_layers: int = 12
+    num_heads: int = 12
+    ffn_dim: int = 3072
+    num_buckets: int = 320
+    max_distance: int = 800
+    pos_conv_kernel: int = 128
+    pos_conv_groups: int = 16
+    subsample_factor: int = 2
+    tdnn_dim: int = 512
+    tdnn_out_dim: int = 1500
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        del deterministic
+        if mask is not None:
+            x = x * (mask > 0).astype(x.dtype)[..., None]
+        # Mel-to-SSL stem: (B, T, F) -> (B, T//2, dim)
+        h = nn.Conv(
+            features=self.tdnn_dim,
+            kernel_size=(3,),
+            strides=(self.subsample_factor,),
+            padding=((1, 1),),
+            name="stem_conv1",
+        )(x)
+        sub_mask = (
+            mask[:, :: self.subsample_factor][:, : h.shape[1]]
+            if mask is not None
+            else None
+        )
+        sub_mask_f = (
+            (sub_mask > 0).astype(x.dtype)[..., None]
+            if sub_mask is not None
+            else None
+        )
+        h = jax.nn.gelu(h, approximate=False)
+        if sub_mask_f is not None:
+            h = h * sub_mask_f
+        h = nn.Conv(
+            features=self.tdnn_dim,
+            kernel_size=(3,),
+            strides=(1,),
+            padding=((1, 1),),
+            name="stem_conv2",
+        )(h)
+        h = jax.nn.gelu(h, approximate=False)
+        h = nn.LayerNorm(epsilon=1e-5, name="feat_proj_ln")(h)
+        h = nn.Dense(self.dim, name="feat_proj_dense")(h)
+        if sub_mask_f is not None:
+            h = h * sub_mask_f
+
+        # Grouped positional convolution (k=128, groups=16, pad=64 left, 63 right)
+        pad_l = self.pos_conv_kernel // 2
+        pad_r = self.pos_conv_kernel - 1 - pad_l
+        pos_conv = nn.Conv(
+            features=self.dim,
+            kernel_size=(self.pos_conv_kernel,),
+            feature_group_count=self.pos_conv_groups,
+            padding=((pad_l, pad_r),),
+            name="pos_conv",
+        )(h)
+        h = h + jax.nn.gelu(pos_conv, approximate=False)
+        h = nn.LayerNorm(epsilon=1e-5, name="encoder_ln")(h)
+        if sub_mask_f is not None:
+            h = h * sub_mask_f
+
+        all_hidden = [h]
+        pos_bias = None
+        for idx in range(self.num_layers):
+            h, pos_bias = WavLMEncoderLayer(
+                dim=self.dim,
+                num_heads=self.num_heads,
+                ffn_dim=self.ffn_dim,
+                num_buckets=self.num_buckets,
+                max_distance=self.max_distance,
+                has_relative_position_bias=(idx == 0),
+                name=f"layer_{idx}",
+            )(h, position_bias=pos_bias, mask=sub_mask)
+            if sub_mask_f is not None:
+                h = h * sub_mask_f
+            all_hidden.append(h)
+
+        stacked = jnp.stack(all_hidden, axis=1)  # (B, L+1, T', D)
+        layer_weights = self.param(
+            "layer_weights",
+            nn.initializers.zeros,
+            (self.num_layers + 1,),
+        )
+        norm_weights = jax.nn.softmax(layer_weights.astype(x.dtype), axis=-1)
+        weighted = jnp.sum(
+            stacked * norm_weights[None, :, None, None], axis=1
+        )  # (B, T', D)
+
+        # Projector + 5-layer dilated TDNN (matching WavLMForXVector)
+        proj = nn.Dense(self.tdnn_dim, name="projector")(weighted)
+        if sub_mask_f is not None:
+            proj = proj * sub_mask_f
+        tdnn_specs = [
+            (self.tdnn_dim, 5, 1),
+            (self.tdnn_dim, 3, 2),
+            (self.tdnn_dim, 3, 3),
+            (self.tdnn_dim, 1, 1),
+            (self.tdnn_out_dim, 1, 1),
+        ]
+        t_h = proj
+        for t_idx, (out_c, k_sz, dil) in enumerate(tdnn_specs):
+            pad = ((k_sz - 1) * dil) // 2
+            t_h = nn.Conv(
+                features=out_c,
+                kernel_size=(k_sz,),
+                kernel_dilation=(dil,),
+                padding=((pad, pad),),
+                name=f"tdnn_{t_idx}_conv",
+            )(t_h)
+            t_h = jax.nn.relu(t_h)
+            if sub_mask_f is not None:
+                t_h = t_h * sub_mask_f
+        return t_h
 
 
 class ModernSpeakerEncoder(nn.Module):
@@ -1289,6 +1625,7 @@ class ModernSpeakerEncoder(nn.Module):
         p_kwargs = dict(self.pooling_kwargs or {})
         b_type = self.backbone_type.lower()
 
+        aux_pooled: Optional[jax.Array] = None
         if b_type == "lstm":
             frames = LstmBackbone(**b_kwargs, name="backbone")(
                 x, deterministic=deterministic, mask=mask
@@ -1299,20 +1636,53 @@ class ModernSpeakerEncoder(nn.Module):
             )
         elif b_type == "conformer":
             frames = ConformerBackbone(**b_kwargs, name="backbone")(
-                x, deterministic=deterministic, mask=mask
+                x,
+                deterministic=deterministic,
+                mask=mask,
+                use_running_average=use_running_average,
             )
-            mask = subsample_mask(mask, int(b_kwargs.get("subsample_factor", 1)))
+            if int(b_kwargs.get("resnet_stem_channels", 0)) > 0:
+                if mask is not None:
+                    mask = mask[:, ::8][:, : frames.shape[1]]
+            else:
+                mask = subsample_mask(
+                    mask, int(b_kwargs.get("subsample_factor", 1))
+                )
         elif b_type == "mamba":
             frames = MambaBackbone(**b_kwargs, name="backbone")(
                 x, deterministic=deterministic, mask=mask
             )
         elif b_type == "ecapa_tdnn":
+            freq_c = int(b_kwargs.pop("freq_resnet_channels", 0))
             frames = EcapaTdnnBackbone(**b_kwargs, name="backbone")(
                 x,
                 deterministic=deterministic,
                 mask=mask,
                 use_running_average=use_running_average,
             )
+            if freq_c > 0:
+                freq_rn_frames = ResNetBackbone(
+                    base_channels=freq_c,
+                    num_blocks=(3, 4, 6, 3),
+                    use_se=False,
+                    out_dim=0,
+                    use_batch_norm=True,
+                    wespeaker_mode=True,
+                    name="freq_resnet",
+                )(
+                    x,
+                    deterministic=deterministic,
+                    mask=mask,
+                    use_running_average=use_running_average,
+                )
+                freq_rn_mask = (
+                    mask[:, ::8][:, : freq_rn_frames.shape[1]]
+                    if mask is not None
+                    else None
+                )
+                aux_pooled = pooling.StatsPooling(
+                    unbiased_std=True, name="freq_pool"
+                )(freq_rn_frames, mask=freq_rn_mask)
         elif b_type == "resnet":
             frames = ResNetBackbone(**b_kwargs, name="backbone")(
                 x,
@@ -1320,6 +1690,40 @@ class ModernSpeakerEncoder(nn.Module):
                 mask=mask,
                 use_running_average=use_running_average,
             )
+            if bool(b_kwargs.get("wespeaker_mode", False)) and mask is not None:
+                mask = mask[:, ::8][:, : frames.shape[1]]
+        elif b_type == "wavlm":
+            ac_c = int(b_kwargs.pop("acoustic_resnet_channels", 0))
+            orig_mask = mask
+            frames = WavLMBackbone(**b_kwargs, name="backbone")(
+                x, deterministic=deterministic, mask=mask
+            )
+            sub_f = int(b_kwargs.get("subsample_factor", 2))
+            if mask is not None and sub_f > 1:
+                mask = mask[:, ::sub_f][:, : frames.shape[1]]
+            if ac_c > 0:
+                ac_rn_frames = ResNetBackbone(
+                    base_channels=ac_c,
+                    num_blocks=(3, 4, 6, 3),
+                    use_se=False,
+                    out_dim=0,
+                    use_batch_norm=True,
+                    wespeaker_mode=True,
+                    name="acoustic_resnet",
+                )(
+                    x,
+                    deterministic=deterministic,
+                    mask=orig_mask,
+                    use_running_average=use_running_average,
+                )
+                ac_rn_mask = (
+                    orig_mask[:, ::8][:, : ac_rn_frames.shape[1]]
+                    if orig_mask is not None
+                    else None
+                )
+                aux_pooled = pooling.StatsPooling(
+                    unbiased_std=True, name="acoustic_pool"
+                )(ac_rn_frames, mask=ac_rn_mask)
         else:
             raise ValueError(
                 f"Unsupported backbone_type: {self.backbone_type}"
@@ -1344,7 +1748,10 @@ class ModernSpeakerEncoder(nn.Module):
         elif p_type == "last":
             pooled = pooling.LastFramePooling(name="pool")(frames, mask=mask)
         elif p_type == "stats":
-            pooled = pooling.StatsPooling(name="pool")(frames, mask=mask)
+            pooled = pooling.StatsPooling(
+                unbiased_std=bool(p_kwargs.get("unbiased_std", False)),
+                name="pool",
+            )(frames, mask=mask)
         elif p_type == "sap":
             pooled = pooling.SelfAttentivePooling(
                 attention_dim=int(p_kwargs.get("attention_dim", 128)),
@@ -1356,6 +1763,7 @@ class ModernSpeakerEncoder(nn.Module):
                 use_global_context=bool(
                     p_kwargs.get("use_global_context", True)
                 ),
+                asp_relu_bn=bool(p_kwargs.get("asp_relu_bn", False)),
                 name="pool",
             )(frames, mask=mask)
         elif p_type == "cumulative_stats":
@@ -1365,9 +1773,15 @@ class ModernSpeakerEncoder(nn.Module):
         else:
             raise ValueError(f"Unsupported pooling_type: {self.pooling_type}")
 
+        if aux_pooled is not None:
+            pooled = jnp.concatenate([pooled, aux_pooled], axis=-1)
+
         # Post-pooling bottleneck FFN:
-        # LayerNorm -> [Dense(bottleneck_dim) -> LayerNorm -> ReLU] -> Dense(embedding_dim)
-        emb = nn.LayerNorm(name="bottleneck_ln")(pooled)
+        # [LayerNorm] -> [Dense(bottleneck_dim) -> LayerNorm -> ReLU] -> Dense(embedding_dim)
+        if bool(p_kwargs.get("use_bottleneck_ln", True)):
+            emb = nn.LayerNorm(name="bottleneck_ln")(pooled)
+        else:
+            emb = pooled
         use_nonlinear = bool(p_kwargs.get("use_nonlinear_bottleneck", True))
         if use_nonlinear:
             bottleneck_dim = int(p_kwargs.get("bottleneck_dim", 256))

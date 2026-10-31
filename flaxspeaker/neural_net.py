@@ -192,6 +192,9 @@ def build_modern_encoder_from_config(
             "subsample_after_layer": int(
                 getattr(m_cfg.conformer, "subsample_after_layer", 3)
             ),
+            "resnet_stem_channels": int(
+                getattr(m_cfg.conformer, "resnet_stem_channels", 0)
+            ),
         }
     elif b_type == "mamba":
         b_kwargs = {
@@ -217,6 +220,9 @@ def build_modern_encoder_from_config(
             "norm_after_activation": bool(
                 getattr(m_cfg.ecapa_tdnn, "norm_after_activation", True)
             ),
+            "freq_resnet_channels": int(
+                getattr(m_cfg.ecapa_tdnn, "freq_resnet_channels", 0)
+            ),
         }
     elif b_type == "resnet":
         b_kwargs = {
@@ -226,6 +232,26 @@ def build_modern_encoder_from_config(
             "out_dim": m_cfg.resnet.out_dim,
             "use_batch_norm": bool(
                 getattr(m_cfg.resnet, "use_batch_norm", True)
+            ),
+            "wespeaker_mode": bool(
+                getattr(m_cfg.resnet, "wespeaker_mode", False)
+            ),
+        }
+    elif b_type == "wavlm":
+        b_kwargs = {
+            "dim": m_cfg.wavlm.dim,
+            "num_layers": m_cfg.wavlm.num_layers,
+            "num_heads": m_cfg.wavlm.num_heads,
+            "ffn_dim": m_cfg.wavlm.ffn_dim,
+            "num_buckets": m_cfg.wavlm.num_buckets,
+            "max_distance": m_cfg.wavlm.max_distance,
+            "pos_conv_kernel": m_cfg.wavlm.pos_conv_kernel,
+            "pos_conv_groups": m_cfg.wavlm.pos_conv_groups,
+            "subsample_factor": m_cfg.wavlm.subsample_factor,
+            "tdnn_dim": m_cfg.wavlm.tdnn_dim,
+            "tdnn_out_dim": m_cfg.wavlm.tdnn_out_dim,
+            "acoustic_resnet_channels": int(
+                getattr(m_cfg.wavlm, "acoustic_resnet_channels", 0)
             ),
         }
     else:
@@ -256,6 +282,9 @@ def build_modern_encoder_from_config(
             ),
             "use_global_anchor": getattr(
                 m_cfg.pfas, "use_global_anchor", True
+            ),
+            "use_stats_global_anchor": bool(
+                getattr(m_cfg.pfas, "use_stats_global_anchor", False)
             ),
             "local_value_scale": float(
                 getattr(m_cfg.pfas, "local_value_scale", 0.25)
@@ -288,6 +317,15 @@ def build_modern_encoder_from_config(
             "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
             "use_nonlinear_bottleneck": getattr(
                 m_cfg.pooling, "use_nonlinear_bottleneck", True
+            ),
+            "use_bottleneck_ln": bool(
+                getattr(m_cfg.pooling, "use_bottleneck_ln", True)
+            ),
+            "asp_relu_bn": bool(
+                getattr(m_cfg.pooling, "asp_relu_bn", False)
+            ),
+            "unbiased_std": bool(
+                getattr(m_cfg.pooling, "unbiased_std", False)
             ),
         }
 

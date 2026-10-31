@@ -682,8 +682,8 @@ class TestExportAndHuggingFaceCompat(TestBase):
         from unittest import mock
 
         self.assertEqual(len(hf_compat.CONTROLLED_ABLATION_MODEL_IDS), 44)
-        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 4)
-        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 48)
+        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 6)
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 50)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
             "https://huggingface.co/collections/wq2012/flaxspeaker",
@@ -1648,7 +1648,7 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
         fp_path = os.path.join(pm, "step0_fingerprints.json")
         with open(fp_path, "r", encoding="utf-8") as f:
             fps = json.load(f)["checkpoints"]
-        self.assertEqual(len(fps), 48)
+        self.assertIn(len(fps), (48, 50))
         for mid in hf_compat.PRETRAINED_MODEL_IDS:
             with open(os.path.join(pm, mid, "config.json"), "r", encoding="utf-8") as f:
                 cfg_json = json.load(f)
@@ -1959,8 +1959,8 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
             bench = json.load(f)
 
-        self.assertIn(len(bench["experiments"]), (44, 48))
-        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16))
+        self.assertIn(len(bench["experiments"]), (44, 48, 50))
+        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16, 18))
 
         vox_ds = bench["datasets"]["voxceleb1"]
         self.assertIn("vox1_o_10spk_subset_note", vox_ds)
@@ -2486,6 +2486,45 @@ class TestV050SotaFeatures(unittest.TestCase):
             enc.apply(vars_eval, x_pad, mask=m_pad, deterministic=True)
         )
         self.assertTrue(np.allclose(e_short, e_pad, atol=1e-5))
+
+    def test_wavlm_ssl_kaldi_fbank_and_hybrid_2d_flagships(self):
+        # 1. Kaldi HTK non-VAD fbank frontend
+        rng = np.random.default_rng(123)
+        wav = rng.standard_normal(16000).astype(np.float32) * 0.1
+        fe = feature_extraction.AudioFrontend(
+            configs.FrontendConfig(kaldi_fbank=True, apply_cmvn=True),
+            configs.VadConfig(enabled=False, mode="none"),
+        )
+        fbank = fe.extract_from_waveform(wav)
+        self.assertEqual(fbank.ndim, 2)
+        self.assertEqual(fbank.shape[1], 80)
+        self.assertGreater(fbank.shape[0], 95)
+
+        # 2. WavLM-Base+ SSL backbone (Path A)
+        cfg_w = configs.ExperimentConfig()
+        cfg_w.model.backbone = configs.BackboneType.WAVLM
+        cfg_w.model.wavlm.num_layers = 2
+        cfg_w.model.wavlm.d_model = 64
+        cfg_w.model.wavlm.num_heads = 4
+        cfg_w.model.wavlm.ffn_dim = 128
+        cfg_w.model.wavlm.tdnn_channels = (64, 64)
+        cfg_w.model.wavlm.tdnn_kernels = (3, 3)
+        cfg_w.model.wavlm.tdnn_dilations = (1, 2)
+        cfg_w.model.wavlm.tdnn_out_dim = 128
+        cfg_w.model.wavlm.acoustic_resnet_channels = 16
+        cfg_w.model.seq_len = 24
+        cfg_w.model.embedding_dim = 32
+        enc_w, st_w = neural_net.get_speaker_encoder(cfg_w)
+        x = jnp.ones((2, 24, 80), dtype=jnp.float32)
+        m = jnp.ones((2, 24), dtype=jnp.float32)
+        out_w = enc_w.apply(
+            {"params": st_w.params, "batch_stats": st_w.batch_stats},
+            x,
+            mask=m,
+            deterministic=True,
+        )
+        self.assertEqual(out_w.shape, (2, 32))
+        self.assertTrue(np.allclose(np.linalg.norm(np.asarray(out_w), axis=-1), 1.0, atol=1e-4))
 
 
 if __name__ == "__main__":

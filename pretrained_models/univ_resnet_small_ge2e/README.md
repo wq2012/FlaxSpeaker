@@ -126,6 +126,7 @@ Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences b
 
 - **Training regime**: 4,600 gradient steps x 32 utterances (N = 8 speakers x M = 4, ~15.58 epochs) on <= 25 utterances/speaker from 381 speakers (9,447 utterances); the source papers train for ~500k steps with N = 16-64 / M = 8-10 on thousands of speakers.
 - **Augmentation**: corpus-backed MUSAN environmental noise, music, and multi-speaker babble + RIRS_NOISES room impulse responses + 3-way polyphase speed perturbation (`0.9x`, `1.0x`, `1.1x`) + SpecAugment.
+- **ResNet**: 2D Time-Frequency ResNet (`base_channels=24`, `num_blocks=(2, 2, 2, 2)`, `wespeaker_mode=False`).
 - **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation processes up to 3000 frames (30.0 s).
 
 ## Citation

@@ -48,6 +48,7 @@ class StatsPooling(nn.Module):
     """Temporal statistics pooling (mean + standard deviation) `(B, T, D) -> (B, 2*D)`."""
 
     eps: float = 1e-6
+    unbiased_std: bool = False
 
     @nn.compact
     def __call__(self, x: jax.Array, mask: Optional[jax.Array] = None) -> jax.Array:
@@ -55,10 +56,17 @@ class StatsPooling(nn.Module):
             mask_f = (mask > 0).astype(x.dtype)[..., None]
             denom = jnp.maximum(jnp.sum(mask_f, axis=1), 1.0)
             mean = jnp.sum(x * mask_f, axis=1) / denom
-            var = jnp.sum(((x - mean[:, None, :]) ** 2) * mask_f, axis=1) / denom
+            var_denom = (
+                jnp.maximum(denom - 1.0, 1.0) if self.unbiased_std else denom
+            )
+            var = (
+                jnp.sum(((x - mean[:, None, :]) ** 2) * mask_f, axis=1)
+                / var_denom
+            )
         else:
             mean = jnp.mean(x, axis=1)
-            var = jnp.var(x, axis=1)
+            ddof = 1 if (self.unbiased_std and x.shape[1] > 1) else 0
+            var = jnp.var(x, axis=1, ddof=ddof)
         std = jnp.sqrt(jnp.maximum(var, self.eps))
         return jnp.concatenate([mean, std], axis=-1)
 
@@ -90,6 +98,7 @@ class AttentiveStatsPooling(nn.Module):
 
     attention_dim: int = 128
     use_global_context: bool = True
+    asp_relu_bn: bool = False
     eps: float = 1e-6
 
     @nn.compact
@@ -115,7 +124,17 @@ class AttentiveStatsPooling(nn.Module):
         else:
             att_in = x
 
-        h = jnp.tanh(nn.Dense(self.attention_dim, name="asp_hidden")(att_in))
+        h = nn.Dense(self.attention_dim, name="asp_hidden")(att_in)
+        if self.asp_relu_bn:
+            h = jax.nn.relu(h)
+            bn_scale = self.param(
+                "asp_bn_scale", nn.initializers.ones, (self.attention_dim,)
+            )
+            bn_bias = self.param(
+                "asp_bn_bias", nn.initializers.zeros, (self.attention_dim,)
+            )
+            h = h * bn_scale.astype(h.dtype) + bn_bias.astype(h.dtype)
+        h = jnp.tanh(h)
         logits = nn.Dense(feat_dim, name="asp_out")(h)  # (B, T, D)
         if mask is not None:
             logits = jnp.where(mask[..., None] > 0, logits, -1e9)
@@ -288,6 +307,7 @@ class PfasRepresentationHead(nn.Module):
     apply_l2_norm_to_values: bool = False
     apply_global_l2_norm_to_concat_form: bool = True
     use_global_anchor: bool = True
+    use_stats_global_anchor: bool = False
     local_value_scale: float = 0.25
     normalize_keys_and_values: Optional[bool] = None
     normalize_overall_output: bool = False
@@ -321,19 +341,29 @@ class PfasRepresentationHead(nn.Module):
             vals = packed[:, key_size:].reshape(bsz, self.num_keys, self.value_dim)
         else:
             if self.use_global_anchor:
-                pooled = AttentiveTemporalPooling(
-                    num_heads=self.atp_num_heads,
-                    attention_dim=self.attention_dim,
-                    pooling_stats="mean_std",
-                    name="pfas_global_atp",
-                )(x, mask=mask)
-                g = nn.LayerNorm(name="pfas_g_ln1")(pooled)
-                g = nn.relu(
-                    nn.LayerNorm(name="pfas_g_ln2")(
-                        nn.Dense(self.bottleneck_dim, name="pfas_g_fc")(g)
+                if self.use_stats_global_anchor:
+                    pooled = StatsPooling(
+                        unbiased_std=True, name="pfas_global_stats"
+                    )(x, mask=mask)
+                else:
+                    pooled = AttentiveTemporalPooling(
+                        num_heads=self.atp_num_heads,
+                        attention_dim=self.attention_dim,
+                        pooling_stats="mean_std",
+                        name="pfas_global_atp",
+                    )(x, mask=mask)
+                if self.atp_ffn_use_layer_norm:
+                    g = nn.LayerNorm(name="pfas_g_ln1")(pooled)
+                    g = nn.relu(
+                        nn.LayerNorm(name="pfas_g_ln2")(
+                            nn.Dense(self.bottleneck_dim, name="pfas_g_fc")(g)
+                        )
                     )
-                )
-                global_val = nn.Dense(self.value_dim, name="pfas_g_val")(g)
+                    global_val = nn.Dense(self.value_dim, name="pfas_g_val")(g)
+                else:
+                    global_val = nn.Dense(self.value_dim, name="pfas_g_val")(
+                        pooled
+                    )
             else:
                 global_val = None
 

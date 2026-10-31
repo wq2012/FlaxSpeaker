@@ -50,10 +50,12 @@ HIGHLIGHT_UNIV_ORDER = [
     "univ_mamba_small_ge2e",
 ]
 FLAGSHIP_ORDER = [
-    "univ_full_conformer_large_dr_vectors",
-    "univ_full_conformer_large_pfas",
+    "univ_full_resnet34_arcface",
     "univ_full_ecapa_c1024_arcface",
+    "univ_full_wavlm_base_arcface",
     "univ_full_conformer_large_arcface",
+    "univ_full_conformer_large_pfas",
+    "univ_full_conformer_large_dr_vectors",
 ]
 TFLITE_REPOS = {
     "univ_full_conformer_large_arcface",
@@ -70,6 +72,7 @@ LOSS_SHORT = {
     "ge2e_contrast": "GE2E-C$^{*}$",
     "extended_set_softmax": "BXS$^{*}$",
     "arcface": "ArcFace",
+    "subcenter_arcface": "Sub-ArcFace",
     "cosface": "CosFace",
     "sphereface": "SphereFace",
     "triplet": "Triplet",
@@ -160,7 +163,7 @@ def main(paper_dir: str) -> None:
     pfas_sweep = load("pfas_hparam_sweep.json")
 
     ex = bench["experiments"]
-    assert len(ex) in (44, 48), len(ex)
+    assert len(ex) in (44, 48, 50), len(ex)
     controlled_ex = {k: v for k, v in ex.items() if not k.startswith("univ_full_")}
     assert len(controlled_ex) == 44, len(controlled_ex)
 
@@ -265,8 +268,10 @@ def main(paper_dir: str) -> None:
         ("lsResnet", "ls_resnet_small_ge2e"),
         ("cnDr", "cn_conformer_small_dr_vectors"),
         ("voxEcapaXs", "vox_ecapa_tdnn_small_ext_softmax"),
-        ("flagConf", "univ_full_conformer_large_arcface"),
+        ("flagResnet", "univ_full_resnet34_arcface"),
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
+        ("flagWavlm", "univ_full_wavlm_base_arcface"),
+        ("flagConf", "univ_full_conformer_large_arcface"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ]:
@@ -283,11 +288,15 @@ def main(paper_dir: str) -> None:
 
     fm = flagship["models"]
     for ftag, fmid in (
-        ("flagConf", "univ_full_conformer_large_arcface"),
+        ("flagResnet", "univ_full_resnet34_arcface"),
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
+        ("flagWavlm", "univ_full_wavlm_base_arcface"),
+        ("flagConf", "univ_full_conformer_large_arcface"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ):
+        if fmid not in fm:
+            continue
         ob = fm[fmid]["official_benchmarks"]
         vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
         nums.append(macro_def(ftag + "VoxRaw", f2(vx["eer_percent"])))
@@ -716,19 +725,24 @@ def main(paper_dir: str) -> None:
             f"{p1} / {f2(p3_best)} & {m1} / {m3} \\\\"
         )
     flines.append("\\midrule")
-    all4_params = sum(int(fm[m]["num_parameters"]) for m in FLAGSHIP_ORDER) / 1e6
+    all_flag_params = sum(int(fm[m]["num_parameters"]) for m in FLAGSHIP_ORDER if m in fm) / 1e6
+    two_w_params = (
+        int(fm["univ_full_conformer_large_arcface"]["num_parameters"])
+        + int(fm["univ_full_ecapa_c1024_arcface"]["num_parameters"])
+    ) / 1e6
     if "two_way_official_benchmarks" in fus:
         fus_2w = fus["two_way_official_benchmarks"]
         w2 = fus.get("two_way_weights_selected_on_val", [0.5, 0.5])
         flines.append(
-            f"2-Way Fusion (${w2[0]:.2g}\\,\\text{{Conf-L}} + {w2[1]:.2g}\\,\\text{{ECAPA}}$) & 21.91 & --- & "
+            f"2-Way Fusion (${w2[0]:.2g}\\,\\text{{Conf-L}} + {w2[1]:.2g}\\,\\text{{ECAPA}}$) & {two_w_params:.2f} & --- & "
             f"--- / {f2(fus_2w['voxceleb1_o']['eer_percent'])} / {f2(fus_2w['voxceleb1_o']['qmf']['eer_percent'])} & "
             f"--- / {f2(fus_2w['cnceleb_e']['qmf']['eer_percent'])} / --- & "
             f"{f2(fus_2w['librispeech_test_clean']['eer_percent'])} / {f2(fus_2w['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
             f"--- & --- \\\\"
         )
+        n_way = len(fus.get("models", FLAGSHIP_ORDER))
         flines.append(
-            f"4-Way Flagship Fusion (Conf-L + ECAPA + PFAS + DrV) & {all4_params:.2f} & --- & "
+            f"{n_way}-Way Flagship Fusion (ResNet + ECAPA + WavLM + Conf-L + PFAS + DrV) & {all_flag_params:.2f} & --- & "
             f"--- / \\textbf{{{f2(fus2['voxceleb1_o']['eer_percent'])}}} / \\textbf{{{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}}} & "
             f"--- / \\textbf{{{f2(fus2['cnceleb_e']['qmf']['eer_percent'])}}} / --- & "
             f"\\textbf{{{f2(fus2['librispeech_test_clean']['eer_percent'])}}} / \\textbf{{{f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}}} / --- & "

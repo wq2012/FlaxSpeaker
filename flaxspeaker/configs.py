@@ -49,6 +49,7 @@ class BackboneType(_StrEnum):
     MAMBA = "mamba"
     ECAPA_TDNN = "ecapa_tdnn"
     RESNET = "resnet"
+    WAVLM = "wavlm"
 
 
 class ModelSize(_StrEnum):
@@ -139,6 +140,7 @@ class FrontendConfig:
     stack_left_context: int = 0
     stack_right_context: int = 0
     frame_stride: int = 1
+    kaldi_fbank: bool = False
     hf_extractor_name: str = "openai/whisper-tiny"
 
     @property
@@ -243,6 +245,7 @@ class ConformerConfig:
     use_conv_stem: bool = True
     use_positional_encoding: bool = False
     normalize_output: bool = False
+    resnet_stem_channels: int = 0
 
 
 @dataclasses.dataclass
@@ -270,17 +273,37 @@ class EcapaTdnnConfig:
     mfa_dim: int = 512
     use_batch_norm: bool = True
     norm_after_activation: bool = True
+    freq_resnet_channels: int = 0
 
 
 @dataclasses.dataclass
 class ResNetConfig:
-    """Configuration for Thin-ResNet / ResNet-18 speaker encoder."""
+    """Configuration for Thin-ResNet / ResNet-18 / ResNet-34 speaker encoder."""
 
     base_channels: int = 32
     num_blocks: tuple[int, ...] = (2, 2, 2, 2)
     use_se: bool = True
     out_dim: int = 256
     use_batch_norm: bool = True
+    wespeaker_mode: bool = False
+
+
+@dataclasses.dataclass
+class WavLMConfig:
+    """Configuration for WavLM self-supervised speaker encoder (Chen et al., JSTSP 2022)."""
+
+    dim: int = 768
+    num_layers: int = 12
+    num_heads: int = 12
+    ffn_dim: int = 3072
+    num_buckets: int = 320
+    max_distance: int = 800
+    pos_conv_kernel: int = 128
+    pos_conv_groups: int = 16
+    subsample_factor: int = 2
+    tdnn_dim: int = 512
+    tdnn_out_dim: int = 1500
+    acoustic_resnet_channels: int = 0
 
 
 @dataclasses.dataclass
@@ -303,6 +326,9 @@ class PoolingConfig:
     epsilon: float = 1e-4
     bottleneck_dim: int = 256
     use_nonlinear_bottleneck: bool = True
+    use_bottleneck_ln: bool = True
+    asp_relu_bn: bool = False
+    unbiased_std: bool = False
 
 
 @dataclasses.dataclass
@@ -327,6 +353,7 @@ class PfasConfig:
     apply_global_l2_norm_to_concat_form: bool = True
     apply_softmax_per_test_key: bool = False
     use_global_anchor: bool = True
+    use_stats_global_anchor: bool = False
     local_value_scale: float = 0.25
 
     @property
@@ -425,6 +452,7 @@ class ModelConfig:
     mamba: MambaConfig = dataclasses.field(default_factory=MambaConfig)
     ecapa_tdnn: EcapaTdnnConfig = dataclasses.field(default_factory=EcapaTdnnConfig)
     resnet: ResNetConfig = dataclasses.field(default_factory=ResNetConfig)
+    wavlm: WavLMConfig = dataclasses.field(default_factory=WavLMConfig)
     pooling: PoolingConfig = dataclasses.field(default_factory=PoolingConfig)
     pfas: PfasConfig = dataclasses.field(default_factory=PfasConfig)
     dr_vector: DrVectorConfig = dataclasses.field(default_factory=DrVectorConfig)
@@ -695,6 +723,7 @@ class ExperimentConfig:
                 "mamba",
                 "ecapa_tdnn",
                 "resnet",
+                "wavlm",
                 "pooling",
                 "pfas",
                 "dr_vector",

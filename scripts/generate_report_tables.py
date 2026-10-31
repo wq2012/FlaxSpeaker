@@ -16,10 +16,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PM = os.path.join(REPO_ROOT, "pretrained_models")
 
 FLAGSHIP_ORDER = [
-    "univ_full_conformer_large_dr_vectors",
-    "univ_full_conformer_large_pfas",
+    "univ_full_resnet34_arcface",
     "univ_full_ecapa_c1024_arcface",
+    "univ_full_wavlm_base_arcface",
     "univ_full_conformer_large_arcface",
+    "univ_full_conformer_large_pfas",
+    "univ_full_conformer_large_dr_vectors",
 ]
 
 
@@ -103,20 +105,25 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             f"{f2(m1_raw)}% / {f2(m3_raw)}% |"
         )
 
+    two_w_params = int(fm["univ_full_conformer_large_arcface"]["num_parameters"]) + int(
+        fm["univ_full_ecapa_c1024_arcface"]["num_parameters"]
+    )
+    all_flag_params = sum(int(fm[m]["num_parameters"]) for m in FLAGSHIP_ORDER if m in fm)
     if "two_way_official_benchmarks" in fus:
         fus_2w = fus["two_way_official_benchmarks"]
         w2 = fus.get("two_way_weights_selected_on_val", [0.5, 0.5])
         out.append(
             f"| **2-Way Score Fusion (`{w2[0]:.2g}·Conformer-L + {w2[1]:.2g}·ECAPA-c1024`)** | "
-            f"Heterogeneous Cosine + AS-Norm + QMF | `21,906,500` | — | "
+            f"Heterogeneous Cosine + AS-Norm + QMF | `{two_w_params:,}` | — | "
             f"— / {f2(fus_2w['voxceleb1_o']['eer_percent'])}% / {f2(fus_2w['voxceleb1_o']['qmf']['eer_percent'])}% | "
             f"— / {f2(fus_2w['cnceleb_e']['qmf']['eer_percent'])}% / — | "
             f"{f2(fus_2w['librispeech_test_clean']['eer_percent'])}% / {f2(fus_2w['librispeech_test_clean']['qmf']['eer_percent'])}% / — | "
             f"— | — |"
         )
+        n_way = len(fus.get("models", FLAGSHIP_ORDER))
         out.append(
-            f"| **4-Way Flagship Fusion (`Conf-L + ECAPA + PFAS + DrV`)** | "
-            f"Heterogeneous 4-Way AS-Norm + QMF | `36,367,570` | — | "
+            f"| **{n_way}-Way Flagship Fusion (`ResNet + ECAPA + WavLM + Conf-L + PFAS + DrV`)** | "
+            f"Heterogeneous {n_way}-Way AS-Norm + QMF | `{all_flag_params:,}` | — | "
             f"— / **{f2(fus2['voxceleb1_o']['eer_percent'])}%** / **{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}%** | "
             f"— / **{f2(fus2['cnceleb_e']['qmf']['eer_percent'])}%** / — | "
             f"**{f2(fus2['librispeech_test_clean']['eer_percent'])}%** / **{f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}%** / — | "
@@ -125,15 +132,17 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
     else:
         out.append(
             f"| **2-Way Score Fusion (`0.1·Conformer-L + 0.9·ECAPA-c1024`)** | "
-            f"Heterogeneous Cosine + AS-Norm + QMF | `21,906,500` | — | "
+            f"Heterogeneous Cosine + AS-Norm + QMF | `{two_w_params:,}` | — | "
             f"— / {f2(fus2['voxceleb1_o']['eer_percent'])}% / **{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}%** | "
             f"— / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])}% / — | "
             f"{f2(fus2['librispeech_test_clean']['eer_percent'])}% / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}% / — | "
             f"— | — |"
         )
+    me_mids = fus3.get("models", ["univ_full_conformer_large_arcface", "univ_full_ecapa_c1024_arcface", "univ_full_conformer_large_pfas"])
+    me_params = sum(int(fm[m]["num_parameters"]) for m in me_mids if m in fm)
     out.append(
-        f"| **3-Way Multi-Enroll Fusion (`0.4·Conf-L + 0.4·ECAPA + 0.2·PFAS`)** | "
-        f"Cosine AS-Norm + Frame-Level PFAS | `29,218,827` | — | "
+        f"| **{len(me_mids)}-Way Multi-Enroll Fusion (`Conf-L + ECAPA + PFAS + DrV`)** | "
+        f"Cosine AS-Norm + Frame-Level PFAS + Dr-Vectors | `{me_params:,}` | — | "
         f"— | — / — / **{f2(fus3['cnceleb_e_multi_enroll_map']['eer_percent'])}%** (`AUC {f4(fus3['cnceleb_e_multi_enroll_map']['roc_auc'])}`) | "
         f"— / — / **{f2(fus3['librispeech_test_clean_3utt']['eer_percent'])}%** (`AUC {f4(fus3['librispeech_test_clean_3utt']['roc_auc'])}`) | "
         f"— | — |"

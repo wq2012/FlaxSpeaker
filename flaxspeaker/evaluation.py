@@ -373,13 +373,23 @@ def _extract_eval_embeddings(
                 )
                 feats.append(padded)
                 masks.append(mask)
+            n_c = len(chunk)
+            if n_c < batch_size:
+                target_b = (
+                    batch_size
+                    if len(items) > batch_size and n_c >= batch_size // 2
+                    else min(batch_size, max(8, 1 << (n_c - 1).bit_length()))
+                )
+                if n_c < target_b:
+                    feats.extend([feats[0]] * (target_b - n_c))
+                    masks.extend([masks[0]] * (target_b - n_c))
             batch_arr = jnp.asarray(np.stack(feats, axis=0), dtype=jnp.float32)
             mask_arr = jnp.asarray(np.stack(masks, axis=0), dtype=jnp.float32)
             embs = np.asarray(
                 _jit_encode_eval_batch(
                     state.apply_fn, variables, batch_arr, mask_arr
                 )
-            )
+            )[:n_c]
             for (u, _), e in zip(chunk, embs):
                 utt_to_emb[u] = e
 

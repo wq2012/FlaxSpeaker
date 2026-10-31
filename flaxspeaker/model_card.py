@@ -333,14 +333,23 @@ def deviations_from_papers(
             "3 x 256 leaky-ReLU(0.2) layers, weighted-sum read-out and trainable affine."
         )
     if bb == "conformer":
-        out.append(
-            "**Conformer**: parallel linear + Conv1D stem, no positional encoding, "
-            f"{exp_cfg.model.conformer.num_layers} blocks x {exp_cfg.model.conformer.dim}-D, "
-            f"{exp_cfg.model.conformer.num_heads} heads, kernel {exp_cfg.model.conformer.conv_kernel_size}, "
-            "mask-aware GroupNorm(2), no dropout, multi-layer feature aggregation; the "
-            "Google papers use 12 x 512 blocks, 4-8 heads, kernel 32, relative positional "
-            "encoding and dropout."
-        )
+        stem_c = int(getattr(exp_cfg.model.conformer, "resnet_stem_channels", 0))
+        if stem_c > 0:
+            out.append(
+                f"**Conformer**: 2D `ResNet-34` acoustic stem (`base_channels={stem_c}`, "
+                f"`wespeaker_mode=True`, 8x time subsampling) + {exp_cfg.model.conformer.num_layers} "
+                f"Conformer blocks x {exp_cfg.model.conformer.dim}-D ({exp_cfg.model.conformer.num_heads} heads, "
+                f"kernel {exp_cfg.model.conformer.conv_kernel_size})."
+            )
+        else:
+            out.append(
+                "**Conformer**: parallel linear + Conv1D stem, no positional encoding, "
+                f"{exp_cfg.model.conformer.num_layers} blocks x {exp_cfg.model.conformer.dim}-D, "
+                f"{exp_cfg.model.conformer.num_heads} heads, kernel {exp_cfg.model.conformer.conv_kernel_size}, "
+                "mask-aware GroupNorm(2), no dropout, multi-layer feature aggregation; the "
+                "Google papers use 12 x 512 blocks, 4-8 heads, kernel 32, relative positional "
+                "encoding and dropout."
+            )
         p = exp_cfg.model.pooling
         if str(p.pooling_type) == "atp" and (int(p.attention_dim) > 0 or int(p.num_heads) > 1):
             out.append(
@@ -357,22 +366,54 @@ def deviations_from_papers(
             "and a plain linear output (`icassp2018_ge2e_config(pure_paper_mode=True)`)."
         )
     if bb == "ecapa_tdnn":
+        freq_c = int(getattr(exp_cfg.model.ecapa_tdnn, "freq_resnet_channels", 0))
+        freq_note = (
+            f" + parallel 2D frequency ResNet (`base_channels={freq_c}`)"
+            if freq_c > 0
+            else ""
+        )
         if bool(getattr(exp_cfg.model.ecapa_tdnn, "use_batch_norm", True)):
             out.append(
                 "**ECAPA-TDNN**: mask-aware post-activation BatchNorm (`use_batch_norm=True, "
-                "norm_after_activation=True`)."
+                f"norm_after_activation=True`){freq_note}."
             )
         else:
-            out.append("**ECAPA-TDNN**: LayerNorm instead of BatchNorm.")
+            out.append(f"**ECAPA-TDNN**: LayerNorm instead of BatchNorm{freq_note}.")
+    if bb == "resnet":
+        out.append(
+            f"**ResNet**: 2D Time-Frequency ResNet (`base_channels={exp_cfg.model.resnet.base_channels}`, "
+            f"`num_blocks={tuple(exp_cfg.model.resnet.num_blocks)}`, "
+            f"`wespeaker_mode={bool(getattr(exp_cfg.model.resnet, 'wespeaker_mode', False))}`)."
+        )
+    if bb == "wavlm":
+        ac_c = int(getattr(exp_cfg.model.wavlm, "acoustic_resnet_channels", 0))
+        ac_note = (
+            f" + parallel 2D acoustic ResNet (`base_channels={ac_c}`)"
+            if ac_c > 0
+            else ""
+        )
+        out.append(
+            f"**WavLM**: {exp_cfg.model.wavlm.num_layers}-layer Transformer (`dim={exp_cfg.model.wavlm.dim}`, "
+            f"{exp_cfg.model.wavlm.num_heads} heads, Gated Relative Position Bias) + 5-layer dilated "
+            f"X-Vector TDNN (`tdnn_dim={exp_cfg.model.wavlm.tdnn_dim}`, "
+            f"`tdnn_out_dim={exp_cfg.model.wavlm.tdnn_out_dim}`){ac_note} (Chen et al., JSTSP 2022)."
+        )
     max_eval_cap = (
         int(exp_cfg.model.max_eval_seq_len)
         if int(exp_cfg.model.max_eval_seq_len) > 0
         else int(getattr(exp_cfg.eval, "max_eval_frames_cap", 3000))
     )
-    out.append(
-        "**Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) "
-        f"+ CMVN; evaluation processes up to {max_eval_cap} frames ({max_eval_cap / 100:.1f} s)."
-    )
+    if bool(getattr(exp_cfg.frontend, "kaldi_fbank", False)):
+        out.append(
+            f"**Frontend**: 80-D Kaldi HTK Mel-filterbank (Povey window, 20-7600 Hz, "
+            f"continuous frames, `vad.enabled={bool(exp_cfg.vad.enabled)}`) + CMVN; "
+            f"evaluation processes up to {max_eval_cap} frames ({max_eval_cap / 100:.1f} s)."
+        )
+    else:
+        out.append(
+            "**Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) "
+            f"+ CMVN; evaluation processes up to {max_eval_cap} frames ({max_eval_cap / 100:.1f} s)."
+        )
     return out
 
 

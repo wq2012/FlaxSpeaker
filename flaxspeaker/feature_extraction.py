@@ -100,7 +100,46 @@ class AudioFrontend:
             htk=False,
             norm="slaney",
         ).astype(np.float32)
+        self._kaldi_mel_basis = self._build_kaldi_mel_banks(
+            num_bins=self.config.n_mels,
+            n_fft=self._n_fft,
+            sample_rate=self.config.sample_rate,
+            fmin=self.config.fmin,
+            fmax=self.config.fmax,
+        )
+        denom = max(1, self._frame_length - 1)
+        self._povey_window = np.power(
+            0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(self._frame_length) / denom),
+            0.85,
+        ).astype(np.float32)
         self._hf_extractor = None
+
+    @staticmethod
+    def _build_kaldi_mel_banks(
+        num_bins: int = 80,
+        n_fft: int = 512,
+        sample_rate: int = 16000,
+        fmin: float = 20.0,
+        fmax: float = 7600.0,
+    ) -> np.ndarray:
+        """Builds exact Kaldi HTK Mel filterbank matrix of shape `(num_bins, n_fft // 2 + 1)`."""
+        num_fft_bins = n_fft // 2
+        fft_bin_width = float(sample_rate) / float(n_fft)
+        mel_low = 1127.0 * np.log(1.0 + fmin / 700.0)
+        mel_high = 1127.0 * np.log(1.0 + fmax / 700.0)
+        mel_delta = (mel_high - mel_low) / (num_bins + 1)
+        bins = np.arange(num_bins)[:, None]
+        left_mel = mel_low + bins * mel_delta
+        center_mel = mel_low + (bins + 1.0) * mel_delta
+        right_mel = mel_low + (bins + 2.0) * mel_delta
+        mel_freqs = 1127.0 * np.log(
+            1.0 + (fft_bin_width * np.arange(num_fft_bins))[None, :] / 700.0
+        )
+        up_slope = (mel_freqs - left_mel) / (center_mel - left_mel)
+        down_slope = (right_mel - mel_freqs) / (right_mel - center_mel)
+        fb = np.maximum(0.0, np.minimum(up_slope, down_slope))
+        fb = np.pad(fb, ((0, 0), (0, 1)), mode="constant")
+        return fb.astype(np.float32)
 
     def _get_hf_extractor(self):
         if self._hf_extractor is None:
@@ -135,9 +174,13 @@ class AudioFrontend:
             else self.vad_config
         )
         apply_agc = (
-            True
-            if vad_cfg is None
-            else bool(getattr(vad_cfg, "apply_agc", True))
+            False
+            if getattr(self.config, "kaldi_fbank", False)
+            else (
+                True
+                if vad_cfg is None
+                else bool(getattr(vad_cfg, "apply_agc", True))
+            )
         )
         if waveform.size > 0 and apply_agc:
             peak = float(np.max(np.abs(waveform)))
@@ -176,37 +219,74 @@ class AudioFrontend:
             configs.FeatureType.LOG_MEL.value,
             configs.FeatureType.WHISPER_MEL.value,
         ):
-            proc_wav = waveform
-            if cfg.preemph > 0.0 and proc_wav.shape[0] > 1:
-                proc_wav = np.concatenate(
-                    [
-                        proc_wav[:1],
-                        proc_wav[1:] - cfg.preemph * proc_wav[:-1],
-                    ]
+            if getattr(cfg, "kaldi_fbank", False) and (
+                ftype == configs.FeatureType.LOG_MEL.value
+            ):
+                wav_k = waveform * 32768.0
+                if wav_k.shape[0] < self._frame_length:
+                    wav_k = np.pad(
+                        wav_k, (0, self._frame_length - wav_k.shape[0])
+                    )
+                num_frames = (
+                    1 + (wav_k.shape[0] - self._frame_length) // self._frame_step
                 )
-            if proc_wav.shape[0] < self._frame_length:
-                proc_wav = np.pad(
-                    proc_wav, (0, self._frame_length - proc_wav.shape[0])
+                strides = (
+                    wav_k.strides[0] * self._frame_step,
+                    wav_k.strides[0],
                 )
-
-            stft = librosa.stft(
-                proc_wav,
-                n_fft=self._n_fft,
-                hop_length=self._frame_step,
-                win_length=self._frame_length,
-                window="hann",
-                center=True,
-            )
-            power_spec = np.square(np.abs(stft)).astype(np.float32)
-            mel_spec = np.matmul(self._mel_basis, power_spec)
-
-            if ftype == configs.FeatureType.WHISPER_MEL.value:
-                # HuggingFace WhisperFeatureExtractor compatible log10 scaling
-                log_spec = np.log10(np.maximum(mel_spec, 1e-10))
-                log_spec = np.maximum(log_spec, np.max(log_spec) - 8.0)
-                features = ((log_spec + 4.0) / 4.0).T.astype(np.float32)
+                frames = np.lib.stride_tricks.as_strided(
+                    wav_k,
+                    shape=(num_frames, self._frame_length),
+                    strides=strides,
+                ).copy()
+                frames = frames - np.mean(frames, axis=1, keepdims=True)
+                if cfg.preemph > 0.0:
+                    frames[:, 1:] = (
+                        frames[:, 1:] - cfg.preemph * frames[:, :-1]
+                    )
+                    frames[:, 0] *= 1.0 - cfg.preemph
+                frames = frames * self._povey_window[None, :]
+                power_spec = np.square(
+                    np.abs(np.fft.rfft(frames, n=self._n_fft, axis=1))
+                ).astype(np.float32)
+                mel_spec = np.matmul(power_spec, self._kaldi_mel_basis.T)
+                features = np.log(
+                    np.maximum(mel_spec, 1.1920929e-7)
+                ).astype(np.float32)
             else:
-                features = np.log(mel_spec + cfg.log_offset).T.astype(np.float32)
+                proc_wav = waveform
+                if cfg.preemph > 0.0 and proc_wav.shape[0] > 1:
+                    proc_wav = np.concatenate(
+                        [
+                            proc_wav[:1],
+                            proc_wav[1:] - cfg.preemph * proc_wav[:-1],
+                        ]
+                    )
+                if proc_wav.shape[0] < self._frame_length:
+                    proc_wav = np.pad(
+                        proc_wav, (0, self._frame_length - proc_wav.shape[0])
+                    )
+
+                stft = librosa.stft(
+                    proc_wav,
+                    n_fft=self._n_fft,
+                    hop_length=self._frame_step,
+                    win_length=self._frame_length,
+                    window="hann",
+                    center=True,
+                )
+                power_spec = np.square(np.abs(stft)).astype(np.float32)
+                mel_spec = np.matmul(self._mel_basis, power_spec)
+
+                if ftype == configs.FeatureType.WHISPER_MEL.value:
+                    # HuggingFace WhisperFeatureExtractor compatible log10 scaling
+                    log_spec = np.log10(np.maximum(mel_spec, 1e-10))
+                    log_spec = np.maximum(log_spec, np.max(log_spec) - 8.0)
+                    features = ((log_spec + 4.0) / 4.0).T.astype(np.float32)
+                else:
+                    features = np.log(mel_spec + cfg.log_offset).T.astype(
+                        np.float32
+                    )
 
         elif ftype == configs.FeatureType.HF_COMPAT.value:
             extractor = self._get_hf_extractor()

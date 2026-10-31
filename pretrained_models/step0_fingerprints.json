@@ -1527,10 +1527,72 @@
       "abs_diff_fixed": 0.1257,
       "abs_diff_variable": 0.0,
       "match": "variable"
+    },
+    "univ_full_resnet34_arcface": {
+      "train_dataset": "universal_full",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 200,
+      "min_seq_len": 100,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.7714,
+      "head_fixed": 2.6614,
+      "head_fixed_raw": 2.661373,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 14.1,
+      "head_variable": 2.7714,
+      "head_variable_raw": 2.771413,
+      "head_variable_valid_frames_first4": [
+        142,
+        135,
+        96,
+        98
+      ],
+      "head_variable_probe_sec": 7.5,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.11,
+      "abs_diff_variable": 0.0,
+      "match": "variable"
+    },
+    "univ_full_wavlm_base_arcface": {
+      "train_dataset": "universal_full",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 200,
+      "min_seq_len": 100,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 2.7714,
+      "head_fixed": 2.6614,
+      "head_fixed_raw": 2.661373,
+      "head_fixed_valid_frames_first4": [
+        180,
+        180,
+        180,
+        180
+      ],
+      "head_fixed_probe_sec": 14.1,
+      "head_variable": 2.7714,
+      "head_variable_raw": 2.771413,
+      "head_variable_valid_frames_first4": [
+        142,
+        135,
+        96,
+        98
+      ],
+      "head_variable_probe_sec": 7.5,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.11,
+      "abs_diff_variable": 0.0,
+      "match": "variable"
     }
   },
   "histogram": {
     "variable": 48
   },
-  "num_checkpoints": 48
+  "num_checkpoints": 50
 }
