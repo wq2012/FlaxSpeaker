@@ -4,14 +4,14 @@
 Truth-in-reporting: the paper (`~/Code/github/flax_speaker_paper`) `\\input`s the files
 written here, so no benchmark number is typed by hand. Sources:
 
-- `pretrained_models/benchmark_results.json`           (48 converged v0.5.0 models + 16 TFLite exports)
-- `pretrained_models/full_data_flagship_results.json`  (4 Tier-2 full-data flagship models + score fusion)
+- `pretrained_models/benchmark_results.json`           (49 converged v0.5.0 models + 18 TFLite exports)
+- `pretrained_models/full_data_flagship_results.json`  (5 Tier-2 full-data flagship models + score fusion)
 - `pretrained_models/pfas_hparam_sweep.json`           (16-config PFAS hyperparameter sweep)
 - `pretrained_models/ablation_results.json`            (7 converged ablation groups incl. pure_paper_mode)
-- `pretrained_models/vox1_o_10spk_subset_results.json` (VoxCeleb1-O 10-speaker subset across all 48 models)
+- `pretrained_models/vox1_o_10spk_subset_results.json` (VoxCeleb1-O 10-speaker subset across all 49 models)
 - `pretrained_models/r2_seed_and_control_results.json` (3-seed stability, own-schedule horizon, matched data)
 - `pretrained_models/phase1_convergence_pilot.json`    (5,000-step Phase-1 convergence pilot)
-- `pretrained_models/step0_fingerprints.json`          (step-0 loss fingerprints of all 48 checkpoints)
+- `pretrained_models/step0_fingerprints.json`          (step-0 loss fingerprints of all 49 checkpoints)
 
 Usage: python scripts/generate_paper_tables.py --paper_dir ~/Code/github/flax_speaker_paper
 """
@@ -54,10 +54,12 @@ FLAGSHIP_ORDER = [
     "univ_full_conformer_large_pfas",
     "univ_full_ecapa_c1024_arcface",
     "univ_full_conformer_large_arcface",
+    "univ_full_resnet34_arcface",
 ]
 TFLITE_REPOS = {
     "univ_full_conformer_large_arcface",
     "univ_full_ecapa_c1024_arcface",
+    "univ_full_resnet34_arcface",
     "univ_conformer_small_ge2e",
     "univ_lstm_small_ge2e",
     "univ_ecapa_tdnn_small_ge2e",
@@ -160,7 +162,7 @@ def main(paper_dir: str) -> None:
     pfas_sweep = load("pfas_hparam_sweep.json")
 
     ex = bench["experiments"]
-    assert len(ex) in (44, 48), len(ex)
+    assert len(ex) in (44, 48, 49), len(ex)
     controlled_ex = {k: v for k, v in ex.items() if not k.startswith("univ_full_")}
     assert len(controlled_ex) == 44, len(controlled_ex)
 
@@ -180,6 +182,9 @@ def main(paper_dir: str) -> None:
     nums: list[str] = []
     times = sorted(float(e["train_time_sec"]) / 60.0 for e in controlled_ex.values())
     total_hours = sum(float(e["train_time_sec"]) for e in controlled_ex.values()) / 3600.0
+    flagship_wall_hours = sum(
+        float(e["train_time_sec"]) for k, e in ex.items() if k.startswith("univ_full_")
+    ) / 3600.0
     all_hours = sum(float(e["train_time_sec"]) for e in ex.values()) / 3600.0
     tmin = min(controlled_ex.items(), key=lambda kv: kv[1]["train_time_sec"])
     tmax = max(controlled_ex.items(), key=lambda kv: kv[1]["train_time_sec"])
@@ -190,6 +195,8 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("trainMaxMinutes", f"{times[-1]:.1f}"))
     nums.append(macro_def("trainMedianMinutes", f"{statistics.median(times):.1f}"))
     nums.append(macro_def("trainTotalHours", f"{total_hours:.2f}"))
+    nums.append(macro_def("trainFlagshipWallHours", f"{flagship_wall_hours:.2f}"))
+    nums.append(macro_def("trainFlagshipTpuHours", f"{4.0 * flagship_wall_hours:.2f}"))
     nums.append(macro_def("trainAllModelsHours", f"{all_hours:.2f}"))
     nums.append(macro_def("trainMinModel", tex_escape(tmin[0])))
     nums.append(macro_def("trainMaxModel", tex_escape(tmax[0])))
@@ -267,6 +274,7 @@ def main(paper_dir: str) -> None:
         ("voxEcapaXs", "vox_ecapa_tdnn_small_ext_softmax"),
         ("flagConf", "univ_full_conformer_large_arcface"),
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
+        ("flagResnet", "univ_full_resnet34_arcface"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ]:
@@ -285,9 +293,12 @@ def main(paper_dir: str) -> None:
     for ftag, fmid in (
         ("flagConf", "univ_full_conformer_large_arcface"),
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
+        ("flagResnet", "univ_full_resnet34_arcface"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ):
+        if fmid not in fm:
+            continue
         ob = fm[fmid]["official_benchmarks"]
         vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
         nums.append(macro_def(ftag + "VoxRaw", f2(vx["eer_percent"])))
@@ -298,7 +309,8 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def(ftag + "CnMulti", f2(cn_me)))
         nums.append(macro_def(ftag + "LsRaw", f2(ls["eer_percent"])))
         nums.append(macro_def(ftag + "LsQmf", f2(ls["qmf"]["eer_percent"])))
-        nums.append(macro_def(ftag + "LsMulti", f2(ls["multi_enroll_3utt"]["eer_percent"])))
+        ls_me = ls["multi_enroll_3utt"].get("as_norm", ls["multi_enroll_3utt"])["eer_percent"]
+        nums.append(macro_def(ftag + "LsMulti", f2(ls_me)))
         if "as_norm" in vx:
             nums.append(macro_def(ftag + "VoxAsn", f2(vx["as_norm"]["eer_percent"])))
             nums.append(macro_def(ftag + "CnAsn", f2(cn["as_norm"]["eer_percent"])))
@@ -317,7 +329,14 @@ def main(paper_dir: str) -> None:
         fus_2w_m = fus["two_way_official_benchmarks"]
         nums.append(macro_def("fusionTwoWVoxAsn", f2(fus_2w_m["voxceleb1_o"]["eer_percent"])))
         nums.append(macro_def("fusionTwoWVoxQmf", f2(fus_2w_m["voxceleb1_o"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionTwoWCnQmf", f2(fus_2w_m["cnceleb_e"]["qmf"]["eer_percent"])))
         nums.append(macro_def("fusionTwoWLsQmf", f2(fus_2w_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    if "three_way_backbone_official_benchmarks" in fus:
+        fus_3bb_m = fus["three_way_backbone_official_benchmarks"]
+        nums.append(macro_def("fusionThreeBbVoxAsn", f2(fus_3bb_m["voxceleb1_o"]["eer_percent"])))
+        nums.append(macro_def("fusionThreeBbVoxQmf", f2(fus_3bb_m["voxceleb1_o"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionThreeBbCnQmf", f2(fus_3bb_m["cnceleb_e"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionThreeBbLsQmf", f2(fus_3bb_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
     nums.append(macro_def("fusionThreeCnMulti", f2(fus3["cnceleb_e_multi_enroll_map"]["eer_percent"])))
     nums.append(macro_def("fusionThreeCnMultiAuc", f4(fus3["cnceleb_e_multi_enroll_map"]["roc_auc"])))
     nums.append(macro_def("fusionThreeLsMulti", f2(fus3["librispeech_test_clean_3utt"]["eer_percent"])))
@@ -407,7 +426,7 @@ def main(paper_dir: str) -> None:
             obj = "PFAS-SN$^{*}$/\\allowbreak " + ("GE2E" if e["loss_type"] == "ge2e_softmax" else "BXS")
         return f"{backbone}-{e['size_variant'][0].upper()}/\\allowbreak {obj}"
 
-    # VoxCeleb1-O subset summary + Spearman vs pooled (over all 48 models and over the 44 Tier-1 models).
+    # VoxCeleb1-O subset summary + Spearman vs pooled (over all 49 models and over the 44 Tier-1 models).
     vox_eers_44 = {k: v["eer_percent"] for k, v in vox["models"].items() if k in controlled_ex}
     vox_eers_all = {k: v["eer_percent"] for k, v in vox["models"].items() if k in ex}
     pooled_44 = {k: d1(ex[k], "universal_pooled")["eer_percent"] for k in vox_eers_44}
@@ -514,6 +533,8 @@ def main(paper_dir: str) -> None:
     hist = fps.get("histogram", {})
     nums.append(macro_def("fpTotal", str(len(fp_ck))))
     nums.append(macro_def("fpNumVariable", str(hist.get("variable", 0) + hist.get("variable_approx", 0))))
+    nums.append(macro_def("fpNumVariableExact", str(hist.get("variable", 0))))
+    nums.append(macro_def("fpNumVariableApprox", str(hist.get("variable_approx", 0))))
     nums.append(macro_def("fpNumBoth", str(hist.get("both", 0))))
     nums.append(macro_def("fpNumFixedAll", str(hist.get("fixed", 0) + hist.get("fixed_approx", 0))))
     nums.append(macro_def("fpNumNeither", str(hist.get("neither", 0))))
@@ -525,7 +546,7 @@ def main(paper_dir: str) -> None:
         )
     )
 
-    # TFLite (6 Tier-1 + 2 Tier-2 models = 16 binaries).
+    # TFLite (6 Tier-1 + 3 Tier-2 models = 18 binaries).
     tf = bench["tflite_exports"]
     ratios, fp32_mb, int8_mb, cos = [], [], [], []
     tier1_fp32_mb, tier1_int8_mb = [], []
@@ -563,6 +584,17 @@ def main(paper_dir: str) -> None:
         ("tfliteLsLstm", "ls_lstm_small_ge2e"),
     ]
     tfl_cos_means, tfl_cos_mins, tfl_eer_deltas, tfl_trunc = [], [], [], []
+    for fmid in (
+        "univ_full_conformer_large_arcface",
+        "univ_full_ecapa_c1024_arcface",
+        "univ_full_resnet34_arcface",
+    ):
+        fte = ex.get(fmid, {}).get("tflite_eval", {})
+        if fte:
+            tfl_cos_means.append(fte["cos_fp32_int8_mean"])
+            if "cos_fp32_int8_min" in fte:
+                tfl_cos_mins.append(fte["cos_fp32_int8_min"])
+            tfl_eer_deltas.append(abs(fte["eer_percent_int8"] - fte["eer_percent"]))
     for ttag, tmid in tfl_tags:
         te = ex[tmid].get("tflite_eval", {})
         if te:
@@ -687,7 +719,30 @@ def main(paper_dir: str) -> None:
         for mid in FLAGSHIP_ORDER
     )
     min_ls_qmf = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
-    min_ls_3 = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["multi_enroll_3utt"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_ls_3 = min(
+        round(
+            fm[mid]["official_benchmarks"]["librispeech_test_clean"]["multi_enroll_3utt"].get(
+                "as_norm", fm[mid]["official_benchmarks"]["librispeech_test_clean"]["multi_enroll_3utt"]
+            )["eer_percent"],
+            2,
+        )
+        for mid in FLAGSHIP_ORDER
+    )
+    min_p1 = min(round(d1(fm[mid], "universal_pooled")["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_p3 = min(
+        round(
+            min(
+                d3(fm[mid], "universal_pooled")["eer_percent"],
+                d3(fm[mid], "universal_pooled").get("as_norm", {}).get(
+                    "eer_percent", d3(fm[mid], "universal_pooled")["eer_percent"]
+                ),
+            ),
+            2,
+        )
+        for mid in FLAGSHIP_ORDER
+    )
+    min_m1 = min(round(macro(fm[mid], 1)["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_m3 = min(round(macro(fm[mid], 3)["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
     flines = []
     for mid in FLAGSHIP_ORDER:
         m = fm[mid]
@@ -699,12 +754,17 @@ def main(paper_dir: str) -> None:
         cn_me_val = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
         cn_me_s = f"\\textbf{{{f2(cn_me_val)}}}" if round(cn_me_val, 2) == min_cn_me else f2(cn_me_val)
         ls_qmf = f"\\textbf{{{f2(ls['qmf']['eer_percent'])}}}" if round(ls["qmf"]["eer_percent"], 2) == min_ls_qmf else f2(ls["qmf"]["eer_percent"])
-        ls_3 = f"\\textbf{{{f2(ls['multi_enroll_3utt']['eer_percent'])}}}" if round(ls["multi_enroll_3utt"]["eer_percent"], 2) == min_ls_3 else f2(ls["multi_enroll_3utt"]["eer_percent"])
-        p1 = f2(d1(m, "universal_pooled")["eer_percent"])
+        ls_3_val = ls["multi_enroll_3utt"].get("as_norm", ls["multi_enroll_3utt"])["eer_percent"]
+        ls_3 = f"\\textbf{{{f2(ls_3_val)}}}" if round(ls_3_val, 2) == min_ls_3 else f2(ls_3_val)
+        p1_v = d1(m, "universal_pooled")["eer_percent"]
         p3_raw = d3(m, "universal_pooled")["eer_percent"]
         p3_best = min(p3_raw, d3(m, "universal_pooled").get("as_norm", {}).get("eer_percent", p3_raw))
-        m1 = f2(macro(m, 1)["eer_percent"])
-        m3 = f2(macro(m, 3)["eer_percent"])
+        m1_v = macro(m, 1)["eer_percent"]
+        m3_v = macro(m, 3)["eer_percent"]
+        p1_s = f"\\textbf{{{f2(p1_v)}}}" if round(p1_v, 2) == min_p1 else f2(p1_v)
+        p3_s = f"\\textbf{{{f2(p3_best)}}}" if round(p3_best, 2) == min_p3 else f2(p3_best)
+        m1_s = f"\\textbf{{{f2(m1_v)}}}" if round(m1_v, 2) == min_m1 else f2(m1_v)
+        m3_s = f"\\textbf{{{f2(m3_v)}}}" if round(m3_v, 2) == min_m3 else f2(m3_v)
         name = f"\\href{{https://huggingface.co/wq2012/{mid}}}{{\\texttt{{{tex_escape(mid)}}}}}"
         if mid in TFLITE_REPOS:
             name += "$^{\\dagger}$"
@@ -713,46 +773,76 @@ def main(paper_dir: str) -> None:
             f"{f2(vx['eer_percent'])} / {vx_as} / {vx_qmf} & "
             f"{f2(cn['eer_percent'])} / {cn_qmf} / {cn_me_s} & "
             f"{f2(ls['eer_percent'])} / {ls_qmf} / {ls_3} & "
-            f"{p1} / {f2(p3_best)} & {m1} / {m3} \\\\"
+            f"{p1_s} / {p3_s} & {m1_s} / {m3_s} \\\\"
         )
     flines.append("\\midrule")
-    all4_params = sum(int(fm[m]["num_parameters"]) for m in FLAGSHIP_ORDER) / 1e6
+    p2_m = (int(fm["univ_full_conformer_large_arcface"]["num_parameters"]) + int(fm["univ_full_ecapa_c1024_arcface"]["num_parameters"])) / 1e6
+    act_mids = fus.get("models", FLAGSHIP_ORDER)
+    all_act_params = sum(int(fm[m]["num_parameters"]) for m in act_mids if m in fm) / 1e6
     if "two_way_official_benchmarks" in fus:
         fus_2w = fus["two_way_official_benchmarks"]
         w2 = fus.get("two_way_weights_selected_on_val", [0.5, 0.5])
+        fus_cands = [fus_2w, fus2]
+        if "three_way_backbone_official_benchmarks" in fus and "univ_full_resnet34_arcface" in fm:
+            fus_cands.append(fus["three_way_backbone_official_benchmarks"])
+        min_f_vx_as = min(round(fc["voxceleb1_o"]["eer_percent"], 2) for fc in fus_cands)
+        min_f_vx_qmf = min(round(fc["voxceleb1_o"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
+        min_f_cn_qmf = min(round(fc["cnceleb_e"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
+        min_f_ls_qmf = min(round(fc["librispeech_test_clean"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
+
+        def fmt_tex_fus(fc: dict) -> tuple[str, str, str]:
+            va = fc["voxceleb1_o"]["eer_percent"]
+            vq = fc["voxceleb1_o"]["qmf"]["eer_percent"]
+            cq = fc["cnceleb_e"]["qmf"]["eer_percent"]
+            lq = fc["librispeech_test_clean"]["qmf"]["eer_percent"]
+            va_s = f"\\textbf{{{f2(va)}}}" if round(va, 2) == min_f_vx_as else f2(va)
+            vq_s = f"\\textbf{{{f2(vq)}}}" if round(vq, 2) == min_f_vx_qmf else f2(vq)
+            cq_s = f"\\textbf{{{f2(cq)}}}" if round(cq, 2) == min_f_cn_qmf else f2(cq)
+            lq_s = f"\\textbf{{{f2(lq)}}}" if round(lq, 2) == min_f_ls_qmf and round(lq, 2) <= min_ls_qmf else f2(lq)
+            return f"--- / {va_s} / {vq_s}", f"--- / {cq_s} / ---", f"--- / {lq_s} / ---"
+
+        t2_vx, t2_cn, t2_ls = fmt_tex_fus(fus_2w)
         flines.append(
-            f"2-Way Fusion (${w2[0]:.2g}\\,\\text{{Conf-L}} + {w2[1]:.2g}\\,\\text{{ECAPA}}$) & 21.91 & --- & "
-            f"--- / {f2(fus_2w['voxceleb1_o']['eer_percent'])} / {f2(fus_2w['voxceleb1_o']['qmf']['eer_percent'])} & "
-            f"--- / {f2(fus_2w['cnceleb_e']['qmf']['eer_percent'])} / --- & "
-            f"{f2(fus_2w['librispeech_test_clean']['eer_percent'])} / {f2(fus_2w['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
-            f"--- & --- \\\\"
+            f"2-Way Fusion (${w2[0]:.2g}\\,\\text{{Conf-L}} + {w2[1]:.2g}\\,\\text{{ECAPA}}$) & {p2_m:.2f} & --- & "
+            f"{t2_vx} & {t2_cn} & {t2_ls} & --- & --- \\\\"
         )
+        if "three_way_backbone_official_benchmarks" in fus and "univ_full_resnet34_arcface" in fm:
+            fus_3bb = fus["three_way_backbone_official_benchmarks"]
+            p3bb_m = p2_m + int(fm["univ_full_resnet34_arcface"]["num_parameters"]) / 1e6
+            t3_vx, t3_cn, t3_ls = fmt_tex_fus(fus_3bb)
+            flines.append(
+                f"3-Way Backbone Fusion (Conf-L + ECAPA + ResNet-34) & {p3bb_m:.2f} & --- & "
+                f"{t3_vx} & {t3_cn} & {t3_ls} & --- & --- \\\\"
+            )
+        f_lbl = (
+            "5-Way Flagship Fusion (Conf-L + ECAPA + ResNet-34 + PFAS + DrV)"
+            if len(act_mids) == 5
+            else f"{len(act_mids)}-Way Flagship Fusion"
+        )
+        t5_vx, t5_cn, t5_ls = fmt_tex_fus(fus2)
         flines.append(
-            f"4-Way Flagship Fusion (Conf-L + ECAPA + PFAS + DrV) & {all4_params:.2f} & --- & "
-            f"--- / \\textbf{{{f2(fus2['voxceleb1_o']['eer_percent'])}}} / \\textbf{{{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}}} & "
-            f"--- / \\textbf{{{f2(fus2['cnceleb_e']['qmf']['eer_percent'])}}} / --- & "
-            f"\\textbf{{{f2(fus2['librispeech_test_clean']['eer_percent'])}}} / \\textbf{{{f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])}}} / --- & "
-            f"--- & --- \\\\"
+            f"{f_lbl} & {all_act_params:.2f} & --- & "
+            f"{t5_vx} & {t5_cn} & {t5_ls} & --- & --- \\\\"
         )
     else:
         flines.append(
-            f"2-Way Fusion ($0.1\\,\\text{{Conf-L}} + 0.9\\,\\text{{ECAPA}}$) & 21.91 & --- & "
+            f"2-Way Fusion (Conf-L + ECAPA) & {p2_m:.2f} & --- & "
             f"--- / {f2(fus2['voxceleb1_o']['eer_percent'])} / \\textbf{{{f2(fus2['voxceleb1_o']['qmf']['eer_percent'])}}} & "
             f"--- / {f2(fus2['cnceleb_e']['qmf']['eer_percent'])} / --- & "
-            f"{f2(fus2['librispeech_test_clean']['eer_percent'])} / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
+            f"--- / {f2(fus2['librispeech_test_clean']['qmf']['eer_percent'])} / --- & "
             f"--- & --- \\\\"
         )
     me_mids = fus3.get("models", ["univ_full_conformer_large_arcface", "univ_full_ecapa_c1024_arcface", "univ_full_conformer_large_pfas"])
     me_params = sum(int(fm[m]["num_parameters"]) for m in me_mids if m in fm) / 1e6
-    me_lbl = (
-        "4-Way Multi-Enroll (Conf-L + ECAPA + PFAS + DrV)"
-        if len(me_mids) == 4
-        else "3-Way Multi-Enroll (Conf-L + ECAPA + PFAS)"
-    )
+    me_lbl = f"{len(me_mids)}-Way Multi-Enroll Fusion"
+    me_cn_v = fus3["cnceleb_e_multi_enroll_map"]["eer_percent"]
+    me_ls_v = fus3["librispeech_test_clean_3utt"]["eer_percent"]
+    me_cn_tex = f"\\textbf{{{f2(me_cn_v)}}}" if round(me_cn_v, 2) <= min_cn_me else f2(me_cn_v)
+    me_ls_tex = f"\\textbf{{{f2(me_ls_v)}}}" if round(me_ls_v, 2) <= min_ls_3 else f2(me_ls_v)
     flines.append(
         f"{me_lbl} & {me_params:.2f} & --- & "
-        f"--- & --- / --- / \\textbf{{{f2(fus3['cnceleb_e_multi_enroll_map']['eer_percent'])}}} & "
-        f"--- / --- / \\textbf{{{f2(fus3['librispeech_test_clean_3utt']['eer_percent'])}}} & "
+        f"--- & --- / --- / {me_cn_tex} & "
+        f"--- / --- / {me_ls_tex} & "
         f"--- & --- \\\\"
     )
     ftbl = (
@@ -995,13 +1085,28 @@ def main(paper_dir: str) -> None:
 
     # ------------------------------------------------------------- Table: TFLite
     tfl_lines = []
-    for fmid in ("univ_full_conformer_large_arcface", "univ_full_ecapa_c1024_arcface"):
-        te = ex[fmid].get("tflite_eval", {})
+    for fmid in (
+        "univ_full_conformer_large_arcface",
+        "univ_full_ecapa_c1024_arcface",
+        "univ_full_resnet34_arcface",
+    ):
+        te = ex.get(fmid, {}).get("tflite_eval", {})
         if te:
+            cos_min_s = f"{te['cos_fp32_int8_min']:.6f}" if "cos_fp32_int8_min" in te else "---"
+            fp_ci_s = (
+                f"{f2(te['eer_percent'])} [{f2(te['eer_ci95_fp32'][0])}, {f2(te['eer_ci95_fp32'][1])}]"
+                if "eer_ci95_fp32" in te
+                else f2(te["eer_percent"])
+            )
+            int_ci_s = (
+                f"{f2(te['eer_percent_int8'])} [{f2(te['eer_ci95_int8'][0])}, {f2(te['eer_ci95_int8'][1])}]"
+                if "eer_ci95_int8" in te
+                else f2(te["eer_percent_int8"])
+            )
             tfl_lines.append(
                 f"\\texttt{{{tex_escape(fmid)}}} & \\texttt{{voxceleb1\\_o}} & {f2(te['jax_full_seq_eer_percent'])} & "
-                f"{f2(te['eer_percent'])} & {f2(te['eer_percent_int8'])} & {te['eer_percent_int8'] - te['eer_percent']:+.2f} & "
-                f"--- & {te['cos_fp32_int8_mean']:.6f} / --- & "
+                f"{fp_ci_s} & {int_ci_s} & {te['eer_percent_int8'] - te['eer_percent']:+.2f} & "
+                f"--- & {te['cos_fp32_int8_mean']:.6f} / {cos_min_s} & "
                 f"{f2(te['latency_ms_fp32_mean_50runs'])} / {f2(te['latency_ms_int8_mean_50runs'])} \\\\"
             )
     if tfl_lines:

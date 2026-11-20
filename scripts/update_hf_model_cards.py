@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate and (optionally) push model cards, metadata, and weights for all 44 HF repos.
+"""Regenerate and (optionally) push model cards, metadata, and weights for all 49 HF repos.
 
 For every `pretrained_models/<model_id>/`:
   1. regenerates `README.md` from `config.json` + `eval_results.json` via
@@ -7,7 +7,8 @@ For every `pretrained_models/<model_id>/`:
   2. with `--push`, uploads `README.md`, `config.json`, `eval_results.json` (plus
      `model.safetensors`, `flax_model.msgpack`, `model_fp32.tflite`, `model_int8.tflite`
      when `--include_weights` is passed) to `wq2012/<model_id>` and deletes any stale
-     `preprocessor_config.json` from the Hub.
+     `preprocessor_config.json` from the Hub. Any newly created HF repository is
+     created with `private=True` by default.
 
 Usage:
     python scripts/update_hf_model_cards.py                           # regenerate locally only
@@ -94,10 +95,22 @@ def main() -> None:
     )
 
     api = HfApi()
+    newly_created_private: list[str] = []
     for idx, d in enumerate(model_dirs, 1):
         model_id = os.path.basename(d)
         repo_id = f"wq2012/{model_id}"
-        api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
+        repo_exists = True
+        try:
+            api.repo_info(repo_id=repo_id, repo_type="model")
+        except Exception:  # noqa: BLE001
+            repo_exists = False
+        if not repo_exists:
+            api.create_repo(
+                repo_id=repo_id, repo_type="model", private=True, exist_ok=True
+            )
+            newly_created_private.append(repo_id)
+        else:
+            api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
         ops = []
         upload_candidates = list(METADATA_FILES)
         if args.include_weights:
@@ -119,6 +132,11 @@ def main() -> None:
         print(
             f"[{idx}/{len(model_dirs)}] pushed {repo_id} "
             f"({len(uploaded_names)} files: {', '.join(uploaded_names)}) -> {commit_info.oid[:8]}"
+        )
+    if newly_created_private:
+        print(
+            "Newly created PRIVATE HF repositories (switch to public when ready): "
+            + ", ".join(newly_created_private)
         )
 
 

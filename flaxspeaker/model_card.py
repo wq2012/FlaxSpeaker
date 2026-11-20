@@ -364,6 +364,13 @@ def deviations_from_papers(
             )
         else:
             out.append("**ECAPA-TDNN**: LayerNorm instead of BatchNorm.")
+    if bb == "resnet":
+        rn = exp_cfg.model.resnet
+        out.append(
+            f"**ResNet**: 2D conv SE-ResNet (`base_channels={rn.base_channels}`, "
+            f"`num_blocks={tuple(rn.num_blocks)}`, `temporal_stride={rn.temporal_stride}`, "
+            f"`out_dim={rn.out_dim}`, mask-aware `BatchNorm2D`)."
+        )
     max_eval_cap = (
         int(exp_cfg.model.max_eval_seq_len)
         if int(exp_cfg.model.max_eval_seq_len) > 0

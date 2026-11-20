@@ -8,10 +8,10 @@ sdk_version: 5.50.0
 app_file: app.py
 pinned: false
 license: apache-2.0
-short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS) — 44 converged v0.4.0 models
+short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS) — 49 converged v0.5.0 models
 ---
 
-# FlaxSpeaker (`v0.4.0`) — Interactive Speaker Verification Demo
+# FlaxSpeaker (`v0.5.0`) — Interactive Speaker Verification Demo
 
 ## Disclaimer & Reproduction Notice
 
@@ -25,27 +25,29 @@ short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS
 >
 > The original papers were evaluated on Google-internal infrastructure and data, not with this library.
 
-## Corpus-scale caveat (read first)
+## Two-Tier `v0.5.0` Model Zoo (read first)
 
-All 44 selectable checkpoints (`v0.4.0`) were trained to full convergence plus a 2-epoch safety margin (`S_safe = X + 2 epochs`: 4,600 steps / 15.58 epochs on Universal; 2,400–2,600 steps on LibriSpeech; 1,600–1,800 steps on CN-Celeb2; 1,000 steps on VoxCeleb1) with variable-length masked crops ($T \sim \mathcal{U}(90, 180)$ frames). Because the training corpora are bounded public subsets ($\le 381$ speakers, $\le 9,447$ utterances), the zoo spans **14.60–22.35% pooled 1-utt EER** (**10.40–19.03% pooled 3-utt EER**, and **5.17%** LibriSpeech 1-utt EER / **2.20%** 3-utt EER in-domain) and **19.15–29.96% EER on a 10-speaker VoxCeleb1-O subset** (not comparable to published VoxCeleb1-O numbers); published systems trained on 6,000-speaker VoxCeleb2 with MUSAN/RIR reach about 1%. They are controlled research checkpoints for comparing backbones, pooling heads, objectives, and scorers, not industrial-scale models.
+All **49 selectable checkpoints** (`v0.5.0`) are organized into two tiers:
+1. **Tier-2 Full-Data Universal Flagships (`5` `univ_full_*` models, `14.86M–24.55M` parameters):** Trained across **12,193 speakers** (`36,579` speed-perturbed classes, `464,557` clean utterances / `1,857,149` MUSAN + RIR + speed-augmented items across `VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech-960h`) with zero speaker overlap against any evaluation split (`VoxCeleb1-O`, `CN-Celeb-E`, `LibriSpeech test-clean`, and the 80-speaker controlled suite). Covers three complementary encoder backbones (`Conformer-Large`, `ECAPA-TDNN c=1024`, `SE-ResNet-34`) plus warm-started `PFAS-SN` and `Dr-Vectors` scoring heads.
+2. **Tier-1 Controlled Benchmark Zoo (`44` `univ_*`, `ls_*`, `cn_*`, `vox_*` models, `0.63M–4.55M` parameters):** Trained to calibrated `S_safe = X + 2` epoch step budgets (`4,600` steps / `15.58` epochs on Universal `381` spk / `9,447` utts; `2,400–2,600` steps on LibriSpeech; `1,600–1,800` steps on CN-Celeb2; `1,000` steps on VoxCeleb1) with uniform variable-length masked crops `T ~ U(90, 180)` frames for controlled architectural, pooling, objective, and scorer comparisons.
 
 ## What the demo does
 
 - **Real inference only.** Every verdict runs the selected checkpoint on the uploaded/recorded audio (energy VAD → 80-D log-Mel → JAX encoder → cosine / Dr-Vector / PFAS scoring). Nothing is precomputed; curated examples are *not* cached.
-- **Calibrated default threshold.** When you pick a model, the decision threshold resets to that model's **own pooled EER operating point** read from its `eval_results.json` (e.g. `0.384` 1-utt / `0.474` 3-utt for `univ_conformer_small_arcface`, `0.501` / `0.583` for `univ_conformer_tiny_ge2e`); the slider range adapts to the scoring back-end (cosine vs. Dr-Vector vs. PFAS scales).
+- **Calibrated default threshold.** When you pick a model, the decision threshold resets to that model's **own EER operating point** read from its `eval_results.json` (both 1-utt and 3-utt operating points); the slider range adapts to the scoring back-end (cosine vs. Dr-Vector vs. PFAS scales).
 - **Multi-utterance enrollment** (centroid for cosine / Dr-Vector, key stacking for PFAS), a VAD on/off toggle with SNR-margin and dynamic-range sliders, and a diagnostic plot (waveform + VAD gate, post-VAD log-Mel spectrograms, embedding profile).
-- **Latency** is reported as steady-state model inference time separately from end-to-end time: embeddings go through the benchmark's masked fixed-window path (`flaxspeaker.evaluation.encode_features`, centre-crop / zero-pad to `model.max_eval_seq_len` frames with a validity mask), so a single kernel is compiled when the model is loaded and no re-compilation happens for new clip lengths.
+- **Latency** is reported as steady-state model inference time separately from end-to-end time: embeddings go through the masked power-of-two bucketed full-utterance evaluation path (`flaxspeaker.evaluation.encode_features`), pre-warmed at model load.
 - AS-Norm is intentionally **not** offered in the demo: a meaningful AS-Norm needs an impostor cohort disjoint from the trial audio, which a stateless web demo does not have. The library's `evaluate_verification_trials(..., cohort_embeddings=...)` enforces this requirement.
 
 ## Links & Pretrained Models
 
-- **Hugging Face Collection (44 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)
+- **Hugging Face Collection (49 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)
 - **GitHub Repository**: [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker)
 - **PyPI Package**: [`flaxspeaker`](https://pypi.org/project/flaxspeaker/)
 
 ### Model selection
 
-The dropdown lists all 44 checkpoints: **19 universal multi-domain models** (`univ_*`, trained jointly on LibriSpeech + CN-Celeb2 + VoxCeleb1 with domain-balanced batching for 4,600 steps) and **25 single-domain specialists** (`ls_*` LibriSpeech-only, `cn_*` CN-Celeb2-only, `vox_*` VoxCeleb1-only). Top universal checkpoints include `univ_conformer_small_arcface` (14.60% pooled 1-utt / 10.87% 3-utt EER), `univ_conformer_small_sphereface` (14.60% / 10.53%), `univ_conformer_small_cosface` (14.71% / 10.40%; 19.15% VoxCeleb1-O subset), and the default lightweight `univ_conformer_tiny_ge2e` (0.69 M parameters, 15.05% / 11.33%). Per-model numbers, confidence intervals, and a per-checkpoint "Deviations from the source papers" section are in each model card.
+The dropdown lists all **49 checkpoints**: **5 full-data universal flagships** (`univ_full_conformer_large_arcface`, `univ_full_ecapa_c1024_arcface`, `univ_full_resnet34_arcface`, `univ_full_conformer_large_pfas`, `univ_full_conformer_large_dr_vectors`), **19 controlled universal multi-domain models** (`univ_*`), and **25 controlled single-domain specialists** (`ls_*`, `cn_*`, `vox_*`). Per-model metrics, 95% bootstrap confidence intervals, and paper-deviation notes are included in each model card.
 
 ## Hosting status
 
@@ -54,7 +56,7 @@ This folder is a complete Gradio Space; `scripts/deploy_hf_space.py` deploys it 
 ## Running locally
 
 ```bash
-pip install -r requirements.txt   # installs flaxspeaker>=0.4.0 + gradio
+pip install -r requirements.txt   # installs flaxspeaker>=0.5.0 + gradio
 python app.py
 ```
 

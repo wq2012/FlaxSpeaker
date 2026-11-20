@@ -274,13 +274,14 @@ class EcapaTdnnConfig:
 
 @dataclasses.dataclass
 class ResNetConfig:
-    """Configuration for Thin-ResNet / ResNet-18 speaker encoder."""
+    """Configuration for Thin-ResNet / ResNet-18/34 speaker encoder."""
 
     base_channels: int = 32
     num_blocks: tuple[int, ...] = (2, 2, 2, 2)
     use_se: bool = True
     out_dim: int = 256
     use_batch_norm: bool = True
+    temporal_stride: int = 1
 
 
 @dataclasses.dataclass
@@ -303,6 +304,7 @@ class PoolingConfig:
     epsilon: float = 1e-4
     bottleneck_dim: int = 256
     use_nonlinear_bottleneck: bool = True
+    use_bn_neck: bool = False
 
 
 @dataclasses.dataclass

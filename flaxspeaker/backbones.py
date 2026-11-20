@@ -10,12 +10,27 @@ Supported backbones:
 - `ResNetBackbone`: 2D Time-Frequency SE-ResNet (WeSpeaker / Thin-ResNet style)
 """
 
-from typing import Any, Optional, Sequence
+import contextlib
+from typing import Any, Iterator, Optional, Sequence
 from flax import linen as nn
 import jax
 import jax.numpy as jnp
 
 from flaxspeaker import pooling
+
+_CURRENT_PMAP_AXIS_NAME: Optional[str] = None
+
+
+@contextlib.contextmanager
+def pmap_batch_norm_axis(axis_name: Optional[str]) -> Iterator[None]:
+    """Context manager enabling cross-device BatchNorm statistics under `jax.pmap`."""
+    global _CURRENT_PMAP_AXIS_NAME
+    prev = _CURRENT_PMAP_AXIS_NAME
+    _CURRENT_PMAP_AXIS_NAME = axis_name
+    try:
+        yield
+    finally:
+        _CURRENT_PMAP_AXIS_NAME = prev
 
 
 def sinusoidal_positional_encoding(
@@ -706,6 +721,7 @@ class MaskedBatchNorm1D(nn.Module):
 
     momentum: float = 0.9
     epsilon: float = 1e-5
+    use_bias: bool = True
 
     @nn.compact
     def __call__(
@@ -716,7 +732,11 @@ class MaskedBatchNorm1D(nn.Module):
     ) -> jax.Array:
         features = x.shape[-1]
         scale = self.param("scale", nn.initializers.ones, (features,))
-        bias = self.param("bias", nn.initializers.zeros, (features,))
+        bias = (
+            self.param("bias", nn.initializers.zeros, (features,))
+            if self.use_bias
+            else None
+        )
         mask_f = (
             (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
         )
@@ -754,15 +774,30 @@ class MaskedBatchNorm1D(nn.Module):
             )
         else:
             x_f32 = x.astype(jnp.float32)
+            axis_n = _CURRENT_PMAP_AXIS_NAME
             if mask_f is not None:
                 m_f32 = mask_f.astype(jnp.float32)
-                denom = jnp.maximum(jnp.sum(m_f32), 1.0)
-                mean_f32 = jnp.sum(x_f32 * m_f32, axis=(0, 1)) / denom
+                raw_cnt = jnp.sum(m_f32)
+                sum_x = jnp.sum(x_f32 * m_f32, axis=(0, 1))
+                if axis_n is not None:
+                    raw_cnt = jax.lax.psum(raw_cnt, axis_name=axis_n)
+                    sum_x = jax.lax.psum(sum_x, axis_name=axis_n)
+                denom = jnp.maximum(raw_cnt, 1.0)
+                mean_f32 = sum_x / denom
                 diff = (x_f32 - mean_f32[None, None, :]) * m_f32
-                var_f32 = jnp.sum(jnp.square(diff), axis=(0, 1)) / denom
+                sum_sq = jnp.sum(jnp.square(diff), axis=(0, 1))
+                if axis_n is not None:
+                    sum_sq = jax.lax.psum(sum_sq, axis_name=axis_n)
+                var_f32 = sum_sq / denom
             else:
                 mean_f32 = jnp.mean(x_f32, axis=(0, 1))
-                var_f32 = jnp.var(x_f32, axis=(0, 1))
+                if axis_n is not None:
+                    mean_f32 = jax.lax.pmean(mean_f32, axis_name=axis_n)
+                var_f32 = jnp.mean(
+                    jnp.square(x_f32 - mean_f32[None, None, :]), axis=(0, 1)
+                )
+                if axis_n is not None:
+                    var_f32 = jax.lax.pmean(var_f32, axis_name=axis_n)
             if (
                 ra_mean is not None
                 and ra_var is not None
@@ -783,7 +818,9 @@ class MaskedBatchNorm1D(nn.Module):
         inv = jax.lax.rsqrt(var + self.epsilon)
         y = (x - mean[None, None, :]) * (inv * scale.astype(x.dtype))[
             None, None, :
-        ] + bias.astype(x.dtype)[None, None, :]
+        ]
+        if bias is not None:
+            y = y + bias.astype(x.dtype)[None, None, :]
         if mask_f is not None:
             y = y * mask_f
         return y
@@ -1049,17 +1086,31 @@ class MaskedBatchNorm2D(nn.Module):
             )
         else:
             x_f32 = x.astype(jnp.float32)
+            axis_n = _CURRENT_PMAP_AXIS_NAME
             if mask_f is not None:
                 m_f32 = mask_f.astype(jnp.float32)
-                denom = jnp.maximum(
-                    jnp.sum(m_f32) * float(x_f32.shape[2]), 1.0
-                )
-                mean_f32 = jnp.sum(x_f32 * m_f32, axis=(0, 1, 2)) / denom
+                raw_cnt = jnp.sum(m_f32) * float(x_f32.shape[2])
+                sum_x = jnp.sum(x_f32 * m_f32, axis=(0, 1, 2))
+                if axis_n is not None:
+                    raw_cnt = jax.lax.psum(raw_cnt, axis_name=axis_n)
+                    sum_x = jax.lax.psum(sum_x, axis_name=axis_n)
+                denom = jnp.maximum(raw_cnt, 1.0)
+                mean_f32 = sum_x / denom
                 diff = (x_f32 - mean_f32[None, None, None, :]) * m_f32
-                var_f32 = jnp.sum(jnp.square(diff), axis=(0, 1, 2)) / denom
+                sum_sq = jnp.sum(jnp.square(diff), axis=(0, 1, 2))
+                if axis_n is not None:
+                    sum_sq = jax.lax.psum(sum_sq, axis_name=axis_n)
+                var_f32 = sum_sq / denom
             else:
                 mean_f32 = jnp.mean(x_f32, axis=(0, 1, 2))
-                var_f32 = jnp.var(x_f32, axis=(0, 1, 2))
+                if axis_n is not None:
+                    mean_f32 = jax.lax.pmean(mean_f32, axis_name=axis_n)
+                var_f32 = jnp.mean(
+                    jnp.square(x_f32 - mean_f32[None, None, None, :]),
+                    axis=(0, 1, 2),
+                )
+                if axis_n is not None:
+                    var_f32 = jax.lax.pmean(var_f32, axis_name=axis_n)
             if (
                 ra_mean is not None
                 and ra_var is not None
@@ -1114,24 +1165,40 @@ class ResNetBasicBlock2D(nn.Module):
         use_running_average: bool = True,
         mask: Optional[jax.Array] = None,
     ) -> jax.Array:
-        mask_f = (
+        in_mask_f = (
             (mask > 0).astype(x.dtype)[:, :, None, None]
             if mask is not None
             else None
         )
-        if mask_f is not None:
-            x = x * mask_f
+        if in_mask_f is not None:
+            x = x * in_mask_f
+        out_mask = (
+            subsample_mask(mask, self.stride[0])
+            if (mask is not None and self.stride[0] > 1)
+            else mask
+        )
+        mask_f = (
+            (out_mask > 0).astype(x.dtype)[:, :, None, None]
+            if out_mask is not None
+            else None
+        )
+        conv_pad: Any = (
+            ((1, 1), (1, 1)) if self.stride[0] > 1 else "SAME"
+        )
+        down_pad: Any = (
+            ((0, 0), (0, 0)) if self.stride[0] > 1 else "SAME"
+        )
         residual = x
         norm_tag = "bn" if self.use_batch_norm else "ln"
         h = nn.Conv(
             features=self.channels,
             kernel_size=(3, 3),
             strides=self.stride,
-            padding="SAME",
+            padding=conv_pad,
             use_bias=False,
             name="conv1",
         )(x)
-        h = nn.relu(self._norm(h, f"{norm_tag}1", use_running_average, mask))
+        h = nn.relu(self._norm(h, f"{norm_tag}1", use_running_average, out_mask))
         if mask_f is not None:
             h = h * mask_f
         h = nn.Conv(
@@ -1142,36 +1209,35 @@ class ResNetBasicBlock2D(nn.Module):
             use_bias=False,
             name="conv2",
         )(h)
-        h = self._norm(h, f"{norm_tag}2", use_running_average, mask)
+        h = self._norm(h, f"{norm_tag}2", use_running_average, out_mask)
         if mask_f is not None:
             h = h * mask_f
 
         if self.use_se:
             if mask_f is not None:
                 denom = jnp.maximum(
-                    jnp.sum(mask_f, axis=(1, 2), keepdims=True)
-                    * float(h.shape[2]),
+                    jnp.sum(mask_f, axis=(1, 2)) * float(h.shape[2]),
                     1.0,
                 )
-                se = jnp.sum(h * mask_f, axis=(1, 2), keepdims=True) / denom
+                se = jnp.sum(h * mask_f, axis=(1, 2)) / denom
             else:
-                se = jnp.mean(h, axis=(1, 2), keepdims=True)
+                se = jnp.mean(h, axis=(1, 2))
             bottleneck = max(8, self.channels // 4)
             se = nn.relu(nn.Dense(bottleneck, name="se1")(se))
             se = jax.nn.sigmoid(nn.Dense(self.channels, name="se2")(se))
-            h = h * se
+            h = h * se[:, None, None, :]
 
         if residual.shape != h.shape:
             residual = nn.Conv(
                 features=self.channels,
                 kernel_size=(1, 1),
                 strides=self.stride,
-                padding="SAME",
+                padding=down_pad,
                 use_bias=False,
                 name="downsample",
             )(residual)
             residual = self._norm(
-                residual, f"downsample_{norm_tag}", use_running_average, mask
+                residual, f"downsample_{norm_tag}", use_running_average, out_mask
             )
 
         out = nn.relu(residual + h)
@@ -1188,6 +1254,7 @@ class ResNetBackbone(nn.Module):
     use_se: bool = True
     out_dim: int = 256
     use_batch_norm: bool = True
+    temporal_stride: int = 1
 
     @nn.compact
     def __call__(
@@ -1203,8 +1270,11 @@ class ResNetBackbone(nn.Module):
             else bool(use_running_average)
         )
         norm_tag = "bn" if self.use_batch_norm else "ln"
+        cur_mask = mask
         mask_f = (
-            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+            (cur_mask > 0).astype(x.dtype)[..., None]
+            if cur_mask is not None
+            else None
         )
         if mask_f is not None:
             x = x * mask_f
@@ -1221,7 +1291,7 @@ class ResNetBackbone(nn.Module):
         if self.use_batch_norm:
             h = nn.relu(
                 MaskedBatchNorm2D(name=f"stem_{norm_tag}")(
-                    h, use_running_average=use_ra, mask=mask
+                    h, use_running_average=use_ra, mask=cur_mask
                 )
             )
         else:
@@ -1233,31 +1303,41 @@ class ResNetBackbone(nn.Module):
         if mask_f is not None:
             h = h * mask_f[..., None]
 
+        t_stride = max(1, int(self.temporal_stride))
         for stage_idx, n_blocks in enumerate(self.num_blocks):
             ch = self.base_channels * (2 ** stage_idx)
             for b_idx in range(n_blocks):
-                # Downsample frequency axis at start of stages 1..3, preserve time resolution
-                stride = (1, 2) if (stage_idx > 0 and b_idx == 0) else (1, 1)
+                stride = (
+                    (t_stride, 2) if (stage_idx > 0 and b_idx == 0) else (1, 1)
+                )
                 h = ResNetBasicBlock2D(
                     channels=ch,
                     stride=stride,
                     use_se=self.use_se,
                     use_batch_norm=self.use_batch_norm,
                     name=f"stage{stage_idx}_block{b_idx}",
-                )(h, use_running_average=use_ra, mask=mask)
+                )(h, use_running_average=use_ra, mask=cur_mask)
+                if stride[0] > 1 and cur_mask is not None:
+                    cur_mask = subsample_mask(cur_mask, stride[0])
 
-        # Collapse frequency & channel dimensions: (B, T, F', C) -> (B, T, F'*C)
+        # Collapse frequency & channel dimensions: (B, T', F', C) -> (B, T', F'*C)
         bsz, seq_len, freq_bins, ch = h.shape
         h = h.reshape(bsz, seq_len, freq_bins * ch)
-        h = nn.relu(nn.Dense(self.out_dim, name="out_proj")(h))
-        if self.use_batch_norm:
-            h = MaskedBatchNorm1D(name=f"out_{norm_tag}")(
-                h, use_running_average=use_ra, mask=mask
-            )
-        else:
-            h = nn.LayerNorm(name=f"out_{norm_tag}")(h)
-        if mask_f is not None:
-            h = h * mask_f
+        out_mask_f = (
+            (cur_mask > 0).astype(x.dtype)[..., None]
+            if cur_mask is not None
+            else None
+        )
+        if self.out_dim > 0:
+            h = nn.relu(nn.Dense(self.out_dim, name="out_proj")(h))
+            if self.use_batch_norm:
+                h = MaskedBatchNorm1D(name=f"out_{norm_tag}")(
+                    h, use_running_average=use_ra, mask=cur_mask
+                )
+            else:
+                h = nn.LayerNorm(name=f"out_{norm_tag}")(h)
+        if out_mask_f is not None:
+            h = h * out_mask_f
         return h
 
 
@@ -1285,6 +1365,11 @@ class ModernSpeakerEncoder(nn.Module):
         mask: Optional[jax.Array] = None,
         use_running_average: Optional[bool] = None,
     ) -> jax.Array:
+        use_ra = (
+            deterministic
+            if use_running_average is None
+            else bool(use_running_average)
+        )
         b_kwargs = dict(self.backbone_kwargs or {})
         p_kwargs = dict(self.pooling_kwargs or {})
         b_type = self.backbone_type.lower()
@@ -1320,6 +1405,11 @@ class ModernSpeakerEncoder(nn.Module):
                 mask=mask,
                 use_running_average=use_running_average,
             )
+            t_stride = max(1, int(b_kwargs.get("temporal_stride", 1)))
+            if t_stride > 1 and mask is not None:
+                n_stages = len(b_kwargs.get("num_blocks", (2, 2, 2, 2)))
+                for _ in range(max(0, n_stages - 1)):
+                    mask = subsample_mask(mask, t_stride)
         else:
             raise ValueError(
                 f"Unsupported backbone_type: {self.backbone_type}"
@@ -1365,17 +1455,27 @@ class ModernSpeakerEncoder(nn.Module):
         else:
             raise ValueError(f"Unsupported pooling_type: {self.pooling_type}")
 
-        # Post-pooling bottleneck FFN:
-        # LayerNorm -> [Dense(bottleneck_dim) -> LayerNorm -> ReLU] -> Dense(embedding_dim)
-        emb = nn.LayerNorm(name="bottleneck_ln")(pooled)
-        use_nonlinear = bool(p_kwargs.get("use_nonlinear_bottleneck", True))
-        if use_nonlinear:
-            bottleneck_dim = int(p_kwargs.get("bottleneck_dim", 256))
-            emb = nn.Dense(bottleneck_dim, name="bottleneck_fc")(emb)
-            emb = nn.LayerNorm(name="bottleneck_act_ln")(emb)
-            emb = nn.relu(emb)
-
-        emb = nn.Dense(self.embedding_dim, name="embedding_proj")(emb)
+        # Post-pooling bottleneck / BN-Neck:
+        use_bn_neck = bool(p_kwargs.get("use_bn_neck", False))
+        if use_bn_neck:
+            emb_in = MaskedBatchNorm1D(name="neck_bn1")(
+                pooled[:, None, :], use_running_average=use_ra
+            )[:, 0, :]
+            emb = nn.Dense(
+                self.embedding_dim, use_bias=False, name="embedding_proj"
+            )(emb_in)
+            emb = MaskedBatchNorm1D(use_bias=False, name="neck_bn2")(
+                emb[:, None, :], use_running_average=use_ra
+            )[:, 0, :]
+        else:
+            emb = nn.LayerNorm(name="bottleneck_ln")(pooled)
+            use_nonlinear = bool(p_kwargs.get("use_nonlinear_bottleneck", True))
+            if use_nonlinear:
+                bottleneck_dim = int(p_kwargs.get("bottleneck_dim", 256))
+                emb = nn.Dense(bottleneck_dim, name="bottleneck_fc")(emb)
+                emb = nn.LayerNorm(name="bottleneck_act_ln")(emb)
+                emb = nn.relu(emb)
+            emb = nn.Dense(self.embedding_dim, name="embedding_proj")(emb)
         if self.normalize_embedding:
             emb = emb / (jnp.linalg.norm(emb, axis=-1, keepdims=True) + 1e-6)
         return emb

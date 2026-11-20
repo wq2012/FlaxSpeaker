@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build full-data float16 MUSAN + RIR + speed-perturbed feature shards (`universal_full_v050`).
 
-Pools all four open-source corpora for Tier-2 Universal Flagship training (`48`-model zoo):
+Pools all four open-source corpora for Tier-2 Universal Flagship training (`49`-model zoo):
 1. `VoxCeleb2-dev` (`full_corpora/voxceleb2_dev_wds/voxceleb2-dev-*.tar`, streamed in-memory via PyAV)
 2. `VoxCeleb1-dev` (`full_corpora/voxceleb1_dev_wav`, strictly disjoint from all 40 `VoxCeleb1-O` speakers)
 3. `CN-Celeb1-dev` (`full_corpora/CN-Celeb_flac/dev/dev.lst`, strictly disjoint from `CN-Celeb-E`)

@@ -227,6 +227,9 @@ def build_modern_encoder_from_config(
             "use_batch_norm": bool(
                 getattr(m_cfg.resnet, "use_batch_norm", True)
             ),
+            "temporal_stride": int(
+                getattr(m_cfg.resnet, "temporal_stride", 1)
+            ),
         }
     else:
         raise ValueError(f"Unknown backbone: {b_type}")
@@ -289,6 +292,7 @@ def build_modern_encoder_from_config(
             "use_nonlinear_bottleneck": getattr(
                 m_cfg.pooling, "use_nonlinear_bottleneck", True
             ),
+            "use_bn_neck": bool(getattr(m_cfg.pooling, "use_bn_neck", False)),
         }
 
     return backbones.ModernSpeakerEncoder(
@@ -345,9 +349,21 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
             )
         return s_lr
 
-    decay_mask = lambda params: jax.tree_util.tree_map(  # noqa: E731
-        lambda p: getattr(p, "ndim", 0) >= 2, params
-    )
+    def decay_mask(params: Any) -> Any:
+        if isinstance(params, dict):
+            return {
+                k: (
+                    jax.tree_util.tree_map(lambda _: False, v)
+                    if k == "_aux_class_weights"
+                    else jax.tree_util.tree_map(
+                        lambda p: getattr(p, "ndim", 0) >= 2, v
+                    )
+                )
+                for k, v in params.items()
+            }
+        return jax.tree_util.tree_map(
+            lambda p: getattr(p, "ndim", 0) >= 2, params
+        )
 
     def _make_single_tx(scale_mult: float = 1.0) -> optax.GradientTransformation:
         sched = _make_schedule(scale_mult)
@@ -439,11 +455,20 @@ def warm_start_from_checkpoint(
     flat_src = flax.traverse_util.flatten_dict(src_params, sep=".")
     copied = 0
     for k, src_v in flat_src.items():
-        if k.startswith("_aux_class_weights"):
+        if k.startswith("_aux_class_weights") or k.startswith("_aux_"):
             continue
         if k in flat_target and tuple(src_v.shape) == tuple(flat_target[k].shape):
             flat_target[k] = jnp.asarray(src_v, dtype=flat_target[k].dtype)
             copied += 1
+        elif k.startswith("pooling.atp_"):
+            pfas_k = k.replace("pooling.", "pooling.pfas_global_atp.", 1)
+            if pfas_k in flat_target and tuple(src_v.shape) == tuple(
+                flat_target[pfas_k].shape
+            ):
+                flat_target[pfas_k] = jnp.asarray(
+                    src_v, dtype=flat_target[pfas_k].dtype
+                )
+                copied += 1
     new_params = flax.traverse_util.unflatten_dict(flat_target, sep=".")
 
     new_bs = state.batch_stats
@@ -859,11 +884,343 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 grads["_aux_w"] = grads["_aux_w"] * wb_grad_scale
                 grads["_aux_b"] = grads["_aux_b"] * b_grad_scale
         new_state = state.apply_gradients(grads=grads)
+        if "_aux_class_weights" in new_state.params:
+            upd_p = dict(new_state.params)
+            cw = upd_p["_aux_class_weights"]
+            upd_p["_aux_class_weights"] = cw / (
+                jnp.linalg.norm(cw, axis=0, keepdims=True) + 1e-6
+            )
+            new_state = new_state.replace(params=upd_p)
         if hasattr(new_state, "batch_stats"):
             new_state = new_state.replace(batch_stats=new_bs)
         return new_state, loss_val
 
     return _step
+
+
+def make_pmap_train_step(
+    exp_cfg: configs.ExperimentConfig,
+    axis_name: str = "batch",
+    num_devices: Optional[int] = None,
+    use_vmap: bool = False,
+):
+    """Build a multi-device `jax.pmap` data-parallel training step (GPU / TPU / multi-CPU).
+
+    Synchronizes `MaskedBatchNorm1D` / `MaskedBatchNorm2D` running statistics across all
+    devices via `axis_name`, gathers embeddings across all devices for contrastive episode
+    losses (`GE2E`, `Extended-Set Softmax` with `PFAS` / `Dr-Vectors`) so all `D * N_local`
+    speakers participate in every similarity matrix, and averages exact gradients across
+    devices with `jax.lax.pmean`.
+    """
+    exp_cfg = configs.ExperimentConfig.from_any(exp_cfg)
+    n_dev = int(num_devices) if num_devices is not None else jax.local_device_count()
+    loss_cfg = exp_cfg.train.loss
+    loss_type = str(getattr(loss_cfg.loss_type, "value", loss_cfg.loss_type))
+    scoring_type = str(
+        getattr(loss_cfg.scoring_type, "value", loss_cfg.scoring_type)
+    )
+    n_spk_global = int(loss_cfg.num_speakers_per_batch)
+    n_utt = int(loss_cfg.num_utts_per_speaker)
+    split_batch = bool(loss_cfg.ge2e_split_batch)
+    exact_loo = bool(getattr(loss_cfg, "ge2e_exact_leave_one_out", True))
+    learn_wb = bool(getattr(loss_cfg, "ge2e_learn_wb", True))
+    wb_grad_scale = float(getattr(exp_cfg.train, "ge2e_grad_scale", 0.01))
+    contrast_surrogate = bool(getattr(loss_cfg, "ge2e_contrast_surrogate", False))
+    contrast_b_scale = float(getattr(loss_cfg, "ge2e_contrast_b_grad_scale", 0.0))
+    b_grad_scale = (
+        contrast_b_scale
+        if (loss_type == "ge2e_contrast" and contrast_b_scale > 0.0)
+        else wb_grad_scale
+    )
+    multi_row_window = int(loss_cfg.multi_row_window)
+    pure_ext = bool(getattr(loss_cfg, "pure_extended_set", False))
+    ext_norm_spks = bool(
+        getattr(loss_cfg, "ext_softmax_normalize_by_num_speakers", True)
+    )
+    ext_row_w = float(
+        getattr(loss_cfg, "ext_softmax_row_softmax_weight", 0.5)
+    )
+    scale = float(loss_cfg.scale)
+    margin = float(loss_cfg.margin)
+    subcenter_k = max(1, int(getattr(loss_cfg, "subcenter_k", 3)))
+    sphere_m = float(loss_cfg.sphereface_m)
+    sf_l_min = float(getattr(loss_cfg, "sphereface_lambda_min", 5.0))
+    sf_l_base = float(getattr(loss_cfg, "sphereface_lambda_base", 1000.0))
+    sf_l_gamma = float(getattr(loss_cfg, "sphereface_lambda_gamma", 0.12))
+    sf_l_power = float(getattr(loss_cfg, "sphereface_lambda_power", 1.0))
+    margin_warmup_steps = int(getattr(loss_cfg, "margin_warmup_steps", 0))
+    triplet_alpha = float(exp_cfg.train.triplet_alpha)
+    global_batch_size = int(exp_cfg.train.batch_size)
+    freeze_trunk = bool(getattr(exp_cfg.train, "freeze_trunk", False))
+
+    pfas_cfg = exp_cfg.model.pfas
+    is_pfas = scoring_type == "pfas"
+    dr_net = (
+        scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
+        if scoring_type == "dr_vector"
+        else None
+    )
+    is_episode_loss = loss_type in (
+        "triplet",
+        "ge2e_softmax",
+        "ge2e_contrast",
+        "extended_set_softmax",
+        "pairwise",
+    )
+
+    def _per_device_step(
+        state: SpeakerTrainState,
+        batch_input: jax.Array,
+        batch_labels: Optional[jax.Array] = None,
+        batch_mask: Optional[jax.Array] = None,
+    ) -> tuple[SpeakerTrainState, jax.Array]:
+        step_f = state.step.astype(jnp.float32)
+        sf_lambda = jnp.maximum(
+            sf_l_min,
+            sf_l_base * jnp.power(1.0 + sf_l_gamma * step_f, -sf_l_power),
+        )
+        if margin_warmup_steps > 0:
+            warmup_frac = jnp.clip(
+                step_f / float(margin_warmup_steps), 0.0, 1.0
+            )
+            eff_margin = margin * warmup_frac
+            eff_sphere_m = 1.0 + (sphere_m - 1.0) * warmup_frac
+        else:
+            eff_margin = margin
+            eff_sphere_m = sphere_m
+
+        cur_bs = getattr(state, "batch_stats", None) or {}
+        has_bs = bool(cur_bs) and not freeze_trunk
+
+        def loss_fn(params: dict[str, Any]) -> tuple[jax.Array, dict[str, Any]]:
+            with backbones.pmap_batch_norm_axis(axis_name):
+                if has_bs:
+                    embeddings, updates = state.apply_fn(
+                        {"params": params, "batch_stats": cur_bs},
+                        batch_input,
+                        deterministic=False,
+                        mask=batch_mask,
+                        mutable=["batch_stats"],
+                    )
+                    next_bs = updates["batch_stats"]
+                elif cur_bs:
+                    embeddings = state.apply_fn(
+                        {"params": params, "batch_stats": cur_bs},
+                        batch_input,
+                        deterministic=True,
+                        mask=batch_mask,
+                    )
+                    next_bs = cur_bs
+                else:
+                    embeddings = state.apply_fn(
+                        {"params": params},
+                        batch_input,
+                        deterministic=False,
+                        mask=batch_mask,
+                    )
+                    next_bs = cur_bs
+
+            if is_episode_loss and n_dev > 1:
+                eval_embs = jax.lax.all_gather(
+                    embeddings, axis_name=axis_name, tiled=True
+                )
+            else:
+                eval_embs = embeddings
+
+            score_fn = None
+            if scoring_type == "dr_vector" and dr_net is not None:
+                dr_params = params["_aux_dr_net"]
+
+                def _dr_score(t_e: jax.Array, e_e: jax.Array) -> jax.Array:
+                    return dr_net.apply({"params": dr_params}, t_e, e_e)
+
+                score_fn = _dr_score
+            elif scoring_type == "pfas":
+                pfas_scale = (
+                    jnp.exp(params["_aux_pfas_log_scale"])
+                    if "_aux_pfas_log_scale" in params
+                    else pfas_cfg.scale_factor
+                )
+                score_fn = partial(
+                    scoring.pfas_score_matrix,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=bool(
+                        getattr(pfas_cfg, "apply_softmax_per_test_key", False)
+                    ),
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
+
+            if loss_type == "triplet":
+                loss_v = losses.get_triplet_loss_from_batch_output(
+                    eval_embs, global_batch_size, triplet_alpha
+                )
+            elif loss_type == "ge2e_softmax":
+                loss_v = losses.ge2e_softmax_loss(
+                    eval_embs,
+                    num_speakers=n_spk_global,
+                    num_utts_per_speaker=n_utt,
+                    w=params["_aux_w"],
+                    b=params["_aux_b"],
+                    split_batch=split_batch,
+                    exact_leave_one_out=exact_loo,
+                    score_matrix_fn=score_fn,
+                    is_pfas=is_pfas,
+                    pfas_num_keys=pfas_cfg.num_keys,
+                    pfas_key_dim=pfas_cfg.key_dim,
+                    pfas_value_dim=pfas_cfg.value_dim,
+                )
+            elif loss_type == "ge2e_contrast":
+                loss_v = losses.ge2e_contrast_loss(
+                    eval_embs,
+                    num_speakers=n_spk_global,
+                    num_utts_per_speaker=n_utt,
+                    w=params["_aux_w"],
+                    b=params["_aux_b"],
+                    split_batch=split_batch,
+                    exact_leave_one_out=exact_loo,
+                    score_matrix_fn=score_fn,
+                    surrogate=contrast_surrogate,
+                )
+            elif loss_type == "extended_set_softmax":
+                loss_v = losses.extended_set_softmax_loss(
+                    eval_embs,
+                    num_speakers=n_spk_global,
+                    num_utts_per_speaker=n_utt,
+                    w=params["_aux_w"],
+                    b=params["_aux_b"],
+                    multi_row_window=multi_row_window,
+                    score_matrix_fn=score_fn,
+                    is_pfas=is_pfas,
+                    pfas_num_keys=pfas_cfg.num_keys,
+                    pfas_key_dim=pfas_cfg.key_dim,
+                    pfas_value_dim=pfas_cfg.value_dim,
+                    pure_extended_set=pure_ext,
+                    normalize_by_num_speakers=ext_norm_spks,
+                    row_softmax_weight=ext_row_w,
+                )
+            elif loss_type == "pairwise":
+                loss_v = losses.pairwise_loss(
+                    eval_embs,
+                    num_speakers=n_spk_global,
+                    num_utts_per_speaker=n_utt,
+                    w=params["_aux_w"],
+                    b=params["_aux_b"],
+                    score_matrix_fn=score_fn,
+                    is_pfas=is_pfas,
+                    pfas_num_keys=pfas_cfg.num_keys,
+                    pfas_key_dim=pfas_cfg.key_dim,
+                    pfas_value_dim=pfas_cfg.value_dim,
+                )
+            elif loss_type == "arcface":
+                loss_v = losses.arcface_loss(
+                    embeddings,
+                    class_weights=params["_aux_class_weights"],
+                    labels=batch_labels,
+                    scale=scale,
+                    margin=eff_margin,
+                )
+            elif loss_type == "subcenter_arcface":
+                loss_v = losses.subcenter_arcface_loss(
+                    embeddings,
+                    class_weights=params["_aux_class_weights"],
+                    labels=batch_labels,
+                    scale=scale,
+                    margin=eff_margin,
+                    subcenter_k=subcenter_k,
+                )
+            elif loss_type == "cosface":
+                loss_v = losses.cosface_loss(
+                    embeddings,
+                    class_weights=params["_aux_class_weights"],
+                    labels=batch_labels,
+                    scale=scale,
+                    margin=eff_margin,
+                )
+            elif loss_type == "sphereface":
+                loss_v = losses.sphereface_loss(
+                    embeddings,
+                    class_weights=params["_aux_class_weights"],
+                    labels=batch_labels,
+                    scale=scale,
+                    margin=eff_sphere_m,
+                    anneal_lambda=sf_lambda,
+                )
+            elif loss_type == "softmax":
+                loss_v = losses.softmax_loss(
+                    embeddings,
+                    class_weights=params["_aux_class_weights"],
+                    labels=batch_labels,
+                    scale=scale,
+                )
+            else:
+                raise ValueError(f"Unsupported loss_type: {loss_type}")
+            return loss_v, next_bs
+
+        if freeze_trunk and "backbone" in state.params:
+            frozen_bb = jax.lax.stop_gradient(state.params["backbone"])
+            head_only_params = {
+                k: v for k, v in state.params.items() if k != "backbone"
+            }
+
+            def head_loss_fn(
+                h_params: dict[str, Any],
+            ) -> tuple[jax.Array, dict[str, Any]]:
+                return loss_fn({"backbone": frozen_bb, **h_params})
+
+            (loss_val, new_bs), head_grads = jax.value_and_grad(
+                head_loss_fn, has_aux=True
+            )(head_only_params)
+            grads = {
+                "backbone": jax.tree_util.tree_map(jnp.zeros_like, frozen_bb),
+                **head_grads,
+            }
+        else:
+            (loss_val, new_bs), grads = jax.value_and_grad(
+                loss_fn, has_aux=True
+            )(state.params)
+
+        loss_val = jax.lax.pmean(loss_val, axis_name=axis_name)
+        grads = jax.lax.pmean(grads, axis_name=axis_name)
+
+        if "_aux_w" in grads and "_aux_b" in grads:
+            grads = dict(grads)
+            if not learn_wb:
+                grads["_aux_w"] = jnp.zeros_like(grads["_aux_w"])
+                grads["_aux_b"] = jnp.zeros_like(grads["_aux_b"])
+            else:
+                grads["_aux_w"] = grads["_aux_w"] * wb_grad_scale
+                grads["_aux_b"] = grads["_aux_b"] * b_grad_scale
+
+        new_state = state.apply_gradients(grads=grads)
+        if "_aux_class_weights" in new_state.params:
+            upd_p = dict(new_state.params)
+            cw = upd_p["_aux_class_weights"]
+            upd_p["_aux_class_weights"] = cw / (
+                jnp.linalg.norm(cw, axis=0, keepdims=True) + 1e-6
+            )
+            new_state = new_state.replace(params=upd_p)
+        if hasattr(new_state, "batch_stats"):
+            new_state = new_state.replace(batch_stats=new_bs)
+        return new_state, loss_val
+
+    if use_vmap:
+        return jax.jit(jax.vmap(_per_device_step, axis_name=axis_name))
+    return jax.pmap(_per_device_step, axis_name=axis_name)
 
 
 def train_network(

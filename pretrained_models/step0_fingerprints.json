@@ -1,6 +1,6 @@
 {
-  "timestamp_utc": "2026-10-29T08:20:54.653481+00:00",
-  "code_commit": "c39d80c+dirty",
+  "timestamp_utc": "2026-11-19T22:26:49.542826+00:00",
+  "code_commit": "4ac023f+dirty",
   "tolerance": 5e-05,
   "description": "Step-0 training loss at the released seed from the released YAML, under fixed seq_len crops (head_fixed) and U(min_seq_len, seq_len) crops (head_variable), compared with eval_results.json initial_loss.",
   "checkpoints": {
@@ -689,7 +689,7 @@
         180,
         180
       ],
-      "head_fixed_probe_sec": 20.3,
+      "head_fixed_probe_sec": 24.5,
       "head_variable": 2.0705,
       "head_variable_raw": 2.070543,
       "head_variable_valid_frames_first4": [
@@ -698,7 +698,7 @@
         153,
         130
       ],
-      "head_variable_probe_sec": 10.1,
+      "head_variable_probe_sec": 10.5,
       "legacy_lambda_used": false,
       "abs_diff_fixed": 0.0077,
       "abs_diff_variable": 0.0,
@@ -1296,7 +1296,7 @@
         180,
         180
       ],
-      "head_fixed_probe_sec": 10.9,
+      "head_fixed_probe_sec": 25.7,
       "head_variable": 2.0878,
       "head_variable_raw": 2.087823,
       "head_variable_valid_frames_first4": [
@@ -1305,7 +1305,7 @@
         122,
         171
       ],
-      "head_variable_probe_sec": 10.3,
+      "head_variable_probe_sec": 11.7,
       "legacy_lambda_used": false,
       "abs_diff_fixed": 0.0915,
       "abs_diff_variable": 0.0,
@@ -1406,131 +1406,163 @@
     },
     "univ_full_conformer_large_arcface": {
       "train_dataset": "universal_full",
-      "loss_type": "extended_set_softmax",
+      "loss_type": "arcface",
       "seed": 42,
-      "seq_len": 180,
-      "min_seq_len": 90,
+      "seq_len": 200,
+      "min_seq_len": 140,
       "yaml_variable_length_training": true,
-      "released_initial_loss": 2.7714,
-      "head_fixed": 2.6614,
-      "head_fixed_raw": 2.661373,
+      "released_initial_loss": 12.5414,
+      "head_fixed": 12.6062,
+      "head_fixed_raw": 12.606162,
       "head_fixed_valid_frames_first4": [
-        180,
-        180,
-        180,
-        180
+        200,
+        200,
+        200,
+        200
       ],
-      "head_fixed_probe_sec": 14.1,
-      "head_variable": 2.7714,
-      "head_variable_raw": 2.771413,
+      "head_fixed_probe_sec": 73.1,
+      "head_variable": 12.5421,
+      "head_variable_raw": 12.542083,
       "head_variable_valid_frames_first4": [
-        142,
-        135,
-        96,
-        98
+        197,
+        162,
+        173,
+        162
       ],
-      "head_variable_probe_sec": 7.5,
+      "head_variable_probe_sec": 57.8,
       "legacy_lambda_used": false,
-      "abs_diff_fixed": 0.11,
-      "abs_diff_variable": 0.0,
-      "match": "variable"
+      "abs_diff_fixed": 0.0648,
+      "abs_diff_variable": 0.0007,
+      "match": "variable_approx"
     },
     "univ_full_conformer_large_dr_vectors": {
       "train_dataset": "universal_full",
       "loss_type": "extended_set_softmax",
       "seed": 42,
-      "seq_len": 180,
-      "min_seq_len": 90,
+      "seq_len": 200,
+      "min_seq_len": 140,
       "yaml_variable_length_training": true,
-      "released_initial_loss": 1.3912,
-      "head_fixed": 1.1641,
-      "head_fixed_raw": 1.164075,
+      "released_initial_loss": 0.1967,
+      "head_fixed": 0.1513,
+      "head_fixed_raw": 0.151316,
       "head_fixed_valid_frames_first4": [
-        180,
-        180,
-        180,
-        180
+        27,
+        200,
+        155,
+        52
       ],
-      "head_fixed_probe_sec": 5.0,
-      "head_variable": 1.3912,
-      "head_variable_raw": 1.391196,
+      "head_fixed_probe_sec": 22.7,
+      "head_variable": 0.1969,
+      "head_variable_raw": 0.196905,
       "head_variable_valid_frames_first4": [
-        142,
-        135,
-        96,
-        98
+        27,
+        177,
+        140,
+        52
       ],
-      "head_variable_probe_sec": 3.4,
+      "head_variable_probe_sec": 8.7,
       "legacy_lambda_used": false,
-      "abs_diff_fixed": 0.2271,
-      "abs_diff_variable": 0.0,
-      "match": "variable"
+      "abs_diff_fixed": 0.0454,
+      "abs_diff_variable": 0.0002,
+      "match": "variable_approx"
     },
     "univ_full_conformer_large_pfas": {
       "train_dataset": "universal_full",
       "loss_type": "extended_set_softmax",
       "seed": 42,
-      "seq_len": 180,
-      "min_seq_len": 90,
+      "seq_len": 200,
+      "min_seq_len": 140,
       "yaml_variable_length_training": true,
-      "released_initial_loss": 2.3391,
-      "head_fixed": 2.2119,
-      "head_fixed_raw": 2.211927,
+      "released_initial_loss": 2.4578,
+      "head_fixed": 2.3256,
+      "head_fixed_raw": 2.325626,
       "head_fixed_valid_frames_first4": [
-        180,
-        180,
-        180,
-        180
+        27,
+        200,
+        155,
+        52
       ],
-      "head_fixed_probe_sec": 4.1,
-      "head_variable": 2.3391,
-      "head_variable_raw": 2.339134,
+      "head_fixed_probe_sec": 21.5,
+      "head_variable": 2.458,
+      "head_variable_raw": 2.457983,
       "head_variable_valid_frames_first4": [
-        142,
-        135,
-        96,
-        98
+        27,
+        177,
+        140,
+        52
       ],
-      "head_variable_probe_sec": 3.3,
+      "head_variable_probe_sec": 8.5,
       "legacy_lambda_used": false,
-      "abs_diff_fixed": 0.1272,
-      "abs_diff_variable": 0.0,
-      "match": "variable"
+      "abs_diff_fixed": 0.1322,
+      "abs_diff_variable": 0.0002,
+      "match": "variable_approx"
     },
     "univ_full_ecapa_c1024_arcface": {
       "train_dataset": "universal_full",
-      "loss_type": "extended_set_softmax",
+      "loss_type": "arcface",
       "seed": 42,
-      "seq_len": 180,
-      "min_seq_len": 90,
+      "seq_len": 200,
+      "min_seq_len": 140,
       "yaml_variable_length_training": true,
-      "released_initial_loss": 2.6606,
-      "head_fixed": 2.5349,
-      "head_fixed_raw": 2.534852,
+      "released_initial_loss": 12.4876,
+      "head_fixed": 12.459,
+      "head_fixed_raw": 12.459042,
       "head_fixed_valid_frames_first4": [
-        180,
-        180,
-        180,
-        180
+        200,
+        200,
+        200,
+        200
       ],
-      "head_fixed_probe_sec": 11.5,
-      "head_variable": 2.6606,
-      "head_variable_raw": 2.660582,
+      "head_fixed_probe_sec": 47.6,
+      "head_variable": 12.4881,
+      "head_variable_raw": 12.488089,
       "head_variable_valid_frames_first4": [
-        142,
-        135,
-        96,
-        98
+        197,
+        162,
+        173,
+        162
       ],
-      "head_variable_probe_sec": 7.5,
+      "head_variable_probe_sec": 38.1,
       "legacy_lambda_used": false,
-      "abs_diff_fixed": 0.1257,
-      "abs_diff_variable": 0.0,
-      "match": "variable"
+      "abs_diff_fixed": 0.0286,
+      "abs_diff_variable": 0.0005,
+      "match": "variable_approx"
+    },
+    "univ_full_resnet34_arcface": {
+      "train_dataset": "universal_full",
+      "loss_type": "arcface",
+      "seed": 42,
+      "seq_len": 200,
+      "min_seq_len": 140,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 12.4063,
+      "head_fixed": 12.7355,
+      "head_fixed_raw": 12.735521,
+      "head_fixed_valid_frames_first4": [
+        200,
+        200,
+        200,
+        200
+      ],
+      "head_fixed_probe_sec": 2104.2,
+      "head_variable": 12.4057,
+      "head_variable_raw": 12.405674,
+      "head_variable_valid_frames_first4": [
+        197,
+        162,
+        173,
+        162
+      ],
+      "head_variable_probe_sec": 1912.3,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.3292,
+      "abs_diff_variable": 0.0006,
+      "match": "variable_approx"
     }
   },
   "histogram": {
-    "variable": 48
+    "variable": 44,
+    "variable_approx": 5
   },
-  "num_checkpoints": 48
+  "num_checkpoints": 49
 }

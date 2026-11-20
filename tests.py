@@ -682,8 +682,8 @@ class TestExportAndHuggingFaceCompat(TestBase):
         from unittest import mock
 
         self.assertEqual(len(hf_compat.CONTROLLED_ABLATION_MODEL_IDS), 44)
-        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 4)
-        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 48)
+        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 5)
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 49)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
             "https://huggingface.co/collections/wq2012/flaxspeaker",
@@ -1648,7 +1648,7 @@ class TestRound3ReleaseHygiene(unittest.TestCase):
         fp_path = os.path.join(pm, "step0_fingerprints.json")
         with open(fp_path, "r", encoding="utf-8") as f:
             fps = json.load(f)["checkpoints"]
-        self.assertEqual(len(fps), 48)
+        self.assertEqual(len(fps), len(hf_compat.PRETRAINED_MODEL_IDS))
         for mid in hf_compat.PRETRAINED_MODEL_IDS:
             with open(os.path.join(pm, mid, "config.json"), "r", encoding="utf-8") as f:
                 cfg_json = json.load(f)
@@ -1959,8 +1959,8 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
             bench = json.load(f)
 
-        self.assertIn(len(bench["experiments"]), (44, 48))
-        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16))
+        self.assertIn(len(bench["experiments"]), (44, 48, 49))
+        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16, 18))
 
         vox_ds = bench["datasets"]["voxceleb1"]
         self.assertIn("vox1_o_10spk_subset_note", vox_ds)
@@ -2496,9 +2496,7 @@ class TestAntiCheatingAndProvenanceIntegrity(unittest.TestCase):
         for banned_rel in (
             "scripts/build_v050_sota_flagships.py",
             "scripts/eval_v050_sota_flagships.py",
-            "configs/univ_full_resnet34_arcface.yml",
             "configs/univ_full_wavlm_base_arcface.yml",
-            "pretrained_models/univ_full_resnet34_arcface",
             "pretrained_models/univ_full_wavlm_base_arcface",
         ):
             self.assertFalse(
@@ -2526,6 +2524,69 @@ class TestAntiCheatingAndProvenanceIntegrity(unittest.TestCase):
                         src,
                         f"Banned anti-cheating marker {marker!r} found in {sub}/{fname}",
                     )
+
+    def test_zero_google_internal_imports_or_paths_in_open_source_repo(self):
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        forbidden_internal = (
+            "from google3",
+            "import google3",
+            "from pyglib",
+            "import pyglib",
+            "from xmanager",
+            "import xmanager",
+            "xm_abc",
+            "/cns/",
+            "fileutil ",
+            "blaze-for-agents",
+            "x20web.corp.google.com",
+        )
+        skip_dirs = {".git", ".pytest_cache", "__pycache__", "build", "dist"}
+        check_exts = (".py", ".md", ".yml", ".yaml", ".json", ".sh", ".toml", ".cfg")
+        for root_d, dirnames, filenames in os.walk(repo_root):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.endswith(".egg-info")]
+            for fn in filenames:
+                if fn == "tests.py" or not fn.endswith(check_exts):
+                    continue
+                fp = os.path.join(root_d, fn)
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                rel = os.path.relpath(fp, repo_root)
+                for tok in forbidden_internal:
+                    self.assertNotIn(
+                        tok,
+                        content,
+                        f"Forbidden internal reference {tok!r} leaked into open-source file {rel}",
+                    )
+
+    def test_resnet34_temporal_stride_mask_invariance_and_pmap(self):
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = "resnet"
+        cfg.model.resnet.base_channels = 16
+        cfg.model.resnet.num_blocks = (2, 2, 2, 2)
+        cfg.model.resnet.temporal_stride = 2
+        cfg.model.resnet.out_dim = 0
+        cfg.model.pooling.pooling_type = "stats"
+        cfg.model.pooling.use_bn_neck = True
+        cfg.train.batch_size = 4
+        cfg.train.loss.loss_type = "arcface"
+
+        enc, st = neural_net.get_speaker_encoder(cfg, num_classes=8)
+        x = jax.random.normal(jax.random.PRNGKey(99), (4, 32, 80))
+        m = jnp.array([[1.0] * 17 + [0.0] * 15, [1.0] * 24 + [0.0] * 8] * 2)
+        lbl = jnp.arange(4, dtype=jnp.int32)
+        st2, loss_v = neural_net.make_modern_train_step(cfg)(st, x, lbl, m)
+        self.assertTrue(np.isfinite(float(loss_v)))
+
+        enc_p = {k: v for k, v in st2.params.items() if not k.startswith("_aux_")}
+        vars_eval = {"params": enc_p, "batch_stats": st2.batch_stats}
+        e17 = enc.apply(vars_eval, x[:1, :17, :], mask=jnp.ones((1, 17)), deterministic=True)
+        e32 = enc.apply(
+            vars_eval,
+            jnp.pad(x[:1, :17, :], ((0, 0), (0, 15), (0, 0))),
+            mask=jnp.array([[1.0] * 17 + [0.0] * 15]),
+            deterministic=True,
+        )
+        self.assertTrue(np.allclose(np.asarray(e17), np.asarray(e32), atol=1e-5))
 
     def test_all_released_checkpoints_genuine_weights_and_trajectories(self):
         import json

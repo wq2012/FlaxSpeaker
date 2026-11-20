@@ -1,6 +1,6 @@
 """HuggingFace `transformers` and `safetensors` integration for FlaxSpeaker v0.5.0.
 
-All 48 pretrained models (44 controlled ablation models + 4 full-data SOTA flagship
+All 49 pretrained models (44 controlled ablation models + 5 full-data SOTA flagship
 models) are hosted on the Hugging Face Hub at `https://huggingface.co/wq2012/<model_id>`
 and grouped in the FlaxSpeaker collection:
 https://huggingface.co/collections/wq2012/flaxspeaker
@@ -96,6 +96,7 @@ CONTROLLED_ABLATION_MODEL_IDS: tuple[str, ...] = (
 FULL_DATA_FLAGSHIP_IDS: tuple[str, ...] = (
     "univ_full_conformer_large_arcface",
     "univ_full_ecapa_c1024_arcface",
+    "univ_full_resnet34_arcface",
     "univ_full_conformer_large_pfas",
     "univ_full_conformer_large_dr_vectors",
 )

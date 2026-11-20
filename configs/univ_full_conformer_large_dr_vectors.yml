@@ -58,9 +58,9 @@ model:
   embedding_dim: 256
   normalize_embedding: true
   n_mfcc: 80
-  seq_len: 180
-  min_seq_len: 90
-  max_seq_len: 180
+  seq_len: 200
+  min_seq_len: 140
+  max_seq_len: 200
   max_eval_seq_len: 0
   variable_length_training: true
   sliding_window_step: 50
@@ -82,13 +82,13 @@ model:
     use_positional_encoding: false
     use_conv_stem: true
   conformer:
-    dim: 320
-    num_layers: 4
+    dim: 384
+    num_layers: 6
     num_heads: 8
-    ffn_dim: 640
+    ffn_dim: 1536
     conv_kernel_size: 15
-    subsample_factor: 1
-    subsample_after_layer: 4
+    subsample_factor: 2
+    subsample_after_layer: 1
     layer_order: mhsa_before_conv
     use_group_norm: true
     use_conv_stem: true
@@ -129,6 +129,7 @@ model:
     use_se: true
     out_dim: 384
     use_batch_norm: true
+    temporal_stride: 1
   pooling:
     pooling_type: atp
     attention_dim: 128
@@ -138,7 +139,8 @@ model:
     subspace_heads: true
     epsilon: 0.0001
     bottleneck_dim: 256
-    use_nonlinear_bottleneck: true
+    use_nonlinear_bottleneck: false
+    use_bn_neck: true
   pfas:
     num_keys: 4
     key_dim: 32
@@ -163,28 +165,28 @@ model:
     hidden_dims:
     - 256
     - 128
-    activation: leaky_relu
+    activation: relu
     leaky_relu_slope: 0.2
     use_layer_norm: true
     include_cosine_in_input: true
-    residual_weight: 0.25
+    residual_weight: 0.2
     add_cosine_to_network_output: true
     append_cosine_as_feature_to_network_input: true
     append_cosine_to_final_hidden: false
-    num_cosine_terms: 1
+    num_cosine_terms: 3
     symmetric_input: false
     cosine_dims: 0
     readout: linear
-    trainable_affine: false
+    trainable_affine: true
 loss:
   loss_type: extended_set_softmax
   scoring_type: dr_vector
-  num_speakers_per_batch: 16
+  num_speakers_per_batch: 64
   num_utts_per_speaker: 4
   triplet_alpha: 0.1
   ge2e_learn_wb: true
-  ge2e_init_w: 10.0
-  ge2e_init_b: -5.0
+  ge2e_init_w: 15.0
+  ge2e_init_b: -3.5
   ge2e_split_batch: false
   ge2e_exact_leave_one_out: true
   ge2e_contrast_surrogate: false
@@ -203,25 +205,25 @@ loss:
   sphereface_lambda_power: 1.0
   margin_warmup_steps: 0
 train:
-  batch_size: 64
+  batch_size: 256
   num_spks_per_batch: 8
   num_utts_per_spk: 4
   triplet_alpha: 0.1
-  learning_rate: 0.00035
-  min_learning_rate: 7.0e-06
+  learning_rate: 0.00025
+  min_learning_rate: 5.0e-06
   optimizer: adamw
   sgd_momentum: 0.9
   nesterov: true
   weight_decay: 0.0001
-  warmup_steps: 150
+  warmup_steps: 800
   lr_schedule_cosine: true
   grad_clip_norm: 3.0
   ge2e_grad_scale: 0.01
   init_from_checkpoint: ''
   freeze_trunk: false
-  trunk_lr_mult: 0.05
+  trunk_lr_mult: 1.0
   save_model_frequency: 500
-  num_steps: 2400
+  num_steps: 16000
   num_processes: 4
   seed: 42
   saved_model_dir: ''
@@ -261,12 +263,12 @@ train:
   loss:
     loss_type: extended_set_softmax
     scoring_type: dr_vector
-    num_speakers_per_batch: 16
+    num_speakers_per_batch: 64
     num_utts_per_speaker: 4
     triplet_alpha: 0.1
     ge2e_learn_wb: true
-    ge2e_init_w: 10.0
-    ge2e_init_b: -5.0
+    ge2e_init_w: 15.0
+    ge2e_init_b: -3.5
     ge2e_split_batch: false
     ge2e_exact_leave_one_out: true
     ge2e_contrast_surrogate: false
@@ -286,14 +288,14 @@ train:
     margin_warmup_steps: 0
 eval:
   full_sequence_inference: true
-  max_eval_frames_cap: 1024
+  max_eval_frames_cap: 3000
   num_triplets: 1000
   threshold_step: 0.001
   num_enroll_utts: 1
   use_as_norm: false
   apply_as_norm: false
   as_norm_top_k: 300
-  as_norm_cohort_size: 300
+  as_norm_cohort_size: 600
   use_qmf: false
   dcf_c_miss: 1.0
   dcf_c_fa: 1.0

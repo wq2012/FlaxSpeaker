@@ -66,6 +66,7 @@ from flaxspeaker import feature_extraction  # noqa: E402
 from flaxspeaker import neural_net  # noqa: E402
 from flaxspeaker import resources  # noqa: E402
 from flaxspeaker import shard_cache  # noqa: E402
+from flaxspeaker import specaug  # noqa: E402
 
 DEFAULT_DATA_ROOT = os.environ.get(
     "FLAXSPEAKER_DATA_ROOT", os.path.expanduser("~/Data/speaker_datasets")
@@ -102,6 +103,9 @@ def first_step_loss(
     frontend: feature_extraction.AudioFrontend,
     cache: feature_extraction.FeatureCache,
     variable_length: bool,
+    num_devices: int = 1,
+    shard_budget: int = 18,
+    specaug_prob: float = 0.60,
 ) -> tuple[float, list[int]]:
     """One training step at ``cfg.train.seed``; returns (loss, valid frames of first utts)."""
     loss_type = cfg.train.loss.loss_type
@@ -120,6 +124,63 @@ def first_step_loss(
         )
         else None
     )
+    if num_devices > 1 and shard_store is not None:
+        import jax
+        import jax.numpy as jnp
+
+        win = shard_cache.WindowedMultiDomainSampler(
+            shard_store, shard_budget=shard_budget, seed=int(cfg.train.seed)
+        )
+        num_cls = win.num_classes if is_cls else 0
+        _, state0 = neural_net.get_speaker_encoder(cfg, num_classes=num_cls)
+        rep_state = jax.tree_util.tree_map(
+            lambda x: jnp.broadcast_to(
+                jnp.asarray(x), (num_devices,) + jnp.asarray(x).shape
+            ),
+            state0,
+        )
+        vstep = neural_net.make_pmap_train_step(
+            cfg, axis_name="batch", num_devices=num_devices, use_vmap=True
+        )
+        seq_len = int(cfg.model.seq_len)
+        min_seq_len = int(cfg.model.min_seq_len)
+        batch_size = int(cfg.train.batch_size)
+        per_dev_b = batch_size // num_devices
+        step_rng = np.random.default_rng(int(cfg.train.seed) + 17)
+        if is_cls:
+            xb, lb, mb = win.sample_classification_batch(
+                step_rng,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                min_seq_len=min_seq_len,
+                variable_length=variable_length,
+            )
+            lb_d = jnp.asarray(lb.reshape(num_devices, per_dev_b), dtype=jnp.int32)
+        else:
+            xb, mb = win.sample_episode_batch(
+                step_rng,
+                num_speakers=int(cfg.train.loss.num_speakers_per_batch),
+                num_utts_per_spk=int(cfg.train.loss.num_utts_per_speaker),
+                seq_len=seq_len,
+                min_seq_len=min_seq_len,
+                variable_length=variable_length,
+            )
+            lb_d = None
+        valid = [int(v) for v in mb.sum(axis=1)[:4]]
+        xb_d = jnp.asarray(xb.reshape(num_devices, per_dev_b, seq_len, -1))
+        mb_d = jnp.asarray(mb.reshape(num_devices, per_dev_b, seq_len))
+        if specaug_prob > 0.0:
+            rk = jax.random.split(
+                jax.random.fold_in(jax.random.PRNGKey(int(cfg.train.seed) + 7919), 1),
+                num_devices,
+            )
+            xb_d = jax.vmap(
+                lambda x, m, r: specaug.apply_masked_specaug_batch_jax(
+                    x, m, r, apply_prob=specaug_prob
+                )
+            )(xb_d, mb_d, rk)
+        _, l_rep = vstep(rep_state, xb_d, lb_d, mb_d)
+        return float(l_rep[0]), valid
     if shard_store is not None:
         num_cls = shard_store.num_speakers if is_cls else 0
         speaker_to_id: dict[str, int] = {}
@@ -359,6 +420,12 @@ def main(
                 ("head_variable_legacy_lambda", True, True),
             ]
         released_lambda_base = float(cfg.train.loss.sphereface_lambda_base)
+        num_dev_rec = int(rec.get("num_devices", 1))
+        s_prob_rec = float(
+            (phase_ov or {}).get("specaug_prob", 0.60)
+            if isinstance(phase_ov, dict)
+            else 0.60
+        )
         for key, var_len, legacy_lambda in probes:
             cfg.model.variable_length_training = var_len
             # Pre-9accf95 sphereface_loss used a constant anneal_lambda (= lambda_min).
@@ -366,7 +433,15 @@ def main(
                 float(cfg.train.loss.sphereface_lambda_min) if legacy_lambda else released_lambda_base
             )
             t0 = time.time()
-            loss, valid = first_step_loss(cfg, spk_train, frontend, cache, var_len)
+            loss, valid = first_step_loss(
+                cfg,
+                spk_train,
+                frontend,
+                cache,
+                var_len,
+                num_devices=num_dev_rec,
+                specaug_prob=s_prob_rec,
+            )
             out[key] = round(loss, 4)
             out[f"{key}_raw"] = round(loss, 6)
             out[f"{key}_valid_frames_first4"] = valid

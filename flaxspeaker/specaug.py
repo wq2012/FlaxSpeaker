@@ -391,3 +391,43 @@ def apply_specaug_batch_jax(
     t_mask = do_t & (t_idx >= t0) & (t_idx < t0 + tw)
     out = jnp.where(t_mask, mean_vals, out)
     return out
+
+
+def apply_masked_specaug_batch_jax(
+    x: jax.Array,
+    mask: jax.Array,
+    rng: jax.Array,
+    apply_prob: float = 0.6,
+    freq_width: int = 8,
+    time_width: int = 12,
+) -> jax.Array:
+    """Vectorized mask-aware on-device SpecAugment over `(B, T, F)` zero-mean CMVN features."""
+    if apply_prob <= 0.0:
+        return x
+    bsz, seq_len, feat_dim = x.shape
+    r_apply, r_f1, r_fw1, r_f2, r_fw2, r_t1, r_tw1, r_t2, r_tw2 = jax.random.split(
+        rng, 9
+    )
+    do_aug = jax.random.uniform(r_apply, (bsz, 1, 1)) < apply_prob
+    f_idx = jnp.arange(feat_dim)[None, None, :]
+    t_idx = jnp.arange(seq_len)[None, :, None]
+
+    fw1 = jax.random.randint(r_fw1, (bsz, 1, 1), 0, freq_width + 1)
+    f0_1 = jax.random.randint(r_f1, (bsz, 1, 1), 0, max(1, feat_dim - freq_width))
+    fw2 = jax.random.randint(r_fw2, (bsz, 1, 1), 0, freq_width + 1)
+    f0_2 = jax.random.randint(r_f2, (bsz, 1, 1), 0, max(1, feat_dim - freq_width))
+    f_keep = ((f_idx < f0_1) | (f_idx >= f0_1 + fw1)) & (
+        (f_idx < f0_2) | (f_idx >= f0_2 + fw2)
+    )
+
+    tw1 = jax.random.randint(r_tw1, (bsz, 1, 1), 0, time_width + 1)
+    t0_1 = jax.random.randint(r_t1, (bsz, 1, 1), 0, max(1, seq_len - time_width))
+    tw2 = jax.random.randint(r_tw2, (bsz, 1, 1), 0, time_width + 1)
+    t0_2 = jax.random.randint(r_t2, (bsz, 1, 1), 0, max(1, seq_len - time_width))
+    t_keep = ((t_idx < t0_1) | (t_idx >= t0_1 + tw1)) & (
+        (t_idx < t0_2) | (t_idx >= t0_2 + tw2)
+    )
+
+    aug_x = x * f_keep.astype(x.dtype) * t_keep.astype(x.dtype)
+    out = jnp.where(do_aug, aug_x, x)
+    return out * (mask > 0).astype(x.dtype)[..., None]

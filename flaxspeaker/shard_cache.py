@@ -526,3 +526,194 @@ class ShardedFeatureStore:
             None,
             jnp.asarray(masks, dtype=jnp.float32),
         )
+
+
+class WindowedMultiDomainSampler:
+    """Stratified rolling-window multi-domain `.f16` shard sampler for multi-GPU / TPU training.
+
+    Maintains a stratified subset of `shard_budget` shards (`0` = all shards) across
+    domains `(0, 1, 2)` over `ShardedFeatureStore` `memmap` arrays so multi-device
+    `jax.pmap` runs keep bounded RSS on any host while visiting all shards via
+    `rotate_window()`.
+    """
+
+    def __init__(
+        self,
+        store: ShardedFeatureStore,
+        shard_budget: int = 18,
+        seed: int = 42,
+    ):
+        self.store = store
+        self.total_shards = len(store.shard_frame_counts)
+        self.feat_dim = store.feat_dim
+        self.num_classes = len(store.raw_speaker_to_id)
+
+        id_to_spk = {int(v): k for k, v in store.raw_speaker_to_id.items()}
+        is_sp = np.array(
+            ["@sp" in id_to_spk[i] for i in range(self.num_classes)], dtype=np.bool_
+        )
+        self.orig_speaker_ids = np.load(os.path.join(store.shard_dir, "index.npz"))[
+            "speaker_ids"
+        ].astype(np.int32)
+        self.orig_item_is_sp = is_sp[self.orig_speaker_ids]
+        self.orig_shard_ids = store.shard_ids.astype(np.int32)
+        self.orig_domain_ids = store.domain_ids.astype(np.int16)
+
+        self.dom_shards: dict[int, list[int]] = {0: [], 1: [], 2: []}
+        for sid in range(self.total_shards):
+            m = self.orig_shard_ids == sid
+            if np.any(m):
+                counts = [int(np.sum(self.orig_domain_ids[m] == d)) for d in (0, 1, 2)]
+                self.dom_shards[int(np.argmax(counts))].append(sid)
+
+        self.rolling_enabled = 0 < shard_budget < self.total_shards
+        self._rot_rng = np.random.default_rng(int(seed) + 1337)
+        if self.rolling_enabled:
+            n_d0 = min(len(self.dom_shards[0]), max(1, round(shard_budget * 0.50)))
+            n_d1 = min(len(self.dom_shards[1]), max(1, round(shard_budget * 0.28)))
+            n_d2 = min(
+                len(self.dom_shards[2]), max(1, shard_budget - n_d0 - n_d1)
+            )
+            init_sids: list[int] = []
+            for d_id, k_cnt in ((0, n_d0), (1, n_d1), (2, n_d2)):
+                if self.dom_shards[d_id]:
+                    chosen = self._rot_rng.choice(
+                        self.dom_shards[d_id],
+                        size=min(k_cnt, len(self.dom_shards[d_id])),
+                        replace=False,
+                    )
+                    init_sids.extend(int(x) for x in chosen)
+            self.active_sids = sorted(set(init_sids))
+        else:
+            self.active_sids = list(range(self.total_shards))
+
+        self.dom_items_all: dict[int, np.ndarray] = {}
+        self.dom_items_non_sp: dict[int, np.ndarray] = {}
+        self.dom_spk_to_items: dict[int, list[np.ndarray]] = {}
+        self._rebuild_indices()
+
+    def _rebuild_indices(self) -> None:
+        in_mem = np.isin(self.orig_shard_ids, self.active_sids)
+        for d_id in (0, 1, 2):
+            d_mask = in_mem & (self.orig_domain_ids == d_id)
+            self.dom_items_all[d_id] = np.nonzero(d_mask)[0].astype(np.int32)
+            self.dom_items_non_sp[d_id] = np.nonzero(
+                d_mask & (~self.orig_item_is_sp)
+            )[0].astype(np.int32)
+            d_idx = self.dom_items_all[d_id]
+            if d_idx.size > 0:
+                order = np.argsort(self.orig_speaker_ids[d_idx], kind="mergesort")
+                sorted_items = d_idx[order]
+                sorted_spks = self.orig_speaker_ids[sorted_items]
+                splits = np.nonzero(np.diff(sorted_spks) != 0)[0] + 1
+                self.dom_spk_to_items[d_id] = [
+                    g for g in np.split(sorted_items, splits) if g.size >= 2
+                ]
+            else:
+                self.dom_spk_to_items[d_id] = []
+
+    def rotate_window(self) -> None:
+        if not self.rolling_enabled:
+            return
+        cur_keys = set(self.active_sids)
+        for d_id in (0, 1, 2):
+            all_d = self.dom_shards[d_id]
+            in_d = [s for s in all_d if s in cur_keys]
+            out_d = [s for s in all_d if s not in cur_keys]
+            if in_d and out_d:
+                evict_sid = int(self._rot_rng.choice(in_d))
+                load_sid = int(self._rot_rng.choice(out_d))
+                cur_keys.discard(evict_sid)
+                cur_keys.add(load_sid)
+        self.active_sids = sorted(cur_keys)
+        self._rebuild_indices()
+
+    def sample_classification_batch(
+        self,
+        rng: np.random.Generator,
+        batch_size: int,
+        seq_len: int,
+        min_seq_len: int,
+        variable_length: bool = True,
+        non_sp_only: bool = False,
+        dom_probs: tuple[float, float, float] = (0.45, 0.32, 0.23),
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        pool_map = self.dom_items_non_sp if non_sp_only else self.dom_items_all
+        avail_doms = [d for d in (0, 1, 2) if pool_map[d].size > 0]
+        probs = np.array([dom_probs[d] for d in avail_doms], dtype=np.float64)
+        probs /= probs.sum()
+        chosen_doms = rng.choice(avail_doms, size=batch_size, p=probs)
+
+        item_indices = np.empty((batch_size,), dtype=np.int32)
+        for d in avail_doms:
+            pos = np.nonzero(chosen_doms == d)[0]
+            if pos.size > 0:
+                pool = pool_map[d]
+                item_indices[pos] = pool[rng.integers(0, pool.size, size=pos.size)]
+
+        feats = np.zeros((batch_size, seq_len, self.feat_dim), dtype=np.float32)
+        masks = np.zeros((batch_size, seq_len), dtype=np.float32)
+        labels = self.orig_speaker_ids[item_indices].astype(np.int32)
+        eff_lens = rng.integers(min_seq_len, seq_len + 1, size=batch_size)
+        if not variable_length:
+            eff_lens = np.full((batch_size,), seq_len, dtype=np.int64)
+
+        for i in range(batch_size):
+            idx = int(item_indices[i])
+            mm = self.store._memmaps[int(self.orig_shard_ids[idx])]
+            off = int(self.store.frame_offsets[idx])
+            ln = int(self.store.frame_lengths[idx])
+            target_l = int(eff_lens[i])
+            if ln >= target_l:
+                st = int(rng.integers(0, ln - target_l + 1))
+                feats[i, :target_l] = mm[off + st:off + st + target_l]
+                masks[i, :target_l] = 1.0
+            else:
+                valid_l = min(ln, target_l)
+                feats[i, :valid_l] = mm[off:off + valid_l]
+                masks[i, :valid_l] = 1.0
+        return feats, labels, masks
+
+    def sample_episode_batch(
+        self,
+        rng: np.random.Generator,
+        num_speakers: int,
+        num_utts_per_spk: int,
+        seq_len: int,
+        min_seq_len: int,
+        variable_length: bool = True,
+        dom_probs: tuple[float, float, float] = (0.45, 0.32, 0.23),
+    ) -> tuple[np.ndarray, np.ndarray]:
+        avail_doms = [d for d in (0, 1, 2) if self.dom_spk_to_items[d]]
+        probs = np.array([dom_probs[d] for d in avail_doms], dtype=np.float64)
+        probs /= probs.sum()
+        dom_choice = int(rng.choice(avail_doms, p=probs))
+        groups = self.dom_spk_to_items[dom_choice]
+        replace_spks = len(groups) < num_speakers
+        spk_choices = rng.choice(len(groups), size=num_speakers, replace=replace_spks)
+
+        total = num_speakers * num_utts_per_spk
+        feats = np.zeros((total, seq_len, self.feat_dim), dtype=np.float32)
+        masks = np.zeros((total, seq_len), dtype=np.float32)
+        eff_lens = rng.integers(min_seq_len, seq_len + 1, size=total)
+        if not variable_length:
+            eff_lens = np.full((total,), seq_len, dtype=np.int64)
+
+        row = 0
+        for s_idx in spk_choices:
+            u_pool = groups[int(s_idx)]
+            chosen_u = rng.choice(
+                u_pool, size=num_utts_per_spk, replace=(u_pool.size < num_utts_per_spk)
+            )
+            for idx in chosen_u:
+                idx_i = int(idx)
+                mm = self.store._memmaps[int(self.orig_shard_ids[idx_i])]
+                off = int(self.store.frame_offsets[idx_i])
+                ln = int(self.store.frame_lengths[idx_i])
+                target_l = int(eff_lens[row])
+                valid_l = min(ln, target_l)
+                st = int(rng.integers(0, ln - valid_l + 1)) if ln > valid_l else 0
+                feats[row, :valid_l] = mm[off + st:off + st + valid_l]
+                masks[row, :valid_l] = 1.0
+                row += 1
+        return feats, masks
