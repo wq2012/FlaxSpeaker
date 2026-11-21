@@ -285,7 +285,7 @@ def main() -> None:
     free_start = _check_free_disk(full_root, args.min_free_gb)
     _log(f"Starting polite full-corpora download. Initial free disk: {free_start:.1f} GB.")
 
-    report: dict[str, dict] = {}
+    report: dict[str, object] = {}
     report["musan"] = step_musan(full_root, args.min_free_gb)
     report["rirs_noises"] = step_rirs(full_root, args.min_free_gb)
     if not args.only_augmentation:

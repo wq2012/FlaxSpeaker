@@ -463,9 +463,11 @@ def load_cnceleb_eval_trials(
                 if len(toks) < 2:
                     continue
                 e_id = toks[0]
-                paths = [
-                    r for r in (_resolve_rel(rel) for rel in toks[1:]) if r is not None
-                ]
+                paths: list[str] = []
+                for rel in toks[1:]:
+                    resolved_rel = _resolve_rel(rel)
+                    if resolved_rel is not None:
+                        paths.append(resolved_rel)
                 if paths:
                     multi_enroll_map[e_id] = paths
 

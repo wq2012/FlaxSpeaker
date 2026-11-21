@@ -107,7 +107,7 @@ def _init_worker(
         except OSError:
             pass
     try:
-        import av  # noqa: F401
+        import av  # noqa: F401  # pytype: disable=import-error
 
         _HAS_PYAV = True
     except ImportError:
@@ -139,7 +139,7 @@ def _init_worker(
 def _decode_m4a_bytes_16k(raw_bytes: bytes) -> np.ndarray:
     """Decodes AAC/M4A bytes to 16 kHz mono float32 waveform in memory."""
     if _HAS_PYAV:
-        import av
+        import av  # pytype: disable=import-error
 
         with av.open(io.BytesIO(raw_bytes)) as container:
             resampler = av.AudioResampler(format="fltp", layout="mono", rate=16000)

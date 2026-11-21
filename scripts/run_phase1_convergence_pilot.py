@@ -40,7 +40,6 @@ from flaxspeaker import dataset  # noqa: E402
 from flaxspeaker import evaluation  # noqa: E402
 from flaxspeaker import feature_extraction  # noqa: E402
 from flaxspeaker import neural_net  # noqa: E402
-from scripts import eval_vox1_o_subset as vox1_o_mod  # noqa: E402
 from scripts import run_research_benchmarks as rrb  # noqa: E402
 
 
@@ -405,13 +404,13 @@ def load_all_datasets_and_caches(
         vox_official_trials = dataset.load_trials_file(vox_official_path)
     else:
         vox_root = os.path.join(data_dir, "voxceleb1")
-        veri_path = vox1_o_mod.ensure_veri_test_file(vox_root)
-        eval_utts = {
-            u for u_list in spk_eval_sets["voxceleb1"].values() for u in u_list
-        }
-        rel_map = vox1_o_mod.build_rel_to_abs_map(eval_utts)
-        vox_official_trials, _ = vox1_o_mod.parse_official_vox1_o_subset_trials(
-            veri_path, rel_map
+        veri_path = os.path.join(vox_root, "veri_test2.txt")
+        vox_official_trials = dataset.load_voxceleb_veri_test(
+            veri_path,
+            vox_root,
+            max_trials=2500,
+            seed=42,
+            allowed_speakers=set(spk_eval_sets["voxceleb1"].keys()),
         )
 
     return (
@@ -1578,7 +1577,7 @@ def run_parallel_orchestrator(
         fast_slots["0-7"] = None
         fast_slots["8-15"] = None
 
-    def _fill_fast_slots():
+    def _fill_fast_slots() -> None:
         for cpu_mask, current in list(fast_slots.items()):
             if current is None and fast_specs:
                 nxt = fast_specs.pop(0)
@@ -1627,6 +1626,7 @@ def run_parallel_orchestrator(
         for cpu_mask, item in list(fast_slots.items()):
             if item is None:
                 continue
+            assert isinstance(item, tuple)
             s_spec, s_proc = item
             ret = s_proc.poll()
             if ret is None:
