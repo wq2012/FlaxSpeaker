@@ -894,6 +894,11 @@ def _train_arcface_plus_lmft_flagship(
         cfg.model.pooling.pooling_type = configs.PoolingType.ASP.value
         cfg.model.pooling.use_nonlinear_bottleneck = False
         cfg.model.pooling.use_bn_neck = True
+    elif backbone == "eres2conformer":
+        cfg.model.pooling.pooling_type = configs.PoolingType.CATP.value
+        cfg.model.pooling.num_heads = 4
+        cfg.model.pooling.use_nonlinear_bottleneck = False
+        cfg.model.pooling.use_bn_neck = True
     else:
         cfg.model.conformer.dim = 384
         cfg.model.conformer.num_layers = 6
@@ -1754,6 +1759,7 @@ def _compute_heterogeneous_fusion(
 
     weights_2way = [best_w, round(1.0 - best_w, 3)]
     has_resnet = "univ_full_resnet34_arcface" in score_banks
+    has_eres = "univ_full_eres2conformer_large" in score_banks
     has_4way = (
         "univ_full_conformer_large_pfas" in score_banks
         and "univ_full_conformer_large_dr_vectors" in score_banks
@@ -1780,7 +1786,90 @@ def _compute_heterogeneous_fusion(
                     best_3bb = [round(w1, 3), round(w2, 3), round(w3, 3)]
         weights_3way_bb = best_3bb
 
-    if has_resnet and has_4way:
+    weights_4way_bb: Optional[list[float]] = None
+    best_4bb_val_eer = 1.0
+    if has_resnet and has_eres:
+        sb_res = score_banks["univ_full_resnet34_arcface"]
+        sb_eres = score_banks["univ_full_eres2conformer_large"]
+        best_4bb = [0.05, 0.05, 0.15, 0.75]
+        for w1 in (0.02, 0.05, 0.10, 0.15):
+            for w2 in (0.02, 0.05, 0.10, 0.15):
+                for w3 in (0.05, 0.10, 0.15, 0.20, 0.25):
+                    w4 = round(1.0 - w1 - w2 - w3, 3)
+                    if w4 < 0.30 or w4 > 0.91:
+                        continue
+                    f_v4bb = scoring.fuse_scores(
+                        [
+                            sb_conf["val_1utt"],
+                            sb_ecapa["val_1utt"],
+                            sb_res["val_1utt"],
+                            sb_eres["val_1utt"],
+                        ],
+                        weights=[w1, w2, w3, w4],
+                        z_normalize=True,
+                    )
+                    eer_4bb = _val_domain_macro_eer(eval_ctx.val_trials_1, f_v4bb)
+                    if eer_4bb < best_4bb_val_eer:
+                        best_4bb_val_eer = eer_4bb
+                        best_4bb = [
+                            round(w1, 3),
+                            round(w2, 3),
+                            round(w3, 3),
+                            round(w4, 3),
+                        ]
+        weights_4way_bb = best_4bb
+
+    if has_resnet and has_eres and has_4way:
+        sb_res = score_banks["univ_full_resnet34_arcface"]
+        sb_eres = score_banks["univ_full_eres2conformer_large"]
+        sb_pfas = score_banks["univ_full_conformer_large_pfas"]
+        sb_dr = score_banks["univ_full_conformer_large_dr_vectors"]
+        best_6w = [0.04, 0.04, 0.14, 0.70, 0.04, 0.04]
+        best_6_val_eer = 1.0
+        for w1 in (0.02, 0.05, 0.10):
+            for w2 in (0.02, 0.05, 0.10):
+                for w3 in (0.05, 0.10, 0.15, 0.20, 0.25):
+                    for w4 in (0.40, 0.50, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85):
+                        for w5 in (0.02, 0.05, 0.08):
+                            w6 = round(1.0 - w1 - w2 - w3 - w4 - w5, 3)
+                            if w6 < 0.02 or w6 > 0.12:
+                                continue
+                            f_val6 = scoring.fuse_scores(
+                                [
+                                    sb_conf["val_1utt"],
+                                    sb_ecapa["val_1utt"],
+                                    sb_res["val_1utt"],
+                                    sb_eres["val_1utt"],
+                                    sb_pfas["val_1utt"],
+                                    sb_dr["val_1utt"],
+                                ],
+                                weights=[w1, w2, w3, w4, w5, w6],
+                                z_normalize=True,
+                            )
+                            eer_v6 = _val_domain_macro_eer(
+                                eval_ctx.val_trials_1, f_val6
+                            )
+                            if eer_v6 < best_6_val_eer:
+                                best_6_val_eer = eer_v6
+                                best_6w = [
+                                    round(w1, 3),
+                                    round(w2, 3),
+                                    round(w3, 3),
+                                    round(w4, 3),
+                                    round(w5, 3),
+                                    round(w6, 3),
+                                ]
+        active_models = [
+            "univ_full_conformer_large_arcface",
+            "univ_full_ecapa_c1024_arcface",
+            "univ_full_resnet34_arcface",
+            "univ_full_eres2conformer_large",
+            "univ_full_conformer_large_pfas",
+            "univ_full_conformer_large_dr_vectors",
+        ]
+        active_weights = best_6w
+        active_val_eer = best_6_val_eer
+    elif has_resnet and has_4way:
         sb_res = score_banks["univ_full_resnet34_arcface"]
         sb_pfas = score_banks["univ_full_conformer_large_pfas"]
         sb_dr = score_banks["univ_full_conformer_large_dr_vectors"]
@@ -1888,6 +1977,9 @@ def _compute_heterogeneous_fusion(
     if weights_3way_bb is not None:
         out_fusion["three_way_backbone_weights_selected_on_val"] = weights_3way_bb
         out_fusion["three_way_backbone_official_benchmarks"] = {}
+    if weights_4way_bb is not None:
+        out_fusion["four_way_backbone_weights_selected_on_val"] = weights_4way_bb
+        out_fusion["four_way_backbone_official_benchmarks"] = {}
 
     for b_key, trials, with_ci in (
         ("voxceleb1_o", eval_ctx.vox1_o_trials, True),
@@ -1936,6 +2028,34 @@ def _compute_heterogeneous_fusion(
             m3bb_asn["num_trials"] = len(trials)
             m3bb_asn["qmf"] = m3bb_qmf
             out_fusion["three_way_backbone_official_benchmarks"][b_key] = m3bb_asn
+
+        if weights_4way_bb is not None:
+            sb_res = score_banks["univ_full_resnet34_arcface"]
+            sb_eres = score_banks["univ_full_eres2conformer_large"]
+            fused_4bb_asn = scoring.fuse_scores(
+                [sb_conf[b_key], sb_ecapa[b_key], sb_res[b_key], sb_eres[b_key]],
+                weights=weights_4way_bb,
+                z_normalize=True,
+            )
+            fused_4bb_qmf = scoring.fuse_scores(
+                [
+                    sb_conf[f"{b_key}_qmf"],
+                    sb_ecapa[f"{b_key}_qmf"],
+                    sb_res[f"{b_key}_qmf"],
+                    sb_eres[f"{b_key}_qmf"],
+                ],
+                weights=weights_4way_bb,
+                z_normalize=True,
+            )
+            m4bb_asn = evaluation._compute_metrics_dict(
+                labels, fused_4bb_asn, compute_ci=with_ci
+            )
+            m4bb_qmf = evaluation._compute_metrics_dict(
+                labels, fused_4bb_qmf, compute_ci=with_ci
+            )
+            m4bb_asn["num_trials"] = len(trials)
+            m4bb_asn["qmf"] = m4bb_qmf
+            out_fusion["four_way_backbone_official_benchmarks"][b_key] = m4bb_asn
 
         if len(active_models) > 2:
             fused_asn = scoring.fuse_scores(
@@ -1994,7 +2114,52 @@ def _compute_heterogeneous_fusion(
             "univ_full_ecapa_c1024_arcface",
             "univ_full_conformer_large_pfas",
         ]
-        if has_resnet and has_dr_3:
+        if has_resnet and has_eres and has_dr_3:
+            sb_res = score_banks["univ_full_resnet34_arcface"]
+            sb_eres = score_banks["univ_full_eres2conformer_large"]
+            sb_dr = score_banks["univ_full_conformer_large_dr_vectors"]
+            for w1 in (0.02, 0.05, 0.10):
+                for w2 in (0.02, 0.05, 0.10):
+                    for w3 in (0.05, 0.10, 0.15, 0.20):
+                        for w4 in (0.45, 0.55, 0.65, 0.70, 0.75, 0.80, 0.85):
+                            for w5 in (0.02, 0.05, 0.10):
+                                w6 = round(1.0 - w1 - w2 - w3 - w4 - w5, 3)
+                                if w6 < 0.02 or w6 > 0.12:
+                                    continue
+                                f_v6 = scoring.fuse_scores(
+                                    [
+                                        sb_conf["val_3utt"],
+                                        sb_ecapa["val_3utt"],
+                                        sb_res["val_3utt"],
+                                        sb_eres["val_3utt"],
+                                        sb_pfas["val_3utt"],
+                                        sb_dr["val_3utt"],
+                                    ],
+                                    weights=[w1, w2, w3, w4, w5, w6],
+                                    z_normalize=True,
+                                )
+                                eer_6, _ = evaluation.compute_eer_exact(
+                                    val_3_labels, f_v6
+                                )
+                                if eer_6 < best_3_eer:
+                                    best_3_eer = eer_6
+                                    best_3w = [
+                                        round(w1, 3),
+                                        round(w2, 3),
+                                        round(w3, 3),
+                                        round(w4, 3),
+                                        round(w5, 3),
+                                        round(w6, 3),
+                                    ]
+                                    me_models = [
+                                        "univ_full_conformer_large_arcface",
+                                        "univ_full_ecapa_c1024_arcface",
+                                        "univ_full_resnet34_arcface",
+                                        "univ_full_eres2conformer_large",
+                                        "univ_full_conformer_large_pfas",
+                                        "univ_full_conformer_large_dr_vectors",
+                                    ]
+        elif has_resnet and has_dr_3:
             sb_res = score_banks["univ_full_resnet34_arcface"]
             sb_dr = score_banks["univ_full_conformer_large_dr_vectors"]
             for w1 in (0.20, 0.25, 0.30):
@@ -2116,6 +2281,7 @@ def main() -> None:
     parser.add_argument("--conformer_steps", type=int, default=600)
     parser.add_argument("--ecapa_steps", type=int, default=600)
     parser.add_argument("--resnet_steps", type=int, default=600)
+    parser.add_argument("--eres_steps", type=int, default=600)
     parser.add_argument("--stage1b_steps", type=int, default=3600)
     parser.add_argument("--lmft_steps", type=int, default=300)
     parser.add_argument("--pfas_warmup_steps", type=int, default=600)
@@ -2142,7 +2308,7 @@ def main() -> None:
     )
     summary: dict[str, Any] = {
         "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "flaxspeaker_version": "0.5.0",
+        "flaxspeaker_version": "0.6.0",
         "shard_metadata": {
             k: shard_meta[k]
             for k in (
@@ -2344,6 +2510,67 @@ def main() -> None:
                     "lmft_seq_len": 360,
                     "lmft_margin": 0.25,
                     "step0_phase_overrides": s0_ov2r,
+                },
+                eval_ctx=eval_ctx,
+                export_tflite=True,
+            )
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+
+    # 2d. Flagship #2d: univ_full_eres2conformer_large (SimAM-ERes2Conformer + CATP)
+    m2e_id = "univ_full_eres2conformer_large"
+    m2e_dir = os.path.join(REPO_ROOT, "pretrained_models", m2e_id)
+    if m2e_id in target_ids:
+        if (
+            not args.force_retrain
+            and os.path.isfile(os.path.join(m2e_dir, "model.safetensors"))
+            and os.path.isfile(os.path.join(m2e_dir, "eval_results.json"))
+        ):
+            _log(f"[{m2e_id}] Loading completed checkpoint for fusion/summary...")
+            loaded_m2e = hf_compat.FlaxSpeakerModel.from_pretrained(m2e_dir)
+            ev2e, sb2e = evaluate_flagship_comprehensive(
+                m2e_id,
+                loaded_m2e.state,
+                loaded_m2e.exp_config,
+                eval_ctx,
+                store_base,
+                args.shard_dir,
+            )
+            score_banks[m2e_id] = sb2e
+            with open(os.path.join(m2e_dir, "eval_results.json"), "r", encoding="utf-8") as f:
+                summary["models"][m2e_id] = json.load(f)
+        else:
+            st2e, cfg2e, lc2e, vh2e, dt2e, s0_ov2e = _train_arcface_plus_lmft_flagship(
+                model_id=m2e_id,
+                backbone="eres2conformer",
+                shard_dir=args.shard_dir,
+                store_base=store_base,
+                eval_ctx=eval_ctx,
+                stage1a_steps=args.eres_steps,
+                stage1b_steps=args.stage1b_steps,
+                lmft_steps=args.lmft_steps,
+                resume=True,
+            )
+            ev2e, sb2e = evaluate_flagship_comprehensive(
+                m2e_id, st2e, cfg2e, eval_ctx, store_base, args.shard_dir
+            )
+            score_banks[m2e_id] = sb2e
+            summary["models"][m2e_id] = _save_flagship_artifacts(
+                m2e_id,
+                st2e,
+                cfg2e,
+                shard_meta,
+                lc2e,
+                vh2e,
+                dt2e,
+                ev2e,
+                extra_fields={
+                    "stage1a_steps": args.eres_steps,
+                    "stage1b_steps": args.stage1b_steps,
+                    "lmft_steps": args.lmft_steps,
+                    "lmft_seq_len": 360,
+                    "lmft_margin": 0.25,
+                    "step0_phase_overrides": s0_ov2e,
                 },
                 eval_ctx=eval_ctx,
                 export_tflite=True,

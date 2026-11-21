@@ -213,6 +213,98 @@ class AttentiveTemporalPooling(nn.Module):
         return jnp.concatenate([mean_flat, std_flat], axis=-1)
 
 
+class ContextAttentiveTemporalPooling(nn.Module):
+    """Context-Gated Multi-Head Attentive Temporal Pooling (`catp`).
+
+    Unifies ECAPA-TDNN's global utterance context (`[mean, std]`, Desplanques et al.,
+    Interspeech 2020) with Attentive Temporal Pooling's noise-robust multi-head
+    sigmoid frame gating (`w_{t,h} = m_t * (sigmoid(logits_{t,h}) + eps)`, Wang et al.,
+    Odyssey 2022). Uses an algebraically factored projection
+    `Dense(attention_dim)(x_t) + Dense(attention_dim, use_bias=False)([mu_g, std_g])`
+    to avoid allocating a `(B, T, 3*D)` intermediate tensor over wide multi-stage
+    feature maps, and initializes the sigmoid gate bias to `+2.0` (`sigmoid(2) ~ 0.88`)
+    for smooth optimization under both Nesterov SGD and AdamW.
+    """
+
+    num_heads: int = 16
+    attention_dim: int = 128
+    pooling_stats: str = "mean_std"
+    subspace_heads: bool = True
+    use_global_context: bool = True
+    eps: float = 1e-4
+
+    @nn.compact
+    def __call__(self, x: jax.Array, mask: Optional[jax.Array] = None) -> jax.Array:
+        bsz, seq_len, feat_dim = x.shape
+        n_heads = max(1, int(self.num_heads))
+        att_dim = max(16, int(self.attention_dim))
+
+        h_frame = nn.Dense(att_dim, name="catp_frame")(x)
+        if self.use_global_context:
+            if mask is not None:
+                mask_f = (mask > 0).astype(x.dtype)[..., None]
+                denom = jnp.maximum(jnp.sum(mask_f, axis=1), 1.0)
+                mu_g = jnp.sum(x * mask_f, axis=1) / denom
+                var_g = (
+                    jnp.sum(jnp.square(x - mu_g[:, None, :]) * mask_f, axis=1)
+                    / denom
+                )
+            else:
+                mu_g = jnp.mean(x, axis=1)
+                var_g = jnp.var(x, axis=1)
+            std_g = jnp.sqrt(jnp.maximum(var_g, self.eps))
+            ctx_vec = jnp.concatenate([mu_g, std_g], axis=-1)
+            h_ctx = nn.Dense(att_dim, use_bias=False, name="catp_ctx")(ctx_vec)
+            h = jnp.tanh(h_frame + h_ctx[:, None, :])
+        else:
+            h = jnp.tanh(h_frame)
+
+        logits = nn.Dense(
+            n_heads,
+            bias_init=nn.initializers.constant(2.0),
+            name="catp_out",
+        )(h)
+        raw_weights = jax.nn.sigmoid(logits)
+        if mask is not None:
+            mask_f = (mask > 0).astype(x.dtype)[..., None]
+            weights = (raw_weights + self.eps) * mask_f
+        else:
+            weights = raw_weights + self.eps
+
+        eta = jnp.maximum(jnp.sum(weights, axis=1, keepdims=True), self.eps)
+        norm_weights = weights / eta
+
+        if self.subspace_heads and n_heads > 1 and (feat_dim % n_heads == 0):
+            head_dim = feat_dim // n_heads
+            x_heads = x.reshape(bsz, seq_len, n_heads, head_dim)
+            w_heads = norm_weights[..., None]
+            mean = jnp.sum(w_heads * x_heads, axis=1)
+            second_moment = jnp.sum(w_heads * jnp.square(x_heads), axis=1)
+            var = jnp.maximum(second_moment - jnp.square(mean), self.eps)
+            std = jnp.sqrt(var)
+            out_dim = feat_dim
+        else:
+            mean = jnp.einsum("bth,btd->bhd", norm_weights, x)
+            second_moment = jnp.einsum("bth,btd->bhd", norm_weights, jnp.square(x))
+            var = jnp.maximum(second_moment - jnp.square(mean), self.eps)
+            std = jnp.sqrt(var)
+            out_dim = n_heads * feat_dim
+
+        mean_flat = mean.reshape(bsz, out_dim)
+        var_flat = var.reshape(bsz, out_dim)
+        std_flat = std.reshape(bsz, out_dim)
+        stype = self.pooling_stats.lower()
+        if stype == "mean":
+            return mean_flat
+        if stype == "std":
+            return std_flat
+        if stype == "var":
+            return var_flat
+        if stype == "mean_var":
+            return jnp.concatenate([mean_flat, var_flat], axis=-1)
+        return jnp.concatenate([mean_flat, std_flat], axis=-1)
+
+
 class CumulativeStatsPooling(nn.Module):
     """Cumulative statistics pooling across time `(B, T, D) -> (B, 2*D)`."""
 

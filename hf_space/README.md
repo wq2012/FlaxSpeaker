@@ -8,10 +8,10 @@ sdk_version: 5.50.0
 app_file: app.py
 pinned: false
 license: apache-2.0
-short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS) — 49 converged v0.5.0 models
+short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS, SimAM-ERes2Conformer) — 50 converged v0.6.0 models
 ---
 
-# FlaxSpeaker (`v0.5.0`) — Interactive Speaker Verification Demo
+# FlaxSpeaker (`v0.6.0`) — Interactive Speaker Verification Demo
 
 ## Disclaimer & Reproduction Notice
 
@@ -23,12 +23,12 @@ short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS
 > - **ATP** (pooling head repurposed from a *language identification* paper): *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
 > - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642](https://arxiv.org/abs/2203.05642))
 >
-> The original papers were evaluated on Google-internal infrastructure and data, not with this library.
+> together with `SimAM-ERes2Conformer` + `Context-ATP` (`catp`), `Sub-Center ArcFace` (`K = 3`), `SE-ResNet-34`, `ECAPA-TDNN`, `Conformer`, and `Mamba` encoders. The original papers were evaluated on Google-internal infrastructure and data, not with this library.
 
-## Two-Tier `v0.5.0` Model Zoo (read first)
+## Two-Tier `v0.6.0` Model Zoo (read first)
 
-All **49 selectable checkpoints** (`v0.5.0`) are organized into two tiers:
-1. **Tier-2 Full-Data Universal Flagships (`5` `univ_full_*` models, `14.86M–24.55M` parameters):** Trained across **12,193 speakers** (`36,579` speed-perturbed classes, `464,557` clean utterances / `1,857,149` MUSAN + RIR + speed-augmented items across `VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech-960h`) with zero speaker overlap against any evaluation split (`VoxCeleb1-O`, `CN-Celeb-E`, `LibriSpeech test-clean`, and the 80-speaker controlled suite). Covers three complementary encoder backbones (`Conformer-Large`, `ECAPA-TDNN c=1024`, `SE-ResNet-34`) plus warm-started `PFAS-SN` and `Dr-Vectors` scoring heads.
+All **50 selectable checkpoints** (`v0.6.0`) are organized into two tiers:
+1. **Tier-2 Full-Data Universal Flagships (`6` `univ_full_*` models, `14.86M–31.83M` parameters):** Trained across **12,193 base speakers** (`36,579` speed-perturbed classes across `VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech-960h`, up to `972,254` clean utterances / `2,872,190` MUSAN + RIR + speed-augmented items) with zero speaker overlap against any evaluation split (`VoxCeleb1-O`, `CN-Celeb-E`, `LibriSpeech test-clean`, and the 80-speaker controlled suite). Covers four complementary from-scratch encoder backbones (`SimAM-ERes2Conformer-Large`, `SE-ResNet-34`, `Conformer-Large`, `ECAPA-TDNN c=1024`) plus warm-started `PFAS-SN` and `Dr-Vectors` scoring heads.
 2. **Tier-1 Controlled Benchmark Zoo (`44` `univ_*`, `ls_*`, `cn_*`, `vox_*` models, `0.63M–4.55M` parameters):** Trained to calibrated `S_safe = X + 2` epoch step budgets (`4,600` steps / `15.58` epochs on Universal `381` spk / `9,447` utts; `2,400–2,600` steps on LibriSpeech; `1,600–1,800` steps on CN-Celeb2; `1,000` steps on VoxCeleb1) with uniform variable-length masked crops `T ~ U(90, 180)` frames for controlled architectural, pooling, objective, and scorer comparisons.
 
 ## What the demo does
@@ -41,13 +41,13 @@ All **49 selectable checkpoints** (`v0.5.0`) are organized into two tiers:
 
 ## Links & Pretrained Models
 
-- **Hugging Face Collection (49 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)
+- **Hugging Face Collection (50 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)
 - **GitHub Repository**: [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker)
 - **PyPI Package**: [`flaxspeaker`](https://pypi.org/project/flaxspeaker/)
 
 ### Model selection
 
-The dropdown lists all **49 checkpoints**: **5 full-data universal flagships** (`univ_full_conformer_large_arcface`, `univ_full_ecapa_c1024_arcface`, `univ_full_resnet34_arcface`, `univ_full_conformer_large_pfas`, `univ_full_conformer_large_dr_vectors`), **19 controlled universal multi-domain models** (`univ_*`), and **25 controlled single-domain specialists** (`ls_*`, `cn_*`, `vox_*`). Per-model metrics, 95% bootstrap confidence intervals, and paper-deviation notes are included in each model card.
+The dropdown lists all **50 checkpoints**: **6 full-data universal flagships** (`univ_full_eres2conformer_large`, `univ_full_resnet34_arcface`, `univ_full_conformer_large_arcface`, `univ_full_ecapa_c1024_arcface`, `univ_full_conformer_large_pfas`, `univ_full_conformer_large_dr_vectors`), **19 controlled universal multi-domain models** (`univ_*`), and **25 controlled single-domain specialists** (`ls_*`, `cn_*`, `vox_*`). Per-model metrics, 95% bootstrap confidence intervals, and paper-deviation notes are included in each model card.
 
 ## Hosting status
 
@@ -56,7 +56,7 @@ This folder is a complete Gradio Space; `scripts/deploy_hf_space.py` deploys it 
 ## Running locally
 
 ```bash
-pip install -r requirements.txt   # installs flaxspeaker>=0.5.0 + gradio
+pip install -r requirements.txt   # installs flaxspeaker>=0.6.0 + gradio
 python app.py
 ```
 

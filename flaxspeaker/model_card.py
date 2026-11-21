@@ -148,6 +148,12 @@ def _provenance_paragraph(save_directory: str, exp_cfg: configs.ExperimentConfig
             "of exact (the PFAS scorer gained numerical changes after this checkpoint was trained); "
             "the variable-length arm is an order of magnitude farther away."
         )
+    elif match == "variable_approx" and rel is not None and hv_ is not None:
+        fp_sentence += (
+            f" The variable-crop CPU `float32` probe is within `{abs(float(hv_) - float(rel)):.4f}` "
+            "of the archived TPU `bfloat16` step-0 loss, whereas the fixed-crop arm is more than "
+            "5x farther away."
+        )
     elif match == "both" and not prov.get("fingerprint_note"):
         fp_sentence += (
             " Both crop regimes reproduce the archived step-0 loss to 4 decimal places."
@@ -252,6 +258,7 @@ def deviations_from_papers(
     train_ds: str = "universal",
     train_spks_override: Optional[int] = None,
     train_utts_override: Optional[int] = None,
+    train_epochs_override: Optional[float] = None,
 ) -> list[str]:
     """Checkpoint-specific list of known deviations from the cited source papers."""
     out: list[str] = []
@@ -272,7 +279,11 @@ def deviations_from_papers(
         if train_spks_override is not None
         else int(ds_info["spks"])
     )
-    epochs = (num_steps * batch_size) / max(train_utts, 1)
+    epochs = (
+        float(train_epochs_override)
+        if train_epochs_override is not None
+        else (num_steps * batch_size) / max(train_utts, 1)
+    )
     if str(train_ds) == "universal_full":
         out.append(
             f"**Training regime**: {num_steps:,} gradient steps x {batch_size} utterances "
@@ -371,6 +382,16 @@ def deviations_from_papers(
             f"`num_blocks={tuple(rn.num_blocks)}`, `temporal_stride={rn.temporal_stride}`, "
             f"`out_dim={rn.out_dim}`, mask-aware `BatchNorm2D`)."
         )
+    if bb == "eres2conformer":
+        erc = exp_cfg.model.eres2conformer
+        out.append(
+            f"**SimAM-ERes2Conformer**: unified 2D multi-scale `SimAM-SERes2Net` "
+            f"(`base_channels={erc.base_channels}`, `num_blocks={tuple(erc.num_blocks)}`, "
+            f"`scale={erc.scale}`, `width_mult={erc.width_mult:g}`, `SimAM+SE+AFF`, "
+            f"`temporal_strides={tuple(erc.temporal_strides)}`) + Stage-3/4 `MFA` + "
+            f"{erc.num_conformer_layers}x `{erc.conformer_dim}`-D `RoPE+QK-Norm+BatchNorm` "
+            "Conformer blocks + `Context-ATP` (`catp`) + `BN-Neck`."
+        )
     max_eval_cap = (
         int(exp_cfg.model.max_eval_seq_len)
         if int(exp_cfg.model.max_eval_seq_len) > 0
@@ -425,7 +446,16 @@ def build_model_card(
         else int(ds_info["spks"])
     )
     corpus_label = str(ds_info["label"])
-    epochs = (num_steps * batch_size) / max(train_utts, 1)
+    train_epochs_override = (
+        float(metrics["train_epochs"])
+        if isinstance(metrics, dict) and "train_epochs" in metrics
+        else None
+    )
+    epochs = (
+        train_epochs_override
+        if train_epochs_override is not None
+        else (num_steps * batch_size) / max(train_utts, 1)
+    )
     margin_warmup_steps = int(getattr(exp_cfg.train.loss, "margin_warmup_steps", 0))
     has_tflite = os.path.exists(
         os.path.join(save_directory, "model_fp32.tflite")
@@ -702,7 +732,7 @@ def build_model_card(
         "",
         "### Python API (from Hugging Face Hub or Local Directory)",
         "",
-        "Requires `flaxspeaker >= 0.5.0` (`pip install -U flaxspeaker`).",
+        "Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).",
         "",
         "```python",
         "from flaxspeaker import load_pretrained",
@@ -907,6 +937,7 @@ def build_model_card(
             train_ds=str(train_ds),
             train_spks_override=train_spks,
             train_utts_override=train_utts,
+            train_epochs_override=train_epochs_override,
         )
     ]
     lines += [

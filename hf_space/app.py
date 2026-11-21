@@ -44,8 +44,8 @@ PRETRAINED_ROOT = os.environ.get(
     os.path.join(REPO_ROOT, "pretrained_models"),
 )
 EXAMPLES_DIR = os.path.join(THIS_DIR, "examples")
-DEFAULT_MODEL = "univ_full_conformer_large_arcface"
-FALLBACK_MODEL = "univ_conformer_small_arcface"
+DEFAULT_MODEL = "univ_full_eres2conformer_large"
+FALLBACK_MODEL = "univ_full_resnet34_arcface"
 _MODEL_CACHE: dict[str, hf_compat.FlaxSpeakerModel] = {}
 _THRESHOLD_CACHE: dict[str, dict[str, float]] = {}
 _EVAL_SUMMARY_CACHE: dict[str, dict[str, float]] = {}
@@ -482,7 +482,7 @@ def build_demo() -> Any:
 
     with gr.Blocks(title="FlaxSpeaker — Universal Speaker Recognition") as demo:
         gr.Markdown(
-            "# FlaxSpeaker (`v0.5.0`) — Universal Multi-Domain Speaker Verification\n"
+            "# FlaxSpeaker (`v0.6.0`) — Universal Multi-Domain Speaker Verification\n"
             "> **Disclaimer**: **This is not an officially supported Google product.** "
             "FlaxSpeaker is a from-scratch JAX/Flax re-implementation (using only the published "
             "papers, no proprietary code) of "
@@ -490,15 +490,18 @@ def build_demo() -> Any:
             "[Dr-Vectors (`arXiv:2104.01989`)](https://arxiv.org/abs/2104.01989), "
             "[ATP pooling (`arXiv:2202.12163`)](https://arxiv.org/abs/2202.12163), and "
             "[PFAS (`arXiv:2203.05642`)](https://arxiv.org/abs/2203.05642), together with "
-            "Sub-Center ArcFace (`K=3`), SE-ResNet-34, ECAPA-TDNN, Conformer, and Mamba encoders.\n\n"
-            "> **Two-Tier Model Zoo (`49` Pretrained Models)**:\n"
-            "> 1. **Tier 2 — Full-Data Universal Flagships (`univ_full_*`, 5 models)**: "
-            "`SE-ResNet-34` (`24.55M`), `Conformer-Large` (`22.01M`), and `ECAPA-TDNN-c1024` (`14.86M`) "
+            "`SimAM-ERes2Conformer` + `Context-ATP` (`catp`), Sub-Center ArcFace (`K=3`), "
+            "SE-ResNet-34, ECAPA-TDNN, Conformer, and Mamba encoders.\n\n"
+            "> **Two-Tier Model Zoo (`50` Pretrained Models)**:\n"
+            "> 1. **Tier 2 — Full-Data Universal Flagships (`univ_full_*`, 6 models)**: "
+            "`SimAM-ERes2Conformer-Large` (`31.83M`), `SE-ResNet-34` (`24.55M`), "
+            "`Conformer-Large` (`22.01M`), and `ECAPA-TDNN-c1024` (`14.86M`) "
             "trained from scratch on the full speaker-disjoint multi-corpus mixture "
-            "(`VoxCeleb1/2-dev` + `CN-Celeb 1/2` + `LibriSpeech 960h`: `12,193` base speakers, "
-            "`464,557` clean utterances / `1,857,149` augmented items with `MUSAN` + `RIRS_NOISES` + "
-            "`3x` speed perturbation and `5.0s` Large-Margin Fine-Tuning), plus warm-started "
-            "`PFAS-SN` (`22.58M`) and `Dr-Vectors` (`22.17M`) heads.\n"
+            "(`VoxCeleb1/2-dev` + `CN-Celeb 1/2` + `LibriSpeech 960h`: `12,193` base speakers / "
+            "`36,579` speed-perturbed classes across up to `972,254` clean utterances / "
+            "`2,872,190` augmented items with `MUSAN` + `RIRS_NOISES` + `3x` speed perturbation "
+            "and Large-Margin Fine-Tuning), plus warm-started `PFAS-SN` (`22.58M`) and "
+            "`Dr-Vectors` (`22.17M`) heads.\n"
             "> 2. **Tier 1 — Controlled Multi-Domain Benchmark (`univ_*`, `ls_*`, `cn_*`, `vox_*`, "
             "44 models)**: trained on fixed bounded subsets (`<= 381` speakers, `<= 9,447` clean "
             "utterances) for controlled architectural, pooling, and loss ablations.\n\n"
@@ -507,7 +510,7 @@ def build_demo() -> Any:
             "`eval_results.json` operating point (`1-utt` for single enrollment, `3-utt` for "
             "multi-utterance enrollment).\n\n"
             "**Links**: "
-            "[Hugging Face Collection (49 Pretrained Models)]"
+            "[Hugging Face Collection (50 Pretrained Models)]"
             "(https://huggingface.co/collections/wq2012/flaxspeaker) | "
             "[GitHub Repository (`wq2012/FlaxSpeaker`)](https://github.com/wq2012/FlaxSpeaker) | "
             "[PyPI (`flaxspeaker`)](https://pypi.org/project/flaxspeaker/)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate and (optionally) push model cards, metadata, and weights for all 49 HF repos.
+"""Regenerate and (optionally) push model cards, metadata, and weights for all 50 HF repos.
 
 For every `pretrained_models/<model_id>/`:
   1. regenerates `README.md` from `config.json` + `eval_results.json` via
@@ -71,8 +71,8 @@ def main() -> None:
     parser.add_argument(
         "--commit_message",
         default=(
-            "v0.5.0: SOTA upgrade, MUSAN+RIR+speed shards, BatchNorm ECAPA, "
-            "AS-Norm, TFLite exports, and full-data flagships"
+            "v0.6.0: SimAM-ERes2Conformer + Context-ATP flagship, "
+            "50-model zoo, TFLite exports, and updated model cards"
         ),
     )
     args = parser.parse_args()

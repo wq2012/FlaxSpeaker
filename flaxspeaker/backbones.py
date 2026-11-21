@@ -11,6 +11,7 @@ Supported backbones:
 """
 
 import contextlib
+import math
 from typing import Any, Iterator, Optional, Sequence
 from flax import linen as nn
 import jax
@@ -1341,6 +1342,566 @@ class ResNetBackbone(nn.Module):
         return h
 
 
+def _apply_simam_2d(
+    h: jax.Array,
+    mask_f: Optional[jax.Array] = None,
+    eps: float = 1e-4,
+) -> jax.Array:
+    """Parameter-free 3D neuron energy attention (SimAM, Yang et al. ICML 2021; Qin et al. 2022)."""
+    if mask_f is not None:
+        denom = jnp.maximum(
+            jnp.sum(mask_f, axis=(1, 2), keepdims=True) * float(h.shape[2]),
+            1.0,
+        )
+        mu = jnp.sum(h * mask_f, axis=(1, 2), keepdims=True) / denom
+        diff_sq = jnp.square(h - mu) * mask_f
+        var = jnp.sum(diff_sq, axis=(1, 2), keepdims=True) / denom
+    else:
+        mu = jnp.mean(h, axis=(1, 2), keepdims=True)
+        diff_sq = jnp.square(h - mu)
+        var = jnp.mean(diff_sq, axis=(1, 2), keepdims=True)
+    energy_inv = diff_sq / (4.0 * (var + eps)) + 0.5
+    out = h * jax.nn.sigmoid(energy_inv)
+    if mask_f is not None:
+        out = out * mask_f
+    return out
+
+
+class SimAMSERes2Block2D(nn.Module):
+    """Multi-scale 2D ERes2Net bottleneck block with SimAM, SE, and Attentional Feature Fusion."""
+
+    channels: int
+    stride: tuple[int, int] = (1, 1)
+    scale: int = 4
+    width_mult: float = 2.0
+    use_simam: bool = True
+    use_se: bool = True
+    use_aff: bool = True
+    use_batch_norm: bool = True
+
+    def _norm(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
+        if self.use_batch_norm:
+            return MaskedBatchNorm2D(name=name)(
+                h, use_running_average=use_running_average, mask=mask
+            )
+        return nn.LayerNorm(reduction_axes=(-2, -1), name=name)(h)
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        use_running_average: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        in_mask_f = (
+            (mask > 0).astype(x.dtype)[:, :, None, None]
+            if mask is not None
+            else None
+        )
+        if in_mask_f is not None:
+            x = x * in_mask_f
+        out_mask = (
+            subsample_mask(mask, self.stride[0])
+            if (mask is not None and self.stride[0] > 1)
+            else mask
+        )
+        mask_f = (
+            (out_mask > 0).astype(x.dtype)[:, :, None, None]
+            if out_mask is not None
+            else None
+        )
+        is_strided = self.stride[0] > 1 or self.stride[1] > 1
+        conv3_pad: Any = ((1, 1), (1, 1)) if is_strided else "SAME"
+        conv1_pad: Any = ((0, 0), (0, 0)) if is_strided else "SAME"
+        norm_tag = "bn" if self.use_batch_norm else "ln"
+
+        s_cnt = max(2, int(self.scale))
+        grp_w = max(8, int(round(self.channels * float(self.width_mult) / s_cnt)))
+        inner_ch = s_cnt * grp_w
+        residual = x
+
+        h = nn.Conv(
+            features=inner_ch,
+            kernel_size=(1, 1),
+            strides=(1, 1),
+            padding="SAME",
+            use_bias=False,
+            name="pw1",
+        )(x)
+        h = nn.relu(self._norm(h, f"pw1_{norm_tag}", use_running_average, mask))
+        if in_mask_f is not None:
+            h = h * in_mask_f
+
+        splits = jnp.split(h, s_cnt, axis=-1)
+        outs = []
+        if is_strided:
+            for s_idx in range(s_cnt):
+                yk = nn.Conv(
+                    features=grp_w,
+                    kernel_size=(3, 3),
+                    strides=self.stride,
+                    padding=conv3_pad,
+                    use_bias=False,
+                    name=f"res2_conv_{s_idx}",
+                )(splits[s_idx])
+                yk = nn.relu(
+                    self._norm(
+                        yk,
+                        f"res2_{norm_tag}_{s_idx}",
+                        use_running_average,
+                        out_mask,
+                    )
+                )
+                if mask_f is not None:
+                    yk = yk * mask_f
+                outs.append(yk)
+        else:
+            outs.append(splits[0])
+            prev = splits[0]
+            for s_idx in range(1, s_cnt):
+                cur_in = splits[s_idx]
+                if s_idx == 1:
+                    fused = cur_in
+                elif self.use_aff:
+                    sum_xy = cur_in + prev
+                    if mask_f is not None:
+                        denom = jnp.maximum(
+                            jnp.sum(mask_f, axis=(1, 2)) * float(sum_xy.shape[2]),
+                            1.0,
+                        )
+                        g_ctx = jnp.sum(sum_xy * mask_f, axis=(1, 2)) / denom
+                    else:
+                        g_ctx = jnp.mean(sum_xy, axis=(1, 2))
+                    aff_b = max(8, grp_w // 2)
+                    gate = nn.relu(
+                        nn.Dense(aff_b, name=f"aff1_{s_idx}")(g_ctx)
+                    )
+                    gate = jax.nn.sigmoid(
+                        nn.Dense(grp_w, name=f"aff2_{s_idx}")(gate)
+                    )[:, None, None, :]
+                    fused = gate * cur_in + (1.0 - gate) * prev
+                else:
+                    fused = cur_in + prev
+                yk = nn.Conv(
+                    features=grp_w,
+                    kernel_size=(3, 3),
+                    strides=(1, 1),
+                    padding="SAME",
+                    use_bias=False,
+                    name=f"res2_conv_{s_idx}",
+                )(fused)
+                yk = nn.relu(
+                    self._norm(
+                        yk,
+                        f"res2_{norm_tag}_{s_idx}",
+                        use_running_average,
+                        out_mask,
+                    )
+                )
+                if mask_f is not None:
+                    yk = yk * mask_f
+                outs.append(yk)
+                prev = yk
+
+        h = jnp.concatenate(outs, axis=-1)
+        h = nn.Conv(
+            features=self.channels,
+            kernel_size=(1, 1),
+            strides=(1, 1),
+            padding="SAME",
+            use_bias=False,
+            name="pw2",
+        )(h)
+        h = self._norm(h, f"pw2_{norm_tag}", use_running_average, out_mask)
+        if mask_f is not None:
+            h = h * mask_f
+
+        if self.use_simam:
+            h = _apply_simam_2d(h, mask_f=mask_f)
+        if self.use_se:
+            if mask_f is not None:
+                denom = jnp.maximum(
+                    jnp.sum(mask_f, axis=(1, 2)) * float(h.shape[2]),
+                    1.0,
+                )
+                se = jnp.sum(h * mask_f, axis=(1, 2)) / denom
+            else:
+                se = jnp.mean(h, axis=(1, 2))
+            bottleneck = max(16, self.channels // 4)
+            se = nn.relu(nn.Dense(bottleneck, name="se1")(se))
+            se = jax.nn.sigmoid(nn.Dense(self.channels, name="se2")(se))
+            h = h * se[:, None, None, :]
+
+        if residual.shape != h.shape:
+            residual = nn.Conv(
+                features=self.channels,
+                kernel_size=(1, 1),
+                strides=self.stride,
+                padding=conv1_pad,
+                use_bias=False,
+                name="downsample",
+            )(residual)
+            residual = self._norm(
+                residual, f"downsample_{norm_tag}", use_running_average, out_mask
+            )
+
+        out = nn.relu(residual + h)
+        if mask_f is not None:
+            out = out * mask_f
+        return out
+
+
+def _apply_rope_4d(x: jax.Array) -> jax.Array:
+    """Applies shift-invariant Rotary Positional Embedding (RoPE) to `(B, T, H, D_h)`."""
+    seq_len = x.shape[1]
+    head_dim = x.shape[-1]
+    half = head_dim // 2
+    if half <= 0:
+        return x
+    inv_freq = 1.0 / (
+        10000.0 ** (jnp.arange(0, half, dtype=jnp.float32) / float(half))
+    )
+    pos = jnp.arange(seq_len, dtype=jnp.float32)
+    angles = pos[:, None] * inv_freq[None, :]
+    cos_a = jnp.cos(angles)[None, :, None, :].astype(x.dtype)
+    sin_a = jnp.sin(angles)[None, :, None, :].astype(x.dtype)
+    x1 = x[..., :half]
+    x2 = x[..., half:2 * half]
+    rot = jnp.concatenate(
+        [x1 * cos_a - x2 * sin_a, x1 * sin_a + x2 * cos_a], axis=-1
+    )
+    if 2 * half < head_dim:
+        rot = jnp.concatenate([rot, x[..., 2 * half:]], axis=-1)
+    return rot
+
+
+class RoPEBatchNormConformerBlock(nn.Module):
+    """SGD- & AdamW-stable Conformer block with RoPE, QK-Norm, BatchNorm, and LayerScale."""
+
+    dim: int = 512
+    num_heads: int = 8
+    conv_kernel_size: int = 15
+    layer_scale_init: float = 0.2
+    use_batch_norm: bool = True
+
+    def _norm1d(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
+        if self.use_batch_norm:
+            return MaskedBatchNorm1D(name=name)(
+                h, use_running_average=use_running_average, mask=mask
+            )
+        return nn.LayerNorm(name=name)(h)
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        use_running_average: bool = True,
+        mask: Optional[jax.Array] = None,
+    ) -> jax.Array:
+        bsz, seq_len, _ = x.shape
+        mask_f = (
+            (mask > 0).astype(x.dtype)[..., None] if mask is not None else None
+        )
+        ffn_dim = 2 * self.dim
+        ls_init = nn.initializers.constant(float(self.layer_scale_init))
+
+        # 1. Macaron FFN 1
+        h = self._norm1d(x, "ffn1_norm", use_running_average, mask)
+        h = nn.silu(nn.Dense(ffn_dim, name="ffn1_up")(h))
+        h = nn.Dense(self.dim, name="ffn1_down")(h)
+        ls1 = self.param("ls_ffn1", ls_init, (self.dim,))
+        x = x + (0.5 * ls1[None, None, :]) * h
+        if mask_f is not None:
+            x = x * mask_f
+
+        # 2. Shift-invariant RoPE + QK-Norm Multi-Head Self-Attention
+        n_heads = max(1, int(self.num_heads))
+        head_dim = max(2, self.dim // n_heads)
+        inner_d = n_heads * head_dim
+        h = self._norm1d(x, "mhsa_norm", use_running_average, mask)
+        qkv = nn.Dense(3 * inner_d, use_bias=False, name="qkv_proj")(h)
+        q, k, v = jnp.split(qkv, 3, axis=-1)
+        q = q.reshape(bsz, seq_len, n_heads, head_dim)
+        k = k.reshape(bsz, seq_len, n_heads, head_dim)
+        v = v.reshape(bsz, seq_len, n_heads, head_dim)
+
+        q = q * jax.lax.rsqrt(
+            jnp.mean(jnp.square(q), axis=-1, keepdims=True) + 1e-6
+        )
+        k = k * jax.lax.rsqrt(
+            jnp.mean(jnp.square(k), axis=-1, keepdims=True) + 1e-6
+        )
+        q = _apply_rope_4d(q)
+        k = _apply_rope_4d(k)
+
+        log_temp = self.param(
+            "qk_log_scale",
+            nn.initializers.constant(math.log(float(head_dim) ** 0.5)),
+            (n_heads, 1, 1),
+        )
+        temp = jnp.minimum(jnp.exp(log_temp), 50.0).astype(x.dtype)
+        q_t = jnp.transpose(q, (0, 2, 1, 3))
+        k_t = jnp.transpose(k, (0, 2, 3, 1))
+        v_t = jnp.transpose(v, (0, 2, 1, 3))
+        attn_logits = jnp.matmul(q_t, k_t) * temp[None, :, :, :]
+        if mask is not None:
+            key_mask = (mask > 0)[:, None, None, :]
+            attn_logits = jnp.where(key_mask, attn_logits, -1e9)
+        attn_weights = jax.nn.softmax(attn_logits, axis=-1)
+        ctx = jnp.matmul(attn_weights, v_t)
+        ctx = jnp.transpose(ctx, (0, 2, 1, 3)).reshape(bsz, seq_len, inner_d)
+        h_attn = nn.Dense(self.dim, name="mhsa_out")(ctx)
+        ls_a = self.param("ls_mhsa", ls_init, (self.dim,))
+        x = x + ls_a[None, None, :] * h_attn
+        if mask_f is not None:
+            x = x * mask_f
+
+        # 3. BatchNorm Depthwise Convolution Module
+        h = self._norm1d(x, "conv_pre_norm", use_running_average, mask)
+        h = nn.Dense(2 * self.dim, name="conv_pw1")(h)
+        h_a, h_b = jnp.split(h, 2, axis=-1)
+        h = h_a * jax.nn.sigmoid(h_b)
+        if mask_f is not None:
+            h = h * mask_f
+        h = nn.Conv(
+            features=self.dim,
+            kernel_size=(self.conv_kernel_size,),
+            feature_group_count=self.dim,
+            padding="SAME",
+            use_bias=False,
+            name="conv_dw",
+        )(h)
+        h = nn.silu(self._norm1d(h, "conv_bn", use_running_average, mask))
+        h = nn.Dense(self.dim, name="conv_pw2")(h)
+        ls_c = self.param("ls_conv", ls_init, (self.dim,))
+        x = x + ls_c[None, None, :] * h
+        if mask_f is not None:
+            x = x * mask_f
+
+        # 4. Macaron FFN 2
+        h = self._norm1d(x, "ffn2_norm", use_running_average, mask)
+        h = nn.silu(nn.Dense(ffn_dim, name="ffn2_up")(h))
+        h = nn.Dense(self.dim, name="ffn2_down")(h)
+        ls2 = self.param("ls_ffn2", ls_init, (self.dim,))
+        x = x + (0.5 * ls2[None, None, :]) * h
+        if mask_f is not None:
+            x = x * mask_f
+        return x
+
+
+class ERes2ConformerBackbone(nn.Module):
+    """Unified Spectro-Temporal Hybrid Backbone (`SimAM-ERes2Conformer`).
+
+    Synthesizes:
+    1. 2D Multi-Scale `SimAM-SERes2Net` stages (`ERes2NetV2` + `SimAM` + `SE` + `AFF`)
+       with mask-aware `BatchNorm2D` preserving 2D formant/harmonic shift equivariance.
+    2. Multi-stage spectro-temporal feature aggregation (`MFA`, fusing Stage-3 & Stage-4
+       2D representations without premature dimensionality compression, `ReDimNet` style).
+    3. Global-local `RoPE + QK-Norm + LayerScale + BatchNorm` Conformer blocks concatenated
+       alongside the wide 2D spectro-temporal highway (`[z_local, h_conf]`).
+    """
+
+    base_channels: int = 64
+    num_blocks: Sequence[int] = (3, 4, 6, 3)
+    scale: int = 4
+    width_mult: float = 2.0
+    use_simam: bool = True
+    use_se: bool = True
+    use_aff: bool = True
+    use_mfa_stage23: bool = True
+    conformer_dim: int = 512
+    num_conformer_layers: int = 2
+    num_heads: int = 8
+    conv_kernel_size: int = 15
+    layer_scale_init: float = 0.2
+    use_batch_norm: bool = True
+    temporal_strides: Sequence[int] = (1, 1, 2, 2)
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jax.Array,
+        deterministic: bool = True,
+        mask: Optional[jax.Array] = None,
+        use_running_average: Optional[bool] = None,
+    ) -> jax.Array:
+        use_ra = (
+            deterministic
+            if use_running_average is None
+            else bool(use_running_average)
+        )
+        norm_tag = "bn" if self.use_batch_norm else "ln"
+        cur_mask = mask
+        mask_f = (
+            (cur_mask > 0).astype(x.dtype)[..., None]
+            if cur_mask is not None
+            else None
+        )
+        if mask_f is not None:
+            x = x * mask_f
+
+        h = x[..., None]
+        h = nn.Conv(
+            features=self.base_channels,
+            kernel_size=(3, 3),
+            strides=(1, 1),
+            padding="SAME",
+            use_bias=False,
+            name="stem_conv",
+        )(h)
+        if self.use_batch_norm:
+            h = nn.relu(
+                MaskedBatchNorm2D(name=f"stem_{norm_tag}")(
+                    h, use_running_average=use_ra, mask=cur_mask
+                )
+            )
+        else:
+            h = nn.relu(
+                nn.LayerNorm(reduction_axes=(-2, -1), name=f"stem_{norm_tag}")(
+                    h
+                )
+            )
+        if mask_f is not None:
+            h = h * mask_f[..., None]
+
+        stage_outs = []
+        n_stages = len(self.num_blocks)
+        for stage_idx, n_blk in enumerate(self.num_blocks):
+            ch = self.base_channels * (2 ** stage_idx)
+            s_t = (
+                int(self.temporal_strides[stage_idx])
+                if stage_idx < len(self.temporal_strides)
+                else 1
+            )
+            s_t = max(1, s_t)
+            s_f = 2 if stage_idx > 0 else 1
+            for b_idx in range(n_blk):
+                stride = (s_t, s_f) if b_idx == 0 else (1, 1)
+                h = SimAMSERes2Block2D(
+                    channels=ch,
+                    stride=stride,
+                    scale=self.scale,
+                    width_mult=self.width_mult,
+                    use_simam=self.use_simam,
+                    use_se=self.use_se,
+                    use_aff=self.use_aff,
+                    use_batch_norm=self.use_batch_norm,
+                    name=f"stage{stage_idx}_block{b_idx}",
+                )(h, use_running_average=use_ra, mask=cur_mask)
+                if stride[0] > 1 and cur_mask is not None:
+                    cur_mask = subsample_mask(cur_mask, stride[0])
+            stage_outs.append(h)
+
+        if self.use_mfa_stage23 and n_stages >= 2:
+            last_s_t = (
+                max(1, int(self.temporal_strides[n_stages - 1]))
+                if (n_stages - 1) < len(self.temporal_strides)
+                else 1
+            )
+            last_s_f = 2 if (n_stages - 1) > 0 else 1
+            prev_h = stage_outs[-2]
+            align_pad: Any = (
+                ((1, 1), (1, 1))
+                if (last_s_t > 1 or last_s_f > 1)
+                else "SAME"
+            )
+            prev_aligned = nn.Conv(
+                features=prev_h.shape[-1],
+                kernel_size=(3, 3),
+                strides=(last_s_t, last_s_f),
+                padding=align_pad,
+                use_bias=False,
+                name="mfa_stage_align",
+            )(prev_h)
+            if self.use_batch_norm:
+                prev_aligned = nn.relu(
+                    MaskedBatchNorm2D(name=f"mfa_align_{norm_tag}")(
+                        prev_aligned, use_running_average=use_ra, mask=cur_mask
+                    )
+                )
+            else:
+                prev_aligned = nn.relu(
+                    nn.LayerNorm(
+                        reduction_axes=(-2, -1), name=f"mfa_align_{norm_tag}"
+                    )(prev_aligned)
+                )
+            cat_2d = jnp.concatenate([prev_aligned, h], axis=-1)
+            h = nn.Conv(
+                features=h.shape[-1],
+                kernel_size=(1, 1),
+                strides=(1, 1),
+                padding="SAME",
+                use_bias=False,
+                name="mfa_2d_fuse",
+            )(cat_2d)
+            if self.use_batch_norm:
+                h = nn.relu(
+                    MaskedBatchNorm2D(name=f"mfa_fuse_{norm_tag}")(
+                        h, use_running_average=use_ra, mask=cur_mask
+                    )
+                )
+            else:
+                h = nn.relu(
+                    nn.LayerNorm(
+                        reduction_axes=(-2, -1), name=f"mfa_fuse_{norm_tag}"
+                    )(h)
+                )
+
+        out_mask_f = (
+            (cur_mask > 0).astype(x.dtype)[..., None]
+            if cur_mask is not None
+            else None
+        )
+        if out_mask_f is not None:
+            h = h * out_mask_f[..., None]
+
+        bsz, seq_len, freq_bins, ch = h.shape
+        z_local = h.reshape(bsz, seq_len, freq_bins * ch)
+        if self.num_conformer_layers <= 0 or self.conformer_dim <= 0:
+            return z_local
+
+        h_conf = nn.Dense(
+            self.conformer_dim, use_bias=False, name="conf_in_proj"
+        )(z_local)
+        if self.use_batch_norm:
+            h_conf = nn.silu(
+                MaskedBatchNorm1D(name="conf_in_bn")(
+                    h_conf, use_running_average=use_ra, mask=cur_mask
+                )
+            )
+        else:
+            h_conf = nn.silu(nn.LayerNorm(name="conf_in_ln")(h_conf))
+        if out_mask_f is not None:
+            h_conf = h_conf * out_mask_f
+
+        for c_idx in range(self.num_conformer_layers):
+            h_conf = RoPEBatchNormConformerBlock(
+                dim=self.conformer_dim,
+                num_heads=self.num_heads,
+                conv_kernel_size=self.conv_kernel_size,
+                layer_scale_init=self.layer_scale_init,
+                use_batch_norm=self.use_batch_norm,
+                name=f"rope_conformer_{c_idx}",
+            )(h_conf, use_running_average=use_ra, mask=cur_mask)
+
+        out = jnp.concatenate([z_local, h_conf], axis=-1)
+        if out_mask_f is not None:
+            out = out * out_mask_f
+        return out
+
+
 class ModernSpeakerEncoder(nn.Module):
     """Unified configurable speaker encoder supporting all backbones and pooling heads.
 
@@ -1410,6 +1971,26 @@ class ModernSpeakerEncoder(nn.Module):
                 n_stages = len(b_kwargs.get("num_blocks", (2, 2, 2, 2)))
                 for _ in range(max(0, n_stages - 1)):
                     mask = subsample_mask(mask, t_stride)
+        elif b_type == "eres2conformer":
+            frames = ERes2ConformerBackbone(**b_kwargs, name="backbone")(
+                x,
+                deterministic=deterministic,
+                mask=mask,
+                use_running_average=use_running_average,
+            )
+            if mask is not None:
+                n_stages = len(b_kwargs.get("num_blocks", (3, 4, 6, 3)))
+                t_strides = tuple(
+                    b_kwargs.get("temporal_strides", (1, 1, 2, 2))
+                )
+                for st_i in range(n_stages):
+                    s_val = (
+                        max(1, int(t_strides[st_i]))
+                        if st_i < len(t_strides)
+                        else 1
+                    )
+                    if s_val > 1:
+                        mask = subsample_mask(mask, s_val)
         else:
             raise ValueError(
                 f"Unsupported backbone_type: {self.backbone_type}"
@@ -1426,6 +2007,18 @@ class ModernSpeakerEncoder(nn.Module):
                 attention_dim=int(p_kwargs.get("attention_dim", 128)),
                 pooling_stats=str(p_kwargs.get("pooling_stats", "mean_std")),
                 subspace_heads=bool(p_kwargs.get("subspace_heads", True)),
+                eps=float(p_kwargs.get("eps", 1e-4)),
+                name="pool",
+            )(frames, mask=mask)
+        elif p_type == "catp":
+            pooled = pooling.ContextAttentiveTemporalPooling(
+                num_heads=int(p_kwargs.get("num_heads", 16)),
+                attention_dim=int(p_kwargs.get("attention_dim", 128)),
+                pooling_stats=str(p_kwargs.get("pooling_stats", "mean_std")),
+                subspace_heads=bool(p_kwargs.get("subspace_heads", True)),
+                use_global_context=bool(
+                    p_kwargs.get("use_global_context", True)
+                ),
                 eps=float(p_kwargs.get("eps", 1e-4)),
                 name="pool",
             )(frames, mask=mask)

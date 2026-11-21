@@ -532,7 +532,8 @@ class WindowedMultiDomainSampler:
     """Stratified rolling-window multi-domain `.f16` shard sampler for multi-GPU / TPU training.
 
     Maintains a stratified subset of `shard_budget` shards (`0` = all shards) across
-    domains `(0, 1, 2)` over `ShardedFeatureStore` `memmap` arrays so multi-device
+    domains `(0, 1, 2)` over `ShardedFeatureStore` `memmap` arrays (plus optional
+    speaker-shuffled `30..57` shards and extension shard directories) so multi-device
     `jax.pmap` runs keep bounded RSS on any host while visiting all shards via
     `rotate_window()`.
     """
@@ -542,9 +543,12 @@ class WindowedMultiDomainSampler:
         store: ShardedFeatureStore,
         shard_budget: int = 18,
         seed: int = 42,
+        shuffled_30_57_dir: Optional[str] = None,
+        extra_shard_dirs: Optional[list[str]] = None,
+        max_total_shards: int = 0,
     ):
         self.store = store
-        self.total_shards = len(store.shard_frame_counts)
+        self.base_n_shards = len(store.shard_frame_counts)
         self.feat_dim = store.feat_dim
         self.num_classes = len(store.raw_speaker_to_id)
 
@@ -552,12 +556,85 @@ class WindowedMultiDomainSampler:
         is_sp = np.array(
             ["@sp" in id_to_spk[i] for i in range(self.num_classes)], dtype=np.bool_
         )
-        self.orig_speaker_ids = np.load(os.path.join(store.shard_dir, "index.npz"))[
-            "speaker_ids"
-        ].astype(np.int32)
+        base_idx = np.load(os.path.join(store.shard_dir, "index.npz"))
+        self.orig_speaker_ids = base_idx["speaker_ids"].astype(np.int32)
+        self.orig_shard_ids = store.shard_ids.astype(np.int32).copy()
+        self.orig_frame_offsets = store.frame_offsets.astype(np.int64).copy()
+        self.orig_frame_lengths = store.frame_lengths.astype(np.int32).copy()
+        self.orig_domain_ids = store.domain_ids.astype(np.int16).copy()
+
+        self.shard_paths: list[str] = [
+            os.path.join(store.shard_dir, f"shard_{s_i:04d}.f16")
+            for s_i in range(self.base_n_shards)
+        ]
+        self.using_shuffled_30_57 = False
+        if shuffled_30_57_dir:
+            shuf_dir = os.path.abspath(
+                os.path.expanduser(dataset.resolve_data_path(shuffled_30_57_dir))
+            )
+            shuf_idx_path = os.path.join(shuf_dir, "index_30_57.npz")
+            if os.path.isfile(shuf_idx_path):
+                sz = np.load(shuf_idx_path)
+                s_iids = sz["item_indices"].astype(np.int32)
+                self.orig_shard_ids[s_iids] = sz["new_shard_ids"].astype(np.int32)
+                self.orig_frame_offsets[s_iids] = sz["new_frame_offsets"].astype(
+                    np.int64
+                )
+                for s_i in range(30, min(58, self.base_n_shards)):
+                    self.shard_paths[s_i] = os.path.join(
+                        shuf_dir, f"shard_{s_i:04d}.f16"
+                    )
+                self.using_shuffled_30_57 = True
+
+        for ext_raw in extra_shard_dirs or []:
+            ext_dir = os.path.abspath(
+                os.path.expanduser(dataset.resolve_data_path(ext_raw))
+            )
+            emeta_path = os.path.join(ext_dir, "metadata.json")
+            eidx_path = os.path.join(ext_dir, "index.npz")
+            if not (os.path.isfile(emeta_path) and os.path.isfile(eidx_path)):
+                continue
+            with open(emeta_path, "r", encoding="utf-8") as ef:
+                emeta = json.load(ef)
+            ez = np.load(eidx_path)
+            sid_offset = len(self.shard_paths)
+            ez_sids = ez["shard_ids"].astype(np.int32)
+            ext_n_sh = max(
+                int(emeta["num_shards"]),
+                int(np.max(ez_sids)) + 1 if ez_sids.size > 0 else 0,
+            )
+            if max_total_shards > 0:
+                ext_n_sh = max(0, min(ext_n_sh, max_total_shards - sid_offset))
+                keep = ez_sids < ext_n_sh
+            else:
+                keep = np.ones((ez_sids.shape[0],), dtype=np.bool_)
+            for s_i in range(ext_n_sh):
+                self.shard_paths.append(
+                    os.path.join(ext_dir, f"shard_{s_i:04d}.f16")
+                )
+            self.orig_shard_ids = np.concatenate(
+                [self.orig_shard_ids, ez_sids[keep] + sid_offset]
+            )
+            self.orig_frame_offsets = np.concatenate(
+                [self.orig_frame_offsets, ez["frame_offsets"][keep].astype(np.int64)]
+            )
+            self.orig_frame_lengths = np.concatenate(
+                [self.orig_frame_lengths, ez["frame_lengths"][keep].astype(np.int32)]
+            )
+            self.orig_speaker_ids = np.concatenate(
+                [self.orig_speaker_ids, ez["speaker_ids"][keep].astype(np.int32)]
+            )
+            self.orig_domain_ids = np.concatenate(
+                [self.orig_domain_ids, ez["domain_ids"][keep].astype(np.int16)]
+            )
+
         self.orig_item_is_sp = is_sp[self.orig_speaker_ids]
-        self.orig_shard_ids = store.shard_ids.astype(np.int32)
-        self.orig_domain_ids = store.domain_ids.astype(np.int16)
+        self.total_shards = (
+            min(len(self.shard_paths), max_total_shards)
+            if max_total_shards > 0
+            else len(self.shard_paths)
+        )
+        self._ext_memmaps: dict[int, np.memmap] = {}
 
         self.dom_shards: dict[int, list[int]] = {0: [], 1: [], 2: []}
         for sid in range(self.total_shards):
@@ -569,21 +646,60 @@ class WindowedMultiDomainSampler:
         self.rolling_enabled = 0 < shard_budget < self.total_shards
         self._rot_rng = np.random.default_rng(int(seed) + 1337)
         if self.rolling_enabled:
-            n_d0 = min(len(self.dom_shards[0]), max(1, round(shard_budget * 0.50)))
-            n_d1 = min(len(self.dom_shards[1]), max(1, round(shard_budget * 0.28)))
-            n_d2 = min(
-                len(self.dom_shards[2]), max(1, shard_budget - n_d0 - n_d1)
-            )
-            init_sids: list[int] = []
-            for d_id, k_cnt in ((0, n_d0), (1, n_d1), (2, n_d2)):
-                if self.dom_shards[d_id]:
-                    chosen = self._rot_rng.choice(
-                        self.dom_shards[d_id],
-                        size=min(k_cnt, len(self.dom_shards[d_id])),
-                        replace=False,
-                    )
-                    init_sids.extend(int(x) for x in chosen)
-            self.active_sids = sorted(set(init_sids))
+            if self.using_shuffled_30_57:
+                pool_a = [
+                    s
+                    for s in range(self.total_shards)
+                    if s < 30 or s >= self.base_n_shards
+                ]
+                pool_b = [
+                    s
+                    for s in range(30, min(self.base_n_shards, self.total_shards))
+                ]
+                k_b = min(len(pool_b), max(1, round(shard_budget * 0.45)))
+                k_a = min(len(pool_a), max(1, shard_budget - k_b))
+                c_a = (
+                    [
+                        int(x)
+                        for x in self._rot_rng.choice(
+                            pool_a, size=k_a, replace=False
+                        )
+                    ]
+                    if pool_a
+                    else []
+                )
+                c_b = (
+                    [
+                        int(x)
+                        for x in self._rot_rng.choice(
+                            pool_b, size=k_b, replace=False
+                        )
+                    ]
+                    if pool_b
+                    else []
+                )
+                self.active_sids = sorted(set(c_a + c_b))
+            else:
+                n_d0 = min(
+                    len(self.dom_shards[0]), max(1, round(shard_budget * 0.50))
+                )
+                n_d1 = min(
+                    len(self.dom_shards[1]), max(1, round(shard_budget * 0.28))
+                )
+                n_d2 = min(
+                    len(self.dom_shards[2]),
+                    max(1, shard_budget - n_d0 - n_d1),
+                )
+                init_sids: list[int] = []
+                for d_id, k_cnt in ((0, n_d0), (1, n_d1), (2, n_d2)):
+                    if self.dom_shards[d_id]:
+                        chosen = self._rot_rng.choice(
+                            self.dom_shards[d_id],
+                            size=min(k_cnt, len(self.dom_shards[d_id])),
+                            replace=False,
+                        )
+                        init_sids.extend(int(x) for x in chosen)
+                self.active_sids = sorted(set(init_sids))
         else:
             self.active_sids = list(range(self.total_shards))
 
@@ -591,6 +707,22 @@ class WindowedMultiDomainSampler:
         self.dom_items_non_sp: dict[int, np.ndarray] = {}
         self.dom_spk_to_items: dict[int, list[np.ndarray]] = {}
         self._rebuild_indices()
+
+    def _get_shard_memmap(self, sid: int) -> np.memmap:
+        if (
+            sid < self.base_n_shards
+            and not (self.using_shuffled_30_57 and 30 <= sid < 58)
+        ):
+            return self.store._memmaps[sid]
+        mm = self._ext_memmaps.get(sid)
+        if mm is None:
+            s_path = self.shard_paths[sid]
+            n_frames = os.path.getsize(s_path) // (self.feat_dim * 2)
+            mm = np.memmap(
+                s_path, dtype=np.float16, mode="r", shape=(n_frames, self.feat_dim)
+            )
+            self._ext_memmaps[sid] = mm
+        return mm
 
     def _rebuild_indices(self) -> None:
         in_mem = np.isin(self.orig_shard_ids, self.active_sids)
@@ -616,15 +748,35 @@ class WindowedMultiDomainSampler:
         if not self.rolling_enabled:
             return
         cur_keys = set(self.active_sids)
-        for d_id in (0, 1, 2):
-            all_d = self.dom_shards[d_id]
-            in_d = [s for s in all_d if s in cur_keys]
-            out_d = [s for s in all_d if s not in cur_keys]
-            if in_d and out_d:
-                evict_sid = int(self._rot_rng.choice(in_d))
-                load_sid = int(self._rot_rng.choice(out_d))
-                cur_keys.discard(evict_sid)
-                cur_keys.add(load_sid)
+        if self.using_shuffled_30_57:
+            pool_a = [
+                s
+                for s in range(self.total_shards)
+                if s < 30 or s >= self.base_n_shards
+            ]
+            pool_b = [
+                s for s in range(30, min(self.base_n_shards, self.total_shards))
+            ]
+            for pool_grp in (pool_a, pool_b):
+                in_p = [s for s in pool_grp if s in cur_keys]
+                out_p = [s for s in pool_grp if s not in cur_keys]
+                n_sw = min(3, len(in_p), len(out_p))
+                if n_sw > 0:
+                    ev_l = self._rot_rng.choice(in_p, size=n_sw, replace=False)
+                    ld_l = self._rot_rng.choice(out_p, size=n_sw, replace=False)
+                    for e, ld_s in zip(ev_l, ld_l):
+                        cur_keys.discard(int(e))
+                        cur_keys.add(int(ld_s))
+        else:
+            for d_id in (0, 1, 2):
+                all_d = self.dom_shards[d_id]
+                in_d = [s for s in all_d if s in cur_keys]
+                out_d = [s for s in all_d if s not in cur_keys]
+                if in_d and out_d:
+                    evict_sid = int(self._rot_rng.choice(in_d))
+                    load_sid = int(self._rot_rng.choice(out_d))
+                    cur_keys.discard(evict_sid)
+                    cur_keys.add(load_sid)
         self.active_sids = sorted(cur_keys)
         self._rebuild_indices()
 
@@ -660,9 +812,9 @@ class WindowedMultiDomainSampler:
 
         for i in range(batch_size):
             idx = int(item_indices[i])
-            mm = self.store._memmaps[int(self.orig_shard_ids[idx])]
-            off = int(self.store.frame_offsets[idx])
-            ln = int(self.store.frame_lengths[idx])
+            mm = self._get_shard_memmap(int(self.orig_shard_ids[idx]))
+            off = int(self.orig_frame_offsets[idx])
+            ln = int(self.orig_frame_lengths[idx])
             target_l = int(eff_lens[i])
             if ln >= target_l:
                 st = int(rng.integers(0, ln - target_l + 1))
@@ -707,9 +859,9 @@ class WindowedMultiDomainSampler:
             )
             for idx in chosen_u:
                 idx_i = int(idx)
-                mm = self.store._memmaps[int(self.orig_shard_ids[idx_i])]
-                off = int(self.store.frame_offsets[idx_i])
-                ln = int(self.store.frame_lengths[idx_i])
+                mm = self._get_shard_memmap(int(self.orig_shard_ids[idx_i]))
+                off = int(self.orig_frame_offsets[idx_i])
+                ln = int(self.orig_frame_lengths[idx_i])
                 target_l = int(eff_lens[row])
                 valid_l = min(ln, target_l)
                 st = int(rng.integers(0, ln - valid_l + 1)) if ln > valid_l else 0

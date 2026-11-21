@@ -9,6 +9,6 @@ invokes ``python setup.py`` keeps working. ``VERSION`` must match
 
 import setuptools
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 setuptools.setup(version=VERSION)

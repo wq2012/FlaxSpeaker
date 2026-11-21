@@ -1,6 +1,6 @@
 {
-  "timestamp_utc": "2026-11-19T22:26:49.542826+00:00",
-  "code_commit": "4ac023f+dirty",
+  "timestamp_utc": "2026-11-21T03:33:06.597293+00:00",
+  "code_commit": "0765631+dirty",
   "tolerance": 5e-05,
   "description": "Step-0 training loss at the released seed from the released YAML, under fixed seq_len crops (head_fixed) and U(min_seq_len, seq_len) crops (head_variable), compared with eval_results.json initial_loss.",
   "checkpoints": {
@@ -1558,11 +1558,42 @@
       "abs_diff_fixed": 0.3292,
       "abs_diff_variable": 0.0006,
       "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_large": {
+      "train_dataset": "universal_full",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 200,
+      "min_seq_len": 140,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 11.7771,
+      "head_fixed": 11.7526,
+      "head_fixed_raw": 11.752628,
+      "head_fixed_valid_frames_first4": [
+        200,
+        62,
+        200,
+        200
+      ],
+      "head_fixed_probe_sec": 125.2,
+      "head_variable": 11.781,
+      "head_variable_raw": 11.781015,
+      "head_variable_valid_frames_first4": [
+        197,
+        62,
+        173,
+        162
+      ],
+      "head_variable_probe_sec": 97.0,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0245,
+      "abs_diff_variable": 0.0039,
+      "match": "variable_approx"
     }
   },
   "histogram": {
     "variable": 44,
-    "variable_approx": 5
+    "variable_approx": 6
   },
-  "num_checkpoints": 49
+  "num_checkpoints": 50
 }

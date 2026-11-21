@@ -682,8 +682,8 @@ class TestExportAndHuggingFaceCompat(TestBase):
         from unittest import mock
 
         self.assertEqual(len(hf_compat.CONTROLLED_ABLATION_MODEL_IDS), 44)
-        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 5)
-        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 49)
+        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 6)
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 50)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
             "https://huggingface.co/collections/wq2012/flaxspeaker",
@@ -1959,8 +1959,8 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
             bench = json.load(f)
 
-        self.assertIn(len(bench["experiments"]), (44, 48, 49))
-        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16, 18))
+        self.assertIn(len(bench["experiments"]), (44, 48, 49, 50))
+        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16, 18, 20))
 
         vox_ds = bench["datasets"]["voxceleb1"]
         self.assertIn("vox1_o_10spk_subset_note", vox_ds)
@@ -2487,6 +2487,68 @@ class TestV050SotaFeatures(unittest.TestCase):
         )
         self.assertTrue(np.allclose(e_short, e_pad, atol=1e-5))
 
+    def test_eres2conformer_and_catp_mask_invariance_and_subcenter_step(self):
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.ERES2CONFORMER
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.pooling.pooling_type = configs.PoolingType.CATP
+        cfg.model.pooling.num_heads = 4
+        cfg.model.pooling.use_bn_neck = True
+        cfg.model.pooling.use_nonlinear_bottleneck = False
+        cfg.model.seq_len = 32
+        cfg.train.optimizer = "sgd"
+        cfg.train.learning_rate = 0.12
+        cfg.train.decay_class_weights = True
+        cfg.train.loss.loss_type = configs.LossType.SUBCENTER_ARCFACE
+        cfg.train.loss.subcenter_k = 3
+        cfg.loss = cfg.train.loss
+
+        round_trip = configs.ExperimentConfig.from_dict(cfg.to_dict())
+        self.assertEqual(
+            round_trip.model.backbone, configs.BackboneType.ERES2CONFORMER.value
+        )
+        self.assertEqual(
+            round_trip.model.pooling.pooling_type,
+            configs.PoolingType.CATP.value,
+        )
+
+        enc, state = neural_net.get_speaker_encoder(
+            cfg, num_classes=6, skip_warm_start=True
+        )
+        self.assertTrue(bool(state.batch_stats))
+
+        rng_k = jax.random.PRNGKey(19)
+        x = jax.random.normal(rng_k, (4, 32, 80))
+        mask = jnp.array(
+            [
+                [1.0] * 21 + [0.0] * 11,
+                [1.0] * 32,
+                [1.0] * 19 + [0.0] * 13,
+                [1.0] * 25 + [0.0] * 7,
+            ],
+            dtype=jnp.float32,
+        )
+        labels = jnp.array([0, 1, 2, 3], dtype=jnp.int32)
+        step_fn = neural_net.make_modern_train_step(cfg)
+        state2, loss_v = step_fn(state, x, labels, mask)
+        self.assertTrue(np.isfinite(float(loss_v)))
+
+        enc_p = {
+            k: v for k, v in state2.params.items() if not k.startswith("_aux_")
+        }
+        vars_eval = {"params": enc_p, "batch_stats": state2.batch_stats}
+        x_short = x[:2, :21, :] * 1.0
+        m_short = jnp.ones((2, 21), dtype=jnp.float32)
+        x_pad = jnp.pad(x_short, ((0, 0), (0, 13), (0, 0)))
+        m_pad = jnp.pad(m_short, ((0, 0), (0, 13)))
+        e_short = np.asarray(
+            enc.apply(vars_eval, x_short, mask=m_short, deterministic=True)
+        )
+        e_pad = np.asarray(
+            enc.apply(vars_eval, x_pad, mask=m_pad, deterministic=True)
+        )
+        self.assertTrue(np.allclose(e_short, e_pad, atol=1e-5))
+
 
 class TestAntiCheatingAndProvenanceIntegrity(unittest.TestCase):
     """Permanent guardrails banning weight transplantation, fake loss logs, and metadata spoofing."""
@@ -2640,6 +2702,38 @@ class TestAntiCheatingAndProvenanceIntegrity(unittest.TestCase):
                             0.45,
                             f"{mid}:{k} has suspicious exact-zero fraction {zero_frac:.3f}",
                         )
+
+    def test_eres2conformer_ablation_archive_schema_and_winner(self):
+        import json
+
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        ab_path = os.path.join(
+            repo_root, "pretrained_models", "eres2conformer_ablation_results.json"
+        )
+        with open(ab_path, "r", encoding="utf-8") as f:
+            ab = json.load(f)
+        self.assertEqual(ab["num_steps"], 27500)
+        self.assertEqual(ab["winner"], "eres2conformer_catp_sgd")
+        arms = ab["arms"]
+        for req_arm in (
+            "eres2conformer_catp_sgd",
+            "eres2conformer_catp_adamw",
+            "eres2net_noconf_catp_sgd",
+        ):
+            self.assertIn(req_arm, arms)
+            self.assertEqual(arms[req_arm]["num_steps"], 27500)
+            self.assertGreaterEqual(len(arms[req_arm]["loss_curve_100"]), 100)
+        sgd_vox = arms["eres2conformer_catp_sgd"]["official_benchmarks"]["voxceleb1_o"][
+            "qmf"
+        ]["eer_percent"]
+        adamw_vox = arms["eres2conformer_catp_adamw"]["official_benchmarks"][
+            "voxceleb1_o"
+        ]["qmf"]["eer_percent"]
+        noconf_vox = arms["eres2net_noconf_catp_sgd"]["official_benchmarks"][
+            "voxceleb1_o"
+        ]["qmf"]["eer_percent"]
+        self.assertLess(sgd_vox, adamw_vox)
+        self.assertLess(sgd_vox, noconf_vox)
 
 
 if __name__ == "__main__":

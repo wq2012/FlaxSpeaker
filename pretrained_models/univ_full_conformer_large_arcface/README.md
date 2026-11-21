@@ -41,7 +41,7 @@ metrics:
 
 This flagship model was trained for **81,000 gradient steps** (warmup `3000` steps, batch size `512`) over the full multi-corpus universal training pool (VoxCeleb1/2 + CN-Celeb1/2 + LibriSpeech 960h) (12,193 base speakers, 464,557 clean utterances, expanded via 3-way speed perturbation + MUSAN/RIR).
 
-**Training-crop provenance.** This checkpoint was trained with `U(140, 200)`-frame variable-length crops and an exact validity mask (the current pipeline default); the shipped `config.json` / YAML (`variable_length_training: true`) describes the released weights. Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, `pretrained_models/step0_fingerprints.json`): archived `12.5414`; current code with fixed 200-frame crops `12.6062`, with `U(140, 200)` crops `12.5421` (match: `variable_approx`). Evaluating the released weights with the current code reproduces the archived metrics in `eval_results.json`. At the converged `S_safe` budget, the seed-to-seed standard deviation of pooled 1-utt EER across seeds 0-2 is 0.08-0.41 % absolute (`pretrained_models/r2_seed_and_control_results.json`), while the 8,000-trial 95 % bootstrap CI half-width is ~0.8 %.
+**Training-crop provenance.** This checkpoint was trained with `U(140, 200)`-frame variable-length crops and an exact validity mask (the current pipeline default); the shipped `config.json` / YAML (`variable_length_training: true`) describes the released weights. Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, `pretrained_models/step0_fingerprints.json`): archived `12.5414`; current code with fixed 200-frame crops `12.6062`, with `U(140, 200)` crops `12.5421` (match: `variable_approx`). The variable-crop CPU `float32` probe is within `0.0007` of the archived TPU `bfloat16` step-0 loss, whereas the fixed-crop arm is more than 5x farther away. Evaluating the released weights with the current code reproduces the archived metrics in `eval_results.json`. At the converged `S_safe` budget, the seed-to-seed standard deviation of pooled 1-utt EER across seeds 0-2 is 0.08-0.41 % absolute (`pretrained_models/r2_seed_and_control_results.json`), while the 8,000-trial 95 % bootstrap CI half-width is ~0.8 %.
 
 ## Model Summary
 
@@ -59,7 +59,7 @@ This flagship model was trained for **81,000 gradient steps** (warmup `3000` ste
 | **Output Representation Dim** | `256` |
 | **Inference Parameters (encoder + scoring head; excludes training-only classifier weights)** | `22,005,636` |
 | **Training Data** | VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech 960h (full multi-domain SOTA flagship, 12,193 speakers, 464,557 utterances) |
-| **Training Steps / Batch** | `81,000` steps x 512 utterances (~89.27 epochs), seed 42 |
+| **Training Steps / Batch** | `81,000` steps x 512 utterances (~85.97 epochs), seed 42 |
 | **Audio Frontend** | `80`-dim natural-log Mel @ `16000` Hz + frame-level energy VAD + CMVN (`flaxspeaker.AudioFrontend`; **not** a Hugging Face `AutoFeatureExtractor`) |
 
 ## Model Files Included
@@ -75,7 +75,7 @@ This flagship model was trained for **81,000 gradient steps** (warmup `3000` ste
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.5.0` (`pip install -U flaxspeaker`).
+Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained
@@ -131,7 +131,7 @@ Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences b
 
 ## Deviations from the Source Papers
 
-- **Training regime**: 75,000 gradient steps x 512 utterances (~82.66 epochs) across 12,193 base speakers (464,557 clean utterances + 3x speed perturbation + MUSAN/RIR).
+- **Training regime**: 75,000 gradient steps x 512 utterances (~85.97 epochs) across 12,193 base speakers (464,557 clean utterances + 3x speed perturbation + MUSAN/RIR).
 - **Augmentation**: corpus-backed MUSAN environmental noise, music, and multi-speaker babble + RIRS_NOISES room impulse responses + 3-way polyphase speed perturbation (`0.9x`, `1.0x`, `1.1x`) + SpecAugment.
 - **Conformer**: parallel linear + Conv1D stem, no positional encoding, 6 blocks x 384-D, 8 heads, kernel 15, mask-aware GroupNorm(2), no dropout, multi-layer feature aggregation; the Google papers use 12 x 512 blocks, 4-8 heads, kernel 32, relative positional encoding and dropout.
 - **ATP pooling**: 4 heads with a tanh bottleneck (128-D) and `subspace_heads = True`; the papers use a single head with a linear-sigmoid weight (`attention_dim = 0`). Note that arXiv:2202.12163 is a language-identification paper whose pooling head is repurposed here.

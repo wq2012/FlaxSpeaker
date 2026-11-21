@@ -1564,6 +1564,44 @@
         "min_dcf_01": 0.041,
         "roc_auc": 0.9996
       }
+    },
+    "univ_full_eres2conformer_large": {
+      "eer": 0.0015416921191308823,
+      "eer_percent": 0.1542,
+      "eer_ci95_low_percent": 0.0279,
+      "eer_ci95_high_percent": 0.421,
+      "eer_threshold": 0.31570348458683384,
+      "min_dcf_001": 0.005,
+      "min_dcf_005": 0.005,
+      "min_dcf_01": 0.005,
+      "roc_auc": 1.0,
+      "num_trials": 2500,
+      "num_unique_utterances": 937,
+      "scoring_type": "cosine",
+      "as_norm": {
+        "eer": 0.001262206372903945,
+        "eer_percent": 0.1262,
+        "eer_ci95_low_percent": 0.0279,
+        "eer_ci95_high_percent": 0.421,
+        "eer_threshold": 2.2323802943682223,
+        "min_dcf_001": 0.0089,
+        "min_dcf_005": 0.0089,
+        "min_dcf_01": 0.0089,
+        "roc_auc": 1.0,
+        "top_k": 180
+      },
+      "qmf": {
+        "eer": 0.001262206372903945,
+        "eer_percent": 0.1262,
+        "eer_ci95_low_percent": 0.0279,
+        "eer_ci95_high_percent": 0.421,
+        "eer_threshold": -0.24351772157587348,
+        "min_dcf_001": 0.0056,
+        "min_dcf_005": 0.0056,
+        "min_dcf_01": 0.0056,
+        "roc_auc": 1.0
+      }
     }
-  }
+  },
+  "num_models": 50
 }

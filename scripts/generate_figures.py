@@ -181,26 +181,39 @@ def draw_architecture_diagram(
             "Domain temp: $p_d \\propto |\\mathcal{S}_d|^{0.35}$",
             "MUSAN + RIR + 3x speed perturb,",
             "  SpecAug + crop $T \\sim \\mathcal{U}(90, 200)$",
-            "Tier-1 $S_{\\mathrm{safe}}$ + Tier-2 5.0s LMFT",
+            "Tier-1 $S_{\\mathrm{safe}}$ + Tier-2 5.0–5.2s LMFT",
         ],
         "#F0FDF4",
         "#22C55E",
         "#15803D",
     )
 
+    bench_path_arch = os.path.join(
+        repo_root, "pretrained_models", "benchmark_results.json"
+    )
+    n_total_m, n_flag_m, n_tfl_b = 50, 6, 20
+    if os.path.isfile(bench_path_arch):
+        with open(bench_path_arch, "r", encoding="utf-8") as fb:
+            b_arch = json.load(fb)
+        n_total_m = len(b_arch.get("experiments", {}))
+        n_flag_m = sum(
+            1 for k in b_arch.get("experiments", {}) if k.startswith("univ_full_")
+        )
+        n_tfl_b = len(b_arch.get("tflite_exports", {}))
+
     add_stage(
         5.75,
         y_top,
         2.65,
         h_top,
-        "3. Masked Backbones (x6)",
+        "3. Masked Backbones (x7)",
         "Frame states $\\mathbf{H} \\in \\mathbb{R}^{B \\times T \\times D}$",
         [
-            "Conformer (Small–Large, Conv1D stem,",
-            "  GroupNorm $G{=}2$, MFA)",
-            "Mamba SSM (associative scan)",
-            "Transformer (pre-LN + MFA)",
-            "ECAPA-TDNN (BN) | SE-ResNet-18/34 | LSTM",
+            "SimAM-ERes2Conformer (AFF + 2D/1D)",
+            "Conformer (Small–Large) | Mamba SSM",
+            "ECAPA-TDNN (BN) | SE-ResNet-18/34",
+            "Transformer (pre-LN + MFA) | LSTM",
+            "  Exact padding-mask propagation",
         ],
         "#FEFCE8",
         "#EAB308",
@@ -212,14 +225,14 @@ def draw_architecture_diagram(
         y_top,
         2.75,
         h_top,
-        "4. Pooling Heads & Bottleneck",
-        "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS: 640/1280-D)",
+        "4. Pooling Heads (x9) & Neck",
+        "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS: 640–1536-D)",
         [
-            "7 heads: ATP ($N_h{=}4$ subspace), ASP,",
+            "8 emb heads: Context-ATP, ATP, ASP,",
             "  SAP, Stats, Mean, Last, CumStats",
             "  → LN/BN-Neck → FC(256) → $L_2$",
-            "PFAS: $K{=}4$ (640-D) & $K{=}8$ PFAS-SN",
-            "  ($d_k{=}32, d_v{=}128$, 1280-D)",
+            "9th (PFAS): $K{=}4/8/16$ PFAS-SN / ATP-FFN",
+            "  ($d_k{=}32, d_v{=}64..128$)",
         ],
         "#FAF5FF",
         "#A855F7",
@@ -242,7 +255,7 @@ def draw_architecture_diagram(
         "Batch ($N{=}8..64$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
         [
             "Losses: GE2E softmax / contrast (+ hybrid surrogate) | extended-set softmax (pure Eq. 2 or blended)",
-            "  + Sub-Center / 36.6k-Class ArcFace, CosFace, SphereFace, Triplet + Softmax",
+            "  + Sub-Center (K=3) / 36.6k-Class ArcFace, CosFace, SphereFace, Triplet + Softmax",
             (
                 "Scoring: cosine (+ Top-300 AS-Norm & 4-feat QMF) | Dr-Vector "
                 "| PFAS (frame-level attention)"
@@ -259,9 +272,9 @@ def draw_architecture_diagram(
         4.35,
         h_bot,
         "6. Edge Export & Open-Source Ecosystem",
-        "49 HF Hub Models + 18 TFLite FP32/INT8",
+        f"{n_total_m} HF Hub Models + {n_tfl_b} TFLite FP32/INT8",
         [
-            "Hugging Face Hub (wq2012/*): 44 Tier-1 + 5 Tier-2 Flagships",
+            f"Hugging Face Hub (wq2012/*): 44 Tier-1 + {n_flag_m} Tier-2 Flagships",
             "jax2tf → SavedModel → TFLite FP32 / INT8 (1.8 s window)",
             "Gradio demo (real inference) + tests.py CI (flake8 / pytype)",
         ],
@@ -650,7 +663,7 @@ def draw_benchmark_charts(
         fontsize=10.0,
         fontweight="bold",
     )
-    ax.set_ylim(0, 34.5)
+    ax.set_ylim(0, 36.8)
     ax.legend(fontsize=7.8, ncol=2, loc="upper right", framealpha=0.92)
     ax.grid(axis="y", alpha=0.25)
 
@@ -753,11 +766,195 @@ def draw_benchmark_charts(
     plt.close(fig)
 
 
+def draw_flagship_and_ablation_chart(
+    repo_root: str = REPO_ROOT,
+    paper_fig_dir: str = PAPER_FIG_DIR,
+) -> None:
+    """Draws Figure 3: Tier-2 Full-Data Flagships + 3-Arm SimAM-ERes2Conformer TPU Ablation."""
+    flag_path = os.path.join(
+        repo_root, "pretrained_models", "full_data_flagship_results.json"
+    )
+    abl_path = os.path.join(
+        repo_root, "pretrained_models", "eres2conformer_ablation_results.json"
+    )
+    if not os.path.isfile(flag_path):
+        return
+    with open(flag_path, "r", encoding="utf-8") as f:
+        flag_data = json.load(f)
+    fm = flag_data["models"]
+    fus = flag_data.get("heterogeneous_fusion", {})
+
+    plt.close("all")
+    fig, axes = plt.subplots(1, 2, figsize=(11.6, 3.65), dpi=300)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    # Panel (a): Tier-2 Flagships + Fusion on Official VoxCeleb1-O & CN-Celeb-E (QMF EER %)
+    ax = axes[0]
+    model_rows = [
+        ("Conf-L\nPFAS", "univ_full_conformer_large_pfas"),
+        ("Conf-L\nArcFace", "univ_full_conformer_large_arcface"),
+        ("Conf-L\nDr-Vec", "univ_full_conformer_large_dr_vectors"),
+        ("ECAPA\nc1024", "univ_full_ecapa_c1024_arcface"),
+        ("SE-ResNet\n34", "univ_full_resnet34_arcface"),
+    ]
+    if "univ_full_eres2conformer_large" in fm:
+        model_rows.append(("ERes2Conf\nCATP", "univ_full_eres2conformer_large"))
+
+    labels_a = [r[0] for r in model_rows]
+    vx_vals = [
+        fm[k]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+        for _, k in model_rows
+    ]
+    cn_vals = [
+        fm[k]["official_benchmarks"]["cnceleb_e"]["qmf"]["eer_percent"]
+        for _, k in model_rows
+    ]
+    ls_vals = [
+        fm[k]["official_benchmarks"]["librispeech_test_clean"]["qmf"][
+            "eer_percent"
+        ]
+        for _, k in model_rows
+    ]
+    if "official_benchmarks" in fus:
+        f_ob = fus["official_benchmarks"]
+        n_way = len(fus.get("models", []))
+        labels_a.append(f"{n_way}-Way\nFusion")
+        vx_vals.append(f_ob["voxceleb1_o"]["qmf"]["eer_percent"])
+        cn_vals.append(f_ob["cnceleb_e"]["qmf"]["eer_percent"])
+        ls_vals.append(f_ob["librispeech_test_clean"]["qmf"]["eer_percent"])
+
+    xa = np.arange(len(labels_a))
+    wa = 0.26
+    b_vx = ax.bar(
+        xa - wa, vx_vals, wa, label="VoxCeleb1-O QMF (%)", color="#2563EB"
+    )
+    b_ls = ax.bar(
+        xa, ls_vals, wa, label="LibriSpeech test-clean QMF (%)", color="#10B981"
+    )
+    b_cn = ax.bar(
+        xa + wa, cn_vals, wa, label="CN-Celeb-E Single QMF (%)", color="#F59E0B"
+    )
+    for bars, col in (
+        (b_vx, "#1E3A8A"),
+        (b_ls, "#065F46"),
+        (b_cn, "#92400E"),
+    ):
+        for b in bars:
+            ax.text(
+                b.get_x() + b.get_width() / 2,
+                b.get_height() + 0.20,
+                f"{b.get_height():.2f}",
+                ha="center",
+                va="bottom",
+                rotation=90,
+                fontsize=6.6,
+                fontweight="bold",
+                color=col,
+            )
+    ax.set_xticks(xa)
+    ax.set_xticklabels(labels_a, fontsize=7.6)
+    ax.set_ylabel("Official Zero-Shot EER (%)", fontsize=9.0)
+    ax.set_title(
+        "(a) Tier-2 full-data universal flagships & fusion (12,193 spk)",
+        fontsize=9.6,
+        fontweight="bold",
+    )
+    ax.set_ylim(0, max(cn_vals) + 4.4)
+    ax.legend(fontsize=7.6, loc="upper right", framealpha=0.92)
+    ax.grid(axis="y", alpha=0.25)
+
+    # Panel (b): 3-Arm SimAM-ERes2Conformer Controlled 27,500-Step TPU v6p Ablation
+    ax2 = axes[1]
+    if os.path.isfile(abl_path):
+        with open(abl_path, "r", encoding="utf-8") as f:
+            abl_data = json.load(f)
+        arms = abl_data["arms"]
+        arm_rows = [
+            ("ERes2Conformer\n+ AdamW\n(2 Conf. blocks)", "eres2conformer_catp_adamw"),
+            ("ERes2Net-Only\n+ Nesterov SGD\n(0 Conf. blocks)", "eres2net_noconf_catp_sgd"),
+            ("ERes2Conformer\n+ Nesterov SGD\n(2 Conf. blocks)", "eres2conformer_catp_sgd"),
+        ]
+        xb = np.arange(len(arm_rows))
+        wb = 0.22
+        avx = [
+            arms[k]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+            for _, k in arm_rows
+        ]
+        acn = [
+            arms[k]["official_benchmarks"]["cnceleb_e"]["qmf"]["eer_percent"]
+            for _, k in arm_rows
+        ]
+        acn_m = [
+            arms[k]["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"][
+                "as_norm"
+            ]["eer_percent"]
+            for _, k in arm_rows
+        ]
+        apl = [
+            arms[k]["multi_domain_eval"]["domains_1utt"]["universal_pooled"][
+                "eer_percent"
+            ]
+            for _, k in arm_rows
+        ]
+        bb1 = ax2.bar(
+            xb - 1.5 * wb, avx, wb, label="VoxCeleb1-O QMF", color="#2563EB"
+        )
+        bb2 = ax2.bar(
+            xb - 0.5 * wb, apl, wb, label="Controlled Pooled 1-Utt", color="#7C3AED"
+        )
+        bb3 = ax2.bar(
+            xb + 0.5 * wb, acn, wb, label="CN-Celeb-E Single QMF", color="#F59E0B"
+        )
+        bb4 = ax2.bar(
+            xb + 1.5 * wb, acn_m, wb, label="CN-Celeb-E Multi AS-Norm", color="#0D9488"
+        )
+        for bars, col in (
+            (bb1, "#1E3A8A"),
+            (bb2, "#5B21B6"),
+            (bb3, "#92400E"),
+            (bb4, "#115E59"),
+        ):
+            for b in bars:
+                ax2.text(
+                    b.get_x() + b.get_width() / 2,
+                    b.get_height() + 0.18,
+                    f"{b.get_height():.2f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=6.8,
+                    fontweight="bold",
+                    color=col,
+                )
+        ax2.set_xticks(xb)
+        ax2.set_xticklabels([r[0] for r in arm_rows], fontsize=7.8)
+        ax2.set_ylabel("EER (%) at Matched 27,500 Steps", fontsize=9.0)
+        ax2.set_title(
+            "(b) SimAM-ERes2Conformer controlled ablation (TPU v6p, batch 512)",
+            fontsize=9.6,
+            fontweight="bold",
+        )
+        ax2.set_ylim(0, max(acn) + 3.3)
+        ax2.legend(fontsize=7.4, ncol=2, loc="upper right", framealpha=0.92)
+        ax2.grid(axis="y", alpha=0.25)
+
+    plt.tight_layout()
+    fig.savefig(
+        os.path.join(paper_fig_dir, "fig3_flagships.pdf"),
+        bbox_inches="tight",
+    )
+    fig.savefig(
+        os.path.join(repo_root, "resources", "flagship_comparison.png"),
+        bbox_inches="tight",
+        dpi=250,
+    )
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "Generate the 2 FlaxSpeaker paper figures (fig1_architecture.pdf and "
-            "fig2_benchmarks.pdf) and repository PNGs."
+            "Generate the FlaxSpeaker paper figures (fig1_architecture.pdf, "
+            "fig2_benchmarks.pdf, fig3_flagships.pdf) and repository PNGs."
         )
     )
     parser.add_argument(
@@ -780,4 +977,7 @@ if __name__ == "__main__":
     draw_benchmark_charts(
         args.repo_root, args.paper_fig_dir, benchmark_json=args.benchmark_json
     )
-    print("Generated fig1_architecture.pdf and fig2_benchmarks.pdf")
+    draw_flagship_and_ablation_chart(args.repo_root, args.paper_fig_dir)
+    print(
+        "Generated fig1_architecture.pdf, fig2_benchmarks.pdf, and fig3_flagships.pdf"
+    )

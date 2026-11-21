@@ -1,7 +1,7 @@
 {
-  "timestamp_utc": "2026-11-19T22:25:28.615941+00:00",
+  "timestamp_utc": "2026-11-21T03:33:01.229608+00:00",
   "window_frames": 180,
-  "num_models": 9,
+  "num_models": 10,
   "models": {
     "univ_ecapa_tdnn_small_ge2e": {
       "window_frames": 180,
@@ -713,6 +713,33 @@
       "latency_ms_fp32_mean_50runs": 346.72,
       "latency_ms_int8_mean_50runs": 315.27,
       "num_unique_utterances": 4708
+    },
+    "univ_full_eres2conformer_large": {
+      "window_frames": 180,
+      "primary_domain": "voxceleb1_o",
+      "protocol": "VoxCeleb1-O official (37,611 trials, 180-frame center crop)",
+      "eer_percent": 2.3823,
+      "eer_ci95_fp32": [
+        2.21,
+        2.54
+      ],
+      "eer_percent_int8": 2.4062,
+      "eer_ci95_int8": [
+        2.24,
+        2.56
+      ],
+      "jax_full_seq_eer_percent": 0.8375,
+      "cos_fp32_int8_mean": 0.999707,
+      "cos_fp32_int8_min": 0.998887,
+      "cos_flax_fp32_mean": 1.0,
+      "cos_flax_int8_mean": 0.999714,
+      "fp32_size_kb": 124797.7,
+      "int8_size_kb": 32344.3,
+      "fp32_size_bytes": 127792840,
+      "int8_size_bytes": 33120560,
+      "num_unique_utterances": 4708,
+      "latency_ms_fp32_mean_50runs": 495.29,
+      "latency_ms_int8_mean_50runs": 475.38
     }
   }
 }

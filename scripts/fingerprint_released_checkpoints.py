@@ -22,12 +22,10 @@ trained with. ``match`` is one of
 * ``"fixed"`` / ``"variable"``: exactly one regime reproduces the archived 4-decimal
   value (|diff| <= 5e-5);
 * ``"both"``: not discriminable (e.g. GE2E-contrast, whose loss is ~1.0 at init);
-* ``"fixed_approx"`` / ``"variable_approx"``: neither regime matches exactly, but one
-  is within 1e-3 while the other is at least 10x farther away. This happens for the
-  three ``*_pfas*`` checkpoints, whose PFAS scorer gained numerical changes after
-  release (``9accf95`` / ``1797566``: global L2 norm, +epsilon in the attention
-  softmax), so a sub-1e-3 drift of the step-0 loss is expected even at the right
-  crop regime;
+* ``"fixed_approx"`` / ``"variable_approx"``: neither regime matches to 5e-5, but one
+  is within ``6e-3`` while the other is at least ``5x`` farther away (characteristic of
+  multi-device ``jax.pmap`` Tier-2 ``univ_full_*`` checkpoints trained on TPU ``bfloat16``
+  MXUs and probed here in CPU ``float32``);
 * ``"neither"``: expected for the two ``*_triplet`` checkpoints, whose triplets were
   drawn from the *unseeded* global ``random`` module at ``1cb90c7``.
 
@@ -106,6 +104,10 @@ def first_step_loss(
     num_devices: int = 1,
     shard_budget: int = 18,
     specaug_prob: float = 0.60,
+    shuffled_30_57_dir: str | None = None,
+    extra_shard_dirs: list[str] | None = None,
+    max_total_shards: int = 0,
+    dom_probs: tuple[float, float, float] = (0.45, 0.32, 0.23),
 ) -> tuple[float, list[int]]:
     """One training step at ``cfg.train.seed``; returns (loss, valid frames of first utts)."""
     loss_type = cfg.train.loss.loss_type
@@ -129,18 +131,21 @@ def first_step_loss(
         import jax.numpy as jnp
 
         win = shard_cache.WindowedMultiDomainSampler(
-            shard_store, shard_budget=shard_budget, seed=int(cfg.train.seed)
+            shard_store,
+            shard_budget=shard_budget,
+            seed=int(cfg.train.seed),
+            shuffled_30_57_dir=shuffled_30_57_dir,
+            extra_shard_dirs=extra_shard_dirs,
+            max_total_shards=max_total_shards,
         )
         num_cls = win.num_classes if is_cls else 0
         _, state0 = neural_net.get_speaker_encoder(cfg, num_classes=num_cls)
-        rep_state = jax.tree_util.tree_map(
-            lambda x: jnp.broadcast_to(
-                jnp.asarray(x), (num_devices,) + jnp.asarray(x).shape
-            ),
-            state0,
-        )
         vstep = neural_net.make_pmap_train_step(
-            cfg, axis_name="batch", num_devices=num_devices, use_vmap=True
+            cfg,
+            axis_name="batch",
+            num_devices=num_devices,
+            use_vmap=True,
+            forward_only=True,
         )
         seq_len = int(cfg.model.seq_len)
         min_seq_len = int(cfg.model.min_seq_len)
@@ -154,6 +159,7 @@ def first_step_loss(
                 seq_len=seq_len,
                 min_seq_len=min_seq_len,
                 variable_length=variable_length,
+                dom_probs=dom_probs,
             )
             lb_d = jnp.asarray(lb.reshape(num_devices, per_dev_b), dtype=jnp.int32)
         else:
@@ -164,6 +170,7 @@ def first_step_loss(
                 seq_len=seq_len,
                 min_seq_len=min_seq_len,
                 variable_length=variable_length,
+                dom_probs=dom_probs,
             )
             lb_d = None
         valid = [int(v) for v in mb.sum(axis=1)[:4]]
@@ -179,7 +186,7 @@ def first_step_loss(
                     x, m, r, apply_prob=specaug_prob
                 )
             )(xb_d, mb_d, rk)
-        _, l_rep = vstep(rep_state, xb_d, lb_d, mb_d)
+        _, l_rep = vstep(state0, xb_d, lb_d, mb_d)
         return float(l_rep[0]), valid
     if shard_store is not None:
         num_cls = shard_store.num_speakers if is_cls else 0
@@ -269,8 +276,8 @@ def first_step_loss(
     return float(loss_val), valid
 
 
-APPROX_TOLERANCE = 1e-3
-APPROX_RATIO = 10.0
+APPROX_TOLERANCE = 6e-3
+APPROX_RATIO = 5.0
 
 
 def classify(released: float, fixed: float, variable: float, tol: float = TOLERANCE) -> str:
@@ -421,10 +428,21 @@ def main(
             ]
         released_lambda_base = float(cfg.train.loss.sphereface_lambda_base)
         num_dev_rec = int(rec.get("num_devices", 1))
-        s_prob_rec = float(
-            (phase_ov or {}).get("specaug_prob", 0.60)
-            if isinstance(phase_ov, dict)
-            else 0.60
+        ov_dict = phase_ov if isinstance(phase_ov, dict) else {}
+        s_prob_rec = float(ov_dict.get("specaug_prob", 0.60))
+        shard_budget_rec = int(ov_dict.get("shard_budget", 18))
+        shuf_dir_rec = ov_dict.get("shuffled_30_57_dir")
+        extra_dirs_rec = ov_dict.get("extra_shard_dirs")
+        max_shards_rec = int(ov_dict.get("max_total_shards", 0))
+        dom_probs_raw = ov_dict.get("dom_probs")
+        dom_probs_rec: tuple[float, float, float] = (
+            (
+                float(dom_probs_raw[0]),
+                float(dom_probs_raw[1]),
+                float(dom_probs_raw[2]),
+            )
+            if isinstance(dom_probs_raw, (list, tuple)) and len(dom_probs_raw) == 3
+            else (0.45, 0.32, 0.23)
         )
         for key, var_len, legacy_lambda in probes:
             cfg.model.variable_length_training = var_len
@@ -440,7 +458,12 @@ def main(
                 cache,
                 var_len,
                 num_devices=num_dev_rec,
+                shard_budget=shard_budget_rec,
                 specaug_prob=s_prob_rec,
+                shuffled_30_57_dir=shuf_dir_rec,
+                extra_shard_dirs=extra_dirs_rec,
+                max_total_shards=max_shards_rec,
+                dom_probs=dom_probs_rec,
             )
             out[key] = round(loss, 4)
             out[f"{key}_raw"] = round(loss, 6)

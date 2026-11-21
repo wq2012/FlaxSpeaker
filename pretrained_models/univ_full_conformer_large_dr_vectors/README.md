@@ -41,7 +41,7 @@ metrics:
 
 This flagship model was trained for **16,000 gradient steps** (warmup `800` steps, batch size `256`) over the full multi-corpus universal training pool (VoxCeleb1/2 + CN-Celeb1/2 + LibriSpeech 960h) (12,193 base speakers, 464,557 clean utterances, expanded via 3-way speed perturbation + MUSAN/RIR).
 
-**Training-crop provenance.** This checkpoint was trained with `U(140, 200)`-frame variable-length crops and an exact validity mask (the current pipeline default); the shipped `config.json` / YAML (`variable_length_training: true`) describes the released weights. Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, `pretrained_models/step0_fingerprints.json`): archived `0.1967`; current code with fixed 200-frame crops `0.1513`, with `U(140, 200)` crops `0.1969` (match: `variable_approx`). Evaluating the released weights with the current code reproduces the archived metrics in `eval_results.json`. At the converged `S_safe` budget, the seed-to-seed standard deviation of pooled 1-utt EER across seeds 0-2 is 0.08-0.41 % absolute (`pretrained_models/r2_seed_and_control_results.json`), while the 8,000-trial 95 % bootstrap CI half-width is ~0.8 %.
+**Training-crop provenance.** This checkpoint was trained with `U(140, 200)`-frame variable-length crops and an exact validity mask (the current pipeline default); the shipped `config.json` / YAML (`variable_length_training: true`) describes the released weights. Step-0 loss fingerprint at the released seed (`scripts/fingerprint_released_checkpoints.py`, `pretrained_models/step0_fingerprints.json`): archived `0.1967`; current code with fixed 200-frame crops `0.1513`, with `U(140, 200)` crops `0.1969` (match: `variable_approx`). The variable-crop CPU `float32` probe is within `0.0002` of the archived TPU `bfloat16` step-0 loss, whereas the fixed-crop arm is more than 5x farther away. Evaluating the released weights with the current code reproduces the archived metrics in `eval_results.json`. At the converged `S_safe` budget, the seed-to-seed standard deviation of pooled 1-utt EER across seeds 0-2 is 0.08-0.41 % absolute (`pretrained_models/r2_seed_and_control_results.json`), while the 8,000-trial 95 % bootstrap CI half-width is ~0.8 %.
 
 ## Model Summary
 
@@ -73,7 +73,7 @@ This flagship model was trained for **16,000 gradient steps** (warmup `800` step
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.5.0` (`pip install -U flaxspeaker`).
+Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained

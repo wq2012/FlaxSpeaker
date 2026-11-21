@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Generate every number and table of the FlaxSpeaker v0.5.0 paper from JSON archives.
+"""Generate every number and table of the FlaxSpeaker v0.6.0 paper from JSON archives.
 
 Truth-in-reporting: the paper (`~/Code/github/flax_speaker_paper`) `\\input`s the files
 written here, so no benchmark number is typed by hand. Sources:
 
-- `pretrained_models/benchmark_results.json`           (49 converged v0.5.0 models + 18 TFLite exports)
-- `pretrained_models/full_data_flagship_results.json`  (5 Tier-2 full-data flagship models + score fusion)
+- `pretrained_models/benchmark_results.json`           (50 converged models + 20 TFLite exports)
+- `pretrained_models/full_data_flagship_results.json`  (6 Tier-2 full-data flagships + fusion)
+- `pretrained_models/eres2conformer_ablation_results.json` (3-arm TPU v6p ablation)
 - `pretrained_models/pfas_hparam_sweep.json`           (16-config PFAS hyperparameter sweep)
-- `pretrained_models/ablation_results.json`            (7 converged ablation groups incl. pure_paper_mode)
-- `pretrained_models/vox1_o_10spk_subset_results.json` (VoxCeleb1-O 10-speaker subset across all 49 models)
-- `pretrained_models/r2_seed_and_control_results.json` (3-seed stability, own-schedule horizon, matched data)
+- `pretrained_models/ablation_results.json`            (7 converged ablation groups)
+- `pretrained_models/vox1_o_10spk_subset_results.json` (VoxCeleb1-O 10-speaker subset, 50 models)
+- `pretrained_models/r2_seed_and_control_results.json` (3-seed stability, horizon, matched data)
 - `pretrained_models/phase1_convergence_pilot.json`    (5,000-step Phase-1 convergence pilot)
-- `pretrained_models/step0_fingerprints.json`          (step-0 loss fingerprints of all 49 checkpoints)
+- `pretrained_models/step0_fingerprints.json`          (step-0 loss fingerprints, 50 checkpoints)
 
 Usage: python scripts/generate_paper_tables.py --paper_dir ~/Code/github/flax_speaker_paper
 """
@@ -49,17 +50,19 @@ HIGHLIGHT_UNIV_ORDER = [
     "univ_transformer_small_ge2e",
     "univ_mamba_small_ge2e",
 ]
-FLAGSHIP_ORDER = [
+ALL_FLAGSHIP_ORDER = [
     "univ_full_conformer_large_dr_vectors",
     "univ_full_conformer_large_pfas",
     "univ_full_ecapa_c1024_arcface",
     "univ_full_conformer_large_arcface",
     "univ_full_resnet34_arcface",
+    "univ_full_eres2conformer_large",
 ]
 TFLITE_REPOS = {
     "univ_full_conformer_large_arcface",
     "univ_full_ecapa_c1024_arcface",
     "univ_full_resnet34_arcface",
+    "univ_full_eres2conformer_large",
     "univ_conformer_small_ge2e",
     "univ_lstm_small_ge2e",
     "univ_ecapa_tdnn_small_ge2e",
@@ -72,6 +75,7 @@ LOSS_SHORT = {
     "ge2e_contrast": "GE2E-C$^{*}$",
     "extended_set_softmax": "BXS$^{*}$",
     "arcface": "ArcFace",
+    "subcenter_arcface": "SC-ArcFace",
     "cosface": "CosFace",
     "sphereface": "SphereFace",
     "triplet": "Triplet",
@@ -162,9 +166,10 @@ def main(paper_dir: str) -> None:
     pfas_sweep = load("pfas_hparam_sweep.json")
 
     ex = bench["experiments"]
-    assert len(ex) in (44, 48, 49), len(ex)
+    assert len(ex) in (44, 48, 49, 50), len(ex)
     controlled_ex = {k: v for k, v in ex.items() if not k.startswith("univ_full_")}
     assert len(controlled_ex) == 44, len(controlled_ex)
+    FLAGSHIP_ORDER = [m for m in ALL_FLAGSHIP_ORDER if m in ex]
 
     univ_order = sorted(
         [k for k in controlled_ex if k.startswith("univ_")],
@@ -185,6 +190,11 @@ def main(paper_dir: str) -> None:
     flagship_wall_hours = sum(
         float(e["train_time_sec"]) for k, e in ex.items() if k.startswith("univ_full_")
     ) / 3600.0
+    flagship_tpu_hours = sum(
+        float(e.get("num_devices", 4)) * float(e["train_time_sec"])
+        for k, e in ex.items()
+        if k.startswith("univ_full_")
+    ) / 3600.0
     all_hours = sum(float(e["train_time_sec"]) for e in ex.values()) / 3600.0
     tmin = min(controlled_ex.items(), key=lambda kv: kv[1]["train_time_sec"])
     tmax = max(controlled_ex.items(), key=lambda kv: kv[1]["train_time_sec"])
@@ -196,7 +206,7 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("trainMedianMinutes", f"{statistics.median(times):.1f}"))
     nums.append(macro_def("trainTotalHours", f"{total_hours:.2f}"))
     nums.append(macro_def("trainFlagshipWallHours", f"{flagship_wall_hours:.2f}"))
-    nums.append(macro_def("trainFlagshipTpuHours", f"{4.0 * flagship_wall_hours:.2f}"))
+    nums.append(macro_def("trainFlagshipTpuHours", f"{flagship_tpu_hours:.2f}"))
     nums.append(macro_def("trainAllModelsHours", f"{all_hours:.2f}"))
     nums.append(macro_def("trainMinModel", tex_escape(tmin[0])))
     nums.append(macro_def("trainMaxModel", tex_escape(tmax[0])))
@@ -275,6 +285,7 @@ def main(paper_dir: str) -> None:
         ("flagConf", "univ_full_conformer_large_arcface"),
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
         ("flagResnet", "univ_full_resnet34_arcface"),
+        ("flagEres", "univ_full_eres2conformer_large"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ]:
@@ -294,6 +305,7 @@ def main(paper_dir: str) -> None:
         ("flagConf", "univ_full_conformer_large_arcface"),
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
         ("flagResnet", "univ_full_resnet34_arcface"),
+        ("flagEres", "univ_full_eres2conformer_large"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ):
@@ -309,12 +321,33 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def(ftag + "CnMulti", f2(cn_me)))
         nums.append(macro_def(ftag + "LsRaw", f2(ls["eer_percent"])))
         nums.append(macro_def(ftag + "LsQmf", f2(ls["qmf"]["eer_percent"])))
-        ls_me = ls["multi_enroll_3utt"].get("as_norm", ls["multi_enroll_3utt"])["eer_percent"]
+        nums.append(
+            macro_def(ftag + "LsMultiRaw", f2(ls["multi_enroll_3utt"]["eer_percent"]))
+        )
+        ls_me = ls["multi_enroll_3utt"].get(
+            "as_norm", ls["multi_enroll_3utt"]
+        )["eer_percent"]
         nums.append(macro_def(ftag + "LsMulti", f2(ls_me)))
         if "as_norm" in vx:
             nums.append(macro_def(ftag + "VoxAsn", f2(vx["as_norm"]["eer_percent"])))
             nums.append(macro_def(ftag + "CnAsn", f2(cn["as_norm"]["eer_percent"])))
             nums.append(macro_def(ftag + "LsAsn", f2(ls["as_norm"]["eer_percent"])))
+        ds_st = fm[fmid].get("dataset_stats", {})
+        if "total_utterances" in ds_st:
+            nums.append(
+                macro_def(ftag + "Utts", f"{int(ds_st['total_utterances']):,}")
+            )
+            nums.append(
+                macro_def(
+                    ftag + "Items",
+                    f"{int(ds_st['total_augmented_shard_items']):,}",
+                )
+            )
+        ov_st = fm[fmid].get("step0_phase_overrides", {})
+        if "max_total_shards" in ov_st:
+            nums.append(
+                macro_def(ftag + "Shards", str(int(ov_st["max_total_shards"])))
+            )
 
     fus = flagship["heterogeneous_fusion"]
     fus2 = fus["official_benchmarks"]
@@ -337,6 +370,38 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def("fusionThreeBbVoxQmf", f2(fus_3bb_m["voxceleb1_o"]["qmf"]["eer_percent"])))
         nums.append(macro_def("fusionThreeBbCnQmf", f2(fus_3bb_m["cnceleb_e"]["qmf"]["eer_percent"])))
         nums.append(macro_def("fusionThreeBbLsQmf", f2(fus_3bb_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    if "four_way_backbone_official_benchmarks" in fus:
+        fus_4bb_m = fus["four_way_backbone_official_benchmarks"]
+        nums.append(macro_def("fusionFourBbVoxAsn", f2(fus_4bb_m["voxceleb1_o"]["eer_percent"])))
+        nums.append(macro_def("fusionFourBbVoxQmf", f2(fus_4bb_m["voxceleb1_o"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionFourBbCnQmf", f2(fus_4bb_m["cnceleb_e"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionFourBbLsQmf", f2(fus_4bb_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
+
+    eres_abl_path = os.path.join(PM, "eres2conformer_ablation_results.json")
+    eres_abl = None
+    if os.path.isfile(eres_abl_path):
+        with open(eres_abl_path, "r", encoding="utf-8") as f:
+            eres_abl = json.load(f)
+        for atag, aid in (
+            ("ablEresSgd", "eres2conformer_catp_sgd"),
+            ("ablEresAdam", "eres2conformer_catp_adamw"),
+            ("ablEresNoConf", "eres2net_noconf_catp_sgd"),
+        ):
+            arm_d = eres_abl["arms"][aid]
+            a_ob = arm_d["official_benchmarks"]
+            nums.append(macro_def(atag + "VoxRaw", f2(a_ob["voxceleb1_o"]["eer_percent"])))
+            nums.append(macro_def(atag + "VoxAsn", f2(a_ob["voxceleb1_o"]["as_norm"]["eer_percent"])))
+            nums.append(macro_def(atag + "VoxQmf", f2(a_ob["voxceleb1_o"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(atag + "CnRaw", f2(a_ob["cnceleb_e"]["eer_percent"])))
+            nums.append(macro_def(atag + "CnQmf", f2(a_ob["cnceleb_e"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(atag + "CnMulti", f2(a_ob["cnceleb_e"]["multi_enroll_map"]["as_norm"]["eer_percent"])))
+            nums.append(macro_def(atag + "LsRaw", f2(a_ob["librispeech_test_clean"]["eer_percent"])))
+            nums.append(macro_def(atag + "LsQmf", f2(a_ob["librispeech_test_clean"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(atag + "LsMulti", f2(a_ob["librispeech_test_clean"]["multi_enroll_3utt"]["as_norm"]["eer_percent"])))
+            nums.append(macro_def(atag + "PooledOne", f2(d1(arm_d, "universal_pooled")["eer_percent"])))
+            nums.append(macro_def(atag + "PooledThree", f2(d3(arm_d, "universal_pooled").get("as_norm", d3(arm_d, "universal_pooled"))["eer_percent"])))
+            nums.append(macro_def(atag + "MacroOne", f2(macro(arm_d, 1)["eer_percent"])))
+            nums.append(macro_def(atag + "MacroThree", f2(macro(arm_d, 3)["eer_percent"])))
     nums.append(macro_def("fusionThreeCnMulti", f2(fus3["cnceleb_e_multi_enroll_map"]["eer_percent"])))
     nums.append(macro_def("fusionThreeCnMultiAuc", f4(fus3["cnceleb_e_multi_enroll_map"]["roc_auc"])))
     nums.append(macro_def("fusionThreeLsMulti", f2(fus3["librispeech_test_clean_3utt"]["eer_percent"])))
@@ -588,6 +653,7 @@ def main(paper_dir: str) -> None:
         "univ_full_conformer_large_arcface",
         "univ_full_ecapa_c1024_arcface",
         "univ_full_resnet34_arcface",
+        "univ_full_eres2conformer_large",
     ):
         fte = ex.get(fmid, {}).get("tflite_eval", {})
         if fte:
@@ -785,6 +851,8 @@ def main(paper_dir: str) -> None:
         fus_cands = [fus_2w, fus2]
         if "three_way_backbone_official_benchmarks" in fus and "univ_full_resnet34_arcface" in fm:
             fus_cands.append(fus["three_way_backbone_official_benchmarks"])
+        if "four_way_backbone_official_benchmarks" in fus and "univ_full_eres2conformer_large" in fm:
+            fus_cands.append(fus["four_way_backbone_official_benchmarks"])
         min_f_vx_as = min(round(fc["voxceleb1_o"]["eer_percent"], 2) for fc in fus_cands)
         min_f_vx_qmf = min(round(fc["voxceleb1_o"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
         min_f_cn_qmf = min(round(fc["cnceleb_e"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
@@ -814,11 +882,24 @@ def main(paper_dir: str) -> None:
                 f"3-Way Backbone Fusion (Conf-L + ECAPA + ResNet-34) & {p3bb_m:.2f} & --- & "
                 f"{t3_vx} & {t3_cn} & {t3_ls} & --- & --- \\\\"
             )
-        f_lbl = (
-            "5-Way Flagship Fusion (Conf-L + ECAPA + ResNet-34 + PFAS + DrV)"
-            if len(act_mids) == 5
-            else f"{len(act_mids)}-Way Flagship Fusion"
-        )
+        if "four_way_backbone_official_benchmarks" in fus and "univ_full_eres2conformer_large" in fm:
+            fus_4bb = fus["four_way_backbone_official_benchmarks"]
+            p4bb_m = (
+                p2_m
+                + int(fm["univ_full_resnet34_arcface"]["num_parameters"]) / 1e6
+                + int(fm["univ_full_eres2conformer_large"]["num_parameters"]) / 1e6
+            )
+            t4_vx, t4_cn, t4_ls = fmt_tex_fus(fus_4bb)
+            flines.append(
+                f"4-Way Backbone Fusion (+ ERes2Conformer) & {p4bb_m:.2f} & --- & "
+                f"{t4_vx} & {t4_cn} & {t4_ls} & --- & --- \\\\"
+            )
+        if len(act_mids) == 6:
+            f_lbl = "6-Way Flagship Fusion (Conf-L + ECAPA + ResNet-34 + ERes2Conf + PFAS + DrV)"
+        elif len(act_mids) == 5:
+            f_lbl = "5-Way Flagship Fusion (Conf-L + ECAPA + ResNet-34 + PFAS + DrV)"
+        else:
+            f_lbl = f"{len(act_mids)}-Way Flagship Fusion"
         t5_vx, t5_cn, t5_ls = fmt_tex_fus(fus2)
         flines.append(
             f"{f_lbl} & {all_act_params:.2f} & --- & "
@@ -853,6 +934,45 @@ def main(paper_dir: str) -> None:
         + "\n".join(flines) + "\n\\bottomrule\n\\end{tabular}\n"
     )
     emit(os.path.join(out_dir, "table_flagship_official.tex"), ftbl)
+
+    # ---------------------------------------- Table: 3-Arm ERes2Conformer Ablation
+    if eres_abl is not None:
+        elines = []
+        arms_d = eres_abl["arms"]
+        for aid, albl in (
+            ("eres2conformer_catp_sgd", "SimAM-ERes2Conformer + CATP (2 Conf.\\ blocks, SGD)"),
+            ("eres2net_noconf_catp_sgd", "SimAM-ERes2Net + CATP (0 Conf.\\ blocks, SGD)"),
+            ("eres2conformer_catp_adamw", "SimAM-ERes2Conformer + CATP (2 Conf.\\ blocks, AdamW)"),
+        ):
+            ad = arms_d[aid]
+            aob = ad["official_benchmarks"]
+            avx, acn, als = aob["voxceleb1_o"], aob["cnceleb_e"], aob["librispeech_test_clean"]
+            acn_me = acn["multi_enroll_map"]["as_norm"]["eer_percent"]
+            als_3 = als["multi_enroll_3utt"]["as_norm"]["eer_percent"]
+            ap1 = d1(ad, "universal_pooled")["eer_percent"]
+            ap3 = d3(ad, "universal_pooled").get("as_norm", d3(ad, "universal_pooled"))["eer_percent"]
+            am1 = macro(ad, 1)["eer_percent"]
+            am3 = macro(ad, 3)["eer_percent"]
+            is_win = aid == eres_abl["winner"]
+
+            def _bw(val: float, win: bool = is_win) -> str:
+                return f"\\textbf{{{f2(val)}}}" if win else f2(val)
+
+            elines.append(
+                f"{albl} & {int(ad['num_parameters'])/1e6:.2f} & "
+                f"{f2(avx['eer_percent'])} / {f2(avx['as_norm']['eer_percent'])} / {_bw(avx['qmf']['eer_percent'])} & "
+                f"{f2(acn['eer_percent'])} / {_bw(acn['qmf']['eer_percent'])} / {_bw(acn_me)} & "
+                f"{f2(als['eer_percent'])} / {_bw(als['qmf']['eer_percent'])} / {_bw(als_3)} & "
+                f"{_bw(ap1)} / {_bw(ap3)} & {_bw(am1)} / {_bw(am3)} \\\\"
+            )
+        etbl = (
+            "\\begin{tabular}{@{}lrccccc@{}}\n\\toprule\n"
+            "\\textbf{27,500-Step Controlled TPU v6p Arm (Batch 512)} & \\textbf{M par.} & "
+            "\\textbf{Vox1-O (Raw/ASN/QMF)} & \\textbf{CN-E (Raw/QMF/Multi)} & "
+            "\\textbf{LS-clean (Raw/QMF/3u)} & \\textbf{Pooled 1/3} & \\textbf{Macro 1/3} \\\\\n\\midrule\n"
+            + "\n".join(elines) + "\n\\bottomrule\n\\end{tabular}\n"
+        )
+        emit(os.path.join(out_dir, "table_eres2conf_ablation.tex"), etbl)
 
     # ------------------------------------------------ Table: 16-config PFAS sweep
     plines = []
@@ -1089,6 +1209,7 @@ def main(paper_dir: str) -> None:
         "univ_full_conformer_large_arcface",
         "univ_full_ecapa_c1024_arcface",
         "univ_full_resnet34_arcface",
+        "univ_full_eres2conformer_large",
     ):
         te = ex.get(fmid, {}).get("tflite_eval", {})
         if te:

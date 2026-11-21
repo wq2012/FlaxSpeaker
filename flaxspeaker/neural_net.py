@@ -231,6 +231,25 @@ def build_modern_encoder_from_config(
                 getattr(m_cfg.resnet, "temporal_stride", 1)
             ),
         }
+    elif b_type == "eres2conformer":
+        erc = m_cfg.eres2conformer
+        b_kwargs = {
+            "base_channels": int(erc.base_channels),
+            "num_blocks": tuple(erc.num_blocks),
+            "scale": int(erc.scale),
+            "width_mult": float(erc.width_mult),
+            "use_simam": bool(erc.use_simam),
+            "use_se": bool(erc.use_se),
+            "use_aff": bool(erc.use_aff),
+            "use_mfa_stage23": bool(erc.use_mfa_stage23),
+            "conformer_dim": int(erc.conformer_dim),
+            "num_conformer_layers": int(erc.num_conformer_layers),
+            "num_heads": int(erc.num_heads),
+            "conv_kernel_size": int(erc.conv_kernel_size),
+            "layer_scale_init": float(erc.layer_scale_init),
+            "use_batch_norm": bool(erc.use_batch_norm),
+            "temporal_strides": tuple(erc.temporal_strides),
+        }
     else:
         raise ValueError(f"Unknown backbone: {b_type}")
 
@@ -349,12 +368,14 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
             )
         return s_lr
 
+    decay_cls = bool(getattr(train_cfg, "decay_class_weights", False))
+
     def decay_mask(params: Any) -> Any:
         if isinstance(params, dict):
             return {
                 k: (
                     jax.tree_util.tree_map(lambda _: False, v)
-                    if k == "_aux_class_weights"
+                    if (k == "_aux_class_weights" and not decay_cls)
                     else jax.tree_util.tree_map(
                         lambda p: getattr(p, "ndim", 0) >= 2, v
                     )
@@ -903,6 +924,7 @@ def make_pmap_train_step(
     axis_name: str = "batch",
     num_devices: Optional[int] = None,
     use_vmap: bool = False,
+    forward_only: bool = False,
 ):
     """Build a multi-device `jax.pmap` data-parallel training step (GPU / TPU / multi-CPU).
 
@@ -1171,6 +1193,10 @@ def make_pmap_train_step(
                 raise ValueError(f"Unsupported loss_type: {loss_type}")
             return loss_v, next_bs
 
+        if forward_only:
+            loss_val, _ = loss_fn(state.params)
+            return state, jax.lax.pmean(loss_val, axis_name=axis_name)
+
         if freeze_trunk and "backbone" in state.params:
             frozen_bb = jax.lax.stop_gradient(state.params["backbone"])
             head_only_params = {
@@ -1219,6 +1245,15 @@ def make_pmap_train_step(
         return new_state, loss_val
 
     if use_vmap:
+        if forward_only:
+            return jax.jit(
+                jax.vmap(
+                    _per_device_step,
+                    axis_name=axis_name,
+                    in_axes=(None, 0, 0, 0),
+                    out_axes=(None, 0),
+                )
+            )
         return jax.jit(jax.vmap(_per_device_step, axis_name=axis_name))
     return jax.pmap(_per_device_step, axis_name=axis_name)
 

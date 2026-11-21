@@ -49,6 +49,7 @@ class BackboneType(_StrEnum):
     MAMBA = "mamba"
     ECAPA_TDNN = "ecapa_tdnn"
     RESNET = "resnet"
+    ERES2CONFORMER = "eres2conformer"
 
 
 class ModelSize(_StrEnum):
@@ -73,6 +74,7 @@ class PoolingType(_StrEnum):
     SAP = "sap"
     ASP = "asp"
     ATP = "atp"
+    CATP = "catp"
     CUMULATIVE_STATS = "cumulative_stats"
     PFAS = "pfas"
 
@@ -285,6 +287,27 @@ class ResNetConfig:
 
 
 @dataclasses.dataclass
+class ERes2ConformerConfig:
+    """Configuration for unified SimAM-ERes2Conformer spectro-temporal hybrid encoder."""
+
+    base_channels: int = 64
+    num_blocks: tuple[int, ...] = (3, 4, 6, 3)
+    scale: int = 4
+    width_mult: float = 2.0
+    use_simam: bool = True
+    use_se: bool = True
+    use_aff: bool = True
+    use_mfa_stage23: bool = True
+    conformer_dim: int = 512
+    num_conformer_layers: int = 2
+    num_heads: int = 8
+    conv_kernel_size: int = 15
+    layer_scale_init: float = 0.2
+    use_batch_norm: bool = True
+    temporal_strides: tuple[int, ...] = (1, 1, 2, 2)
+
+
+@dataclasses.dataclass
 class PoolingConfig:
     """Configuration for temporal frame aggregation / pooling.
 
@@ -427,6 +450,9 @@ class ModelConfig:
     mamba: MambaConfig = dataclasses.field(default_factory=MambaConfig)
     ecapa_tdnn: EcapaTdnnConfig = dataclasses.field(default_factory=EcapaTdnnConfig)
     resnet: ResNetConfig = dataclasses.field(default_factory=ResNetConfig)
+    eres2conformer: ERes2ConformerConfig = dataclasses.field(
+        default_factory=ERes2ConformerConfig
+    )
     pooling: PoolingConfig = dataclasses.field(default_factory=PoolingConfig)
     pfas: PfasConfig = dataclasses.field(default_factory=PfasConfig)
     dr_vector: DrVectorConfig = dataclasses.field(default_factory=DrVectorConfig)
@@ -468,6 +494,12 @@ class ModelConfig:
             self.resnet.base_channels = 16
             self.resnet.num_blocks = (1, 1, 1, 1)
             self.resnet.out_dim = 128
+            self.eres2conformer.base_channels = 16
+            self.eres2conformer.num_blocks = (1, 1, 1, 1)
+            self.eres2conformer.width_mult = 1.0
+            self.eres2conformer.conformer_dim = 128
+            self.eres2conformer.num_conformer_layers = 1
+            self.eres2conformer.num_heads = 4
         elif size_val == ModelSize.SMALL.value:
             self.embedding_dim = 192
             self.lstm.hidden_size = 256
@@ -487,6 +519,12 @@ class ModelConfig:
             self.resnet.base_channels = 24
             self.resnet.num_blocks = (2, 2, 2, 2)
             self.resnet.out_dim = 192
+            self.eres2conformer.base_channels = 24
+            self.eres2conformer.num_blocks = (2, 2, 2, 2)
+            self.eres2conformer.width_mult = 1.5
+            self.eres2conformer.conformer_dim = 192
+            self.eres2conformer.num_conformer_layers = 2
+            self.eres2conformer.num_heads = 4
         elif size_val == ModelSize.BASE.value:
             self.embedding_dim = 256
             self.lstm.hidden_size = 384
@@ -506,6 +544,12 @@ class ModelConfig:
             self.resnet.base_channels = 32
             self.resnet.num_blocks = (2, 2, 2, 2)
             self.resnet.out_dim = 256
+            self.eres2conformer.base_channels = 32
+            self.eres2conformer.num_blocks = (2, 3, 4, 2)
+            self.eres2conformer.width_mult = 1.5
+            self.eres2conformer.conformer_dim = 256
+            self.eres2conformer.num_conformer_layers = 2
+            self.eres2conformer.num_heads = 8
         elif size_val == ModelSize.LARGE.value:
             self.embedding_dim = 256
             self.lstm.hidden_size = 512
@@ -534,6 +578,12 @@ class ModelConfig:
             self.resnet.base_channels = 48
             self.resnet.num_blocks = (3, 4, 6, 3)
             self.resnet.out_dim = 384
+            self.eres2conformer.base_channels = 64
+            self.eres2conformer.num_blocks = (3, 4, 6, 3)
+            self.eres2conformer.width_mult = 2.0
+            self.eres2conformer.conformer_dim = 512
+            self.eres2conformer.num_conformer_layers = 2
+            self.eres2conformer.num_heads = 8
         else:
             raise ValueError(f"Unknown model size variant: {size_val}")
 
@@ -576,6 +626,7 @@ class TrainConfig:
     sgd_momentum: float = 0.9
     nesterov: bool = True
     weight_decay: float = 1e-4
+    decay_class_weights: bool = False
     warmup_steps: int = 50
     lr_schedule_cosine: bool = True
     grad_clip_norm: float = 3.0
@@ -697,6 +748,7 @@ class ExperimentConfig:
                 "mamba",
                 "ecapa_tdnn",
                 "resnet",
+                "eres2conformer",
                 "pooling",
                 "pfas",
                 "dr_vector",

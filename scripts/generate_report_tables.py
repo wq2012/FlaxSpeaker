@@ -15,12 +15,13 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PM = os.path.join(REPO_ROOT, "pretrained_models")
 
-FLAGSHIP_ORDER = [
+ALL_FLAGSHIP_ORDER = [
     "univ_full_conformer_large_dr_vectors",
     "univ_full_conformer_large_pfas",
     "univ_full_ecapa_c1024_arcface",
     "univ_full_conformer_large_arcface",
     "univ_full_resnet34_arcface",
+    "univ_full_eres2conformer_large",
 ]
 
 
@@ -57,6 +58,7 @@ def bmin(val: float, vals: list[float], suffix: str = "%") -> str:
 def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
     out: list[str] = []
     fm = flagship["models"]
+    flagship_order = [m for m in ALL_FLAGSHIP_ORDER if m in fm]
     fus = flagship["heterogeneous_fusion"]
     fus2 = fus["official_benchmarks"]
     fus3 = fus["multi_enroll_3way_fusion"]
@@ -71,8 +73,8 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
     )
     out.append("| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
 
-    min_vx_qmf = min(round(fm[mid]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
-    min_cn_qmf = min(round(fm[mid]["official_benchmarks"]["cnceleb_e"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_vx_qmf = min(round(fm[mid]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"], 2) for mid in flagship_order)
+    min_cn_qmf = min(round(fm[mid]["official_benchmarks"]["cnceleb_e"]["qmf"]["eer_percent"], 2) for mid in flagship_order)
     min_cn_me = min(
         round(
             fm[mid]["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"].get(
@@ -80,9 +82,9 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             )["eer_percent"],
             2,
         )
-        for mid in FLAGSHIP_ORDER
+        for mid in flagship_order
     )
-    min_ls_qmf = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["qmf"]["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_ls_qmf = min(round(fm[mid]["official_benchmarks"]["librispeech_test_clean"]["qmf"]["eer_percent"], 2) for mid in flagship_order)
     min_ls_3 = min(
         round(
             fm[mid]["official_benchmarks"]["librispeech_test_clean"]["multi_enroll_3utt"].get(
@@ -90,9 +92,9 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             )["eer_percent"],
             2,
         )
-        for mid in FLAGSHIP_ORDER
+        for mid in flagship_order
     )
-    min_p1 = min(round(d1(fm[mid], "universal_pooled")["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
+    min_p1 = min(round(d1(fm[mid], "universal_pooled")["eer_percent"], 2) for mid in flagship_order)
     min_p3 = min(
         round(
             min(
@@ -103,11 +105,11 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             ),
             2,
         )
-        for mid in FLAGSHIP_ORDER
+        for mid in flagship_order
     )
-    min_m1 = min(round(mac(fm[mid], 1)["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
-    min_m3 = min(round(mac(fm[mid], 3)["eer_percent"], 2) for mid in FLAGSHIP_ORDER)
-    for mid in FLAGSHIP_ORDER:
+    min_m1 = min(round(mac(fm[mid], 1)["eer_percent"], 2) for mid in flagship_order)
+    min_m3 = min(round(mac(fm[mid], 3)["eer_percent"], 2) for mid in flagship_order)
+    for mid in flagship_order:
         m = fm[mid]
         ob = m["official_benchmarks"]
         vx = ob["voxceleb1_o"]
@@ -149,6 +151,8 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
         fus_cands = [fus_2w, fus2]
         if "three_way_backbone_official_benchmarks" in fus and "univ_full_resnet34_arcface" in fm:
             fus_cands.append(fus["three_way_backbone_official_benchmarks"])
+        if "four_way_backbone_official_benchmarks" in fus and "univ_full_eres2conformer_large" in fm:
+            fus_cands.append(fus["four_way_backbone_official_benchmarks"])
         min_f_vx_as = min(round(fc["voxceleb1_o"]["eer_percent"], 2) for fc in fus_cands)
         min_f_vx_qmf = min(round(fc["voxceleb1_o"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
         min_f_cn_qmf = min(round(fc["cnceleb_e"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
@@ -181,14 +185,29 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
                 f"3-Architecture Cosine + AS-Norm + QMF | `{p_3bb:,}` | — | "
                 f"{r3_vx} | {r3_cn} | {r3_ls} | — | — |"
             )
-        act_mids = fus.get("models", FLAGSHIP_ORDER)
+        if "four_way_backbone_official_benchmarks" in fus and "univ_full_eres2conformer_large" in fm:
+            fus_4bb = fus["four_way_backbone_official_benchmarks"]
+            w4b = fus.get("four_way_backbone_weights_selected_on_val", [0.15, 0.15, 0.25, 0.45])
+            p_4bb = (
+                p_2way
+                + int(fm["univ_full_resnet34_arcface"]["num_parameters"])
+                + int(fm["univ_full_eres2conformer_large"]["num_parameters"])
+            )
+            r4_vx, r4_cn, r4_ls = fmt_fus_row(fus_4bb)
+            out.append(
+                f"| **4-Way Backbone Fusion (`{w4b[0]:.2g}·Conf-L + {w4b[1]:.2g}·ECAPA + {w4b[2]:.2g}·ResNet-34 + {w4b[3]:.2g}·ERes2Conf`)** | "
+                f"4-Architecture Cosine + AS-Norm + QMF | `{p_4bb:,}` | — | "
+                f"{r4_vx} | {r4_cn} | {r4_ls} | — | — |"
+            )
+        act_mids = fus.get("models", flagship_order)
         p_act = sum(int(fm[m]["num_parameters"]) for m in act_mids if m in fm)
         n_way = len(act_mids)
-        lbl_fus = (
-            "5-Way Flagship Fusion (`Conf-L + ECAPA + ResNet-34 + PFAS + DrV`)"
-            if n_way == 5
-            else f"{n_way}-Way Flagship Fusion"
-        )
+        if n_way == 6:
+            lbl_fus = "6-Way Flagship Fusion (`Conf-L + ECAPA + ResNet-34 + ERes2Conf + PFAS + DrV`)"
+        elif n_way == 5:
+            lbl_fus = "5-Way Flagship Fusion (`Conf-L + ECAPA + ResNet-34 + PFAS + DrV`)"
+        else:
+            lbl_fus = f"{n_way}-Way Flagship Fusion"
         r5_vx, r5_cn, r5_ls = fmt_fus_row(fus2)
         out.append(
             f"| **{lbl_fus}** | "
@@ -218,6 +237,47 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
         f"— | — |"
     )
     out.append("<!-- END README_FLAGSHIP_TABLE -->\n")
+
+    eres_abl_path = os.path.join(PM, "eres2conformer_ablation_results.json")
+    if os.path.isfile(eres_abl_path):
+        with open(eres_abl_path, "r", encoding="utf-8") as f:
+            eres_abl = json.load(f)
+        arms = eres_abl["arms"]
+        arm_order = [
+            "eres2conformer_catp_sgd",
+            "eres2net_noconf_catp_sgd",
+            "eres2conformer_catp_adamw",
+        ]
+        out.append("<!-- BEGIN ERES2CONF_ABLATION_TABLE -->")
+        out.append(
+            "| Ablation Arm (`27,500` steps = `25k` Stage-1 + `2.5k` `5.0 s` LMFT, batch `512`) | "
+            "Conformer Blocks | Optimizer | Params | "
+            "VoxCeleb1-O Raw / AS-Norm / QMF EER (%) | "
+            "CN-Celeb-E Single Raw / QMF / Multi-Enroll EER (%) | "
+            "LibriSpeech `test-clean` 1-Utt Raw / QMF / 3-Utt EER (%) | "
+            "Controlled Pooled 1/3-Utt EER (%) | Controlled Macro 1/3-Utt EER (%) |"
+        )
+        out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+        for aid in arm_order:
+            a = arms[aid]
+            ob = a["official_benchmarks"]
+            vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
+            b = "**" if aid == eres_abl["winner"] else ""
+            cn_me = cn["multi_enroll_map"]["as_norm"]["eer_percent"]
+            ls_3 = ls["multi_enroll_3utt"]["as_norm"]["eer_percent"]
+            p1 = d1(a, "universal_pooled")["eer_percent"]
+            p3 = d3(a, "universal_pooled").get("as_norm", d3(a, "universal_pooled"))["eer_percent"]
+            m1 = mac(a, 1)["eer_percent"]
+            m3 = mac(a, 3)["eer_percent"]
+            out.append(
+                f"| {b}`{aid}`{b} | `{a['num_conformer_layers']}` | `{a['optimizer']}` | "
+                f"`{int(a['num_parameters']):,}` | "
+                f"{f2(vx['eer_percent'])}% / {f2(vx['as_norm']['eer_percent'])}% / {b}{f2(vx['qmf']['eer_percent'])}%{b} | "
+                f"{f2(cn['eer_percent'])}% / {b}{f2(cn['qmf']['eer_percent'])}%{b} / {b}{f2(cn_me)}%{b} | "
+                f"{f2(ls['eer_percent'])}% / {b}{f2(ls['qmf']['eer_percent'])}%{b} / {b}{f2(ls_3)}%{b} | "
+                f"{b}{f2(p1)}%{b} / {b}{f2(p3)}%{b} | {b}{f2(m1)}%{b} / {b}{f2(m3)}%{b} |"
+            )
+        out.append("<!-- END ERES2CONF_ABLATION_TABLE -->\n")
 
     out.append("<!-- BEGIN PFAS_SWEEP_TABLE -->")
     out.append(
@@ -649,6 +709,7 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
         "univ_full_conformer_large_arcface",
         "univ_full_ecapa_c1024_arcface",
         "univ_full_resnet34_arcface",
+        "univ_full_eres2conformer_large",
         "univ_conformer_small_ge2e",
         "univ_ecapa_tdnn_small_ge2e",
         "univ_lstm_small_ge2e",
