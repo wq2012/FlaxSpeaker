@@ -400,6 +400,54 @@ def hybrid_pfas_score_matrix(
     return (1.0 - hybrid_alpha) * cos_mat + hybrid_alpha * pfas_mat
 
 
+def compute_multi_enroll_weights(
+    frame_lengths: Sequence[float],
+    length_gamma: float = 0.0,
+    max_weight: float = 0.0,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """Computes normalized duration weights `w_u` for multi-utterance enrollment.
+
+    When `length_gamma > 0`, weights scale as `max(T_u, 1) ** length_gamma`; otherwise
+    uniform `1 / U` weights are returned. When `max_weight > 0` and `max_weight * U > 1`,
+    iterative water-filling caps every single-utterance weight at `max_weight` so no
+    single long recording dominates a multi-clip speaker enrollment.
+    """
+    n = len(frame_lengths)
+    if n == 0:
+        raise ValueError("frame_lengths must be non-empty.")
+    if n == 1:
+        return np.ones((1,), dtype=np.float64)
+    gamma = float(length_gamma)
+    if gamma > 0.0:
+        lengths = np.maximum(np.asarray(frame_lengths, dtype=np.float64), 1.0)
+        w = np.power(lengths, gamma)
+        w = w / np.maximum(np.sum(w), eps)
+    else:
+        w = np.full((n,), 1.0 / n, dtype=np.float64)
+
+    cap = float(max_weight)
+    if cap > 0.0 and cap * n > 1.0 + 1e-8:
+        capped = np.zeros((n,), dtype=bool)
+        for _ in range(n):
+            over = (~capped) & (w > cap + 1e-12)
+            if not np.any(over):
+                break
+            capped |= over
+            w[capped] = cap
+            rem = 1.0 - float(np.sum(w[capped]))
+            free = ~capped
+            if not np.any(free) or rem <= 0.0:
+                break
+            free_sum = float(np.sum(w[free]))
+            if free_sum > eps:
+                w[free] = w[free] * (rem / free_sum)
+            else:
+                w[free] = rem / float(np.sum(free))
+        w = w / np.maximum(np.sum(w), eps)
+    return w
+
+
 def stack_multi_enroll_hybrid_pfas(
     enroll_embeddings: Sequence[jax.Array],
     cosine_dim: int = 256,
@@ -407,6 +455,7 @@ def stack_multi_enroll_hybrid_pfas(
     key_dim: int = 32,
     value_dim: int = 96,
     weights: Optional[Sequence[float]] = None,
+    max_weight: float = 0.0,
     eps: float = 1e-6,
 ) -> jax.Array:
     """Combines L2-normalized global cosine centroid with stacked multi-utterance PFAS keys & values."""
@@ -419,8 +468,14 @@ def stack_multi_enroll_hybrid_pfas(
         pfas_tails.append(arr[cosine_dim:])
     cos_mat = jnp.stack(cos_list, axis=0)
     if weights is not None and len(weights) == len(cos_list):
-        w = jnp.maximum(jnp.asarray(weights, dtype=jnp.float32), eps)
-        w = w / jnp.sum(w)
+        w_np = np.maximum(np.asarray(weights, dtype=np.float64), eps)
+        w_np = w_np / np.sum(w_np)
+        if max_weight > 0.0 and max_weight * len(cos_list) > 1.0 + 1e-8:
+            # Cap outlier single-utterance weights via iterative redistribution
+            w_np = compute_multi_enroll_weights(
+                w_np, length_gamma=1.0, max_weight=max_weight, eps=eps
+            )
+        w = jnp.asarray(w_np, dtype=jnp.float32)
         c_mean = jnp.sum(cos_mat * w[:, None], axis=0)
     else:
         c_mean = jnp.mean(cos_mat, axis=0)

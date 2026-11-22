@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evaluate a pretrained FlaxSpeaker model on 1-utt or multi-enrollment verification trials.
 
-All 44 pretrained models are available in the Hugging Face FlaxSpeaker Collection:
+All 55 pretrained models are available in the Hugging Face FlaxSpeaker Collection:
 https://huggingface.co/collections/wq2012/flaxspeaker
 
 Usage:
@@ -74,6 +74,18 @@ def main() -> None:
         help="Optional path to a multi-enrollment verification trials TSV file.",
     )
     parser.add_argument(
+        "--val_trials_file",
+        type=str,
+        default="",
+        help="Optional speaker-disjoint validation trials TSV for QMF calibration.",
+    )
+    parser.add_argument(
+        "--cohort_csv",
+        type=str,
+        default="",
+        help="Optional speaker-disjoint cohort CSV for AS-Norm / QMF-v2 calibration.",
+    )
+    parser.add_argument(
         "--data_root",
         type=str,
         default="",
@@ -100,18 +112,49 @@ def main() -> None:
         )
         results["hf_collection_url"] = hf_compat.HF_COLLECTION_URL
 
+    cohort_embs = None
+    if args.cohort_csv:
+        cohort_spk = dataset.get_csv_spk_to_utts(
+            dataset.resolve_data_path(args.cohort_csv)
+        )
+        cohort_cache = feature_extraction.FeatureCache(frontend)
+        cohort_embs = evaluation.compute_speaker_centroid_cohort(
+            model.state,
+            cohort_spk,
+            exp_cfg,
+            feature_cache=cohort_cache,
+            max_speakers=int(getattr(exp_cfg.eval, "as_norm_cohort_size", 300)),
+        )
+    val_trials = (
+        dataset.load_trials_file(args.val_trials_file)
+        if args.val_trials_file
+        else None
+    )
+
     if args.trials_file:
         trials = dataset.load_trials_file(args.trials_file)
         cache = feature_extraction.FeatureCache(frontend)
         results["trials_1utt"] = evaluation.evaluate_verification_trials(
-            model.state, trials, exp_cfg, feature_cache=cache
+            model.state,
+            trials,
+            exp_cfg,
+            feature_cache=cache,
+            cohort_embeddings=cohort_embs,
+            include_as_norm_breakdown=(cohort_embs is not None),
+            qmf_val_trials=val_trials,
+            include_qmf_breakdown=(val_trials is not None),
         )
 
     if args.multi_trials_file:
         m_trials = _load_multi_enroll_trials(args.multi_trials_file)
         cache = feature_extraction.FeatureCache(frontend)
         results["trials_multi_enroll"] = evaluation.evaluate_multi_enroll_trials(
-            model.state, m_trials, exp_cfg, feature_cache=cache
+            model.state,
+            m_trials,
+            exp_cfg,
+            feature_cache=cache,
+            cohort_embeddings=cohort_embs,
+            include_as_norm_breakdown=(cohort_embs is not None),
         )
 
     if args.data_root:

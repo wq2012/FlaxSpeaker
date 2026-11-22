@@ -1,7 +1,7 @@
 {
   "timestamp_utc": "2026-10-29T02:30:11.784398+00:00",
-  "trunk_checkpoint": "/usr/local/google/home/quanw/Code/github/FlaxSpeaker/pretrained_models/univ_full_conformer_large_arcface/trunk_pre_lmft.msgpack",
-  "shard_dir": "/usr/local/google/home/quanw/Data/speaker_datasets/sharded_caches/universal_full_v050",
+  "trunk_checkpoint": "pretrained_models/univ_full_conformer_large_arcface/trunk_pre_lmft.msgpack",
+  "shard_dir": "data/speaker_datasets/sharded_caches/universal_full_v050",
   "head_warmup_steps": 250,
   "joint_finetune_steps": 150,
   "selection_metric": "0.5 * val_1utt_eer_percent + 0.5 * val_3utt_eer_percent",

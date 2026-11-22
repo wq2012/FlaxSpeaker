@@ -1002,7 +1002,12 @@ def odyssey2022_conformer_atp_config(
     pure_paper_mode: bool = True,
     paper_faithful: Optional[bool] = None,
 ) -> ExperimentConfig:
-    """Preset for Conformer + Attentive Temporal Pooling (Wang et al., Odyssey 2022)."""
+    """Preset for Conformer + Attentive Temporal Pooling (Wang et al., Odyssey 2022).
+
+    Note: `subsample_after_layer = 3` places 2x frame stacking mid-stack on
+    >=4-layer variants (`base`/`large`/`xl`, matching the 12-layer Odyssey 2022
+    encoder) and after the 3rd Conformer block on the 3-layer `small` variant.
+    """
     if paper_faithful is not None:
         pure_paper_mode = bool(paper_faithful)
     cfg = ExperimentConfig()

@@ -1,6 +1,6 @@
 """Command-line interface for FlaxSpeaker.
 
-All 50 pretrained models are hosted on the Hugging Face Hub (`wq2012/<model_id>`):
+All 55 pretrained models are hosted on the Hugging Face Hub (`wq2012/<model_id>`):
 https://huggingface.co/collections/wq2012/flaxspeaker
 """
 

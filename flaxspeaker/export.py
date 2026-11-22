@@ -82,17 +82,28 @@ def _make_tf_module(
     return tf_Module, input_spec
 
 
-def _convert_tflite(tf_mod: Any, input_spec: Any, quantize_int8: bool, lower_tensor_list_ops: bool = True) -> bytes:
+def _convert_tflite(
+    tf_mod: Any,
+    input_spec: Any,
+    quantize_int8: bool,
+    lower_tensor_list_ops: bool = True,
+    allow_select_tf_ops: bool = False,
+) -> bytes:
     import tensorflow as tf
 
     concrete_fn = tf_mod.f.get_concrete_function(input_spec)
     converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_fn])
     if quantize_int8:
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    converter.target_spec.supported_ops = [
-        tf.lite.OpsSet.TFLITE_BUILTINS,
-        tf.lite.OpsSet.SELECT_TF_OPS,
-    ]
+    if allow_select_tf_ops:
+        converter.target_spec.supported_ops = [
+            tf.lite.OpsSet.TFLITE_BUILTINS,
+            tf.lite.OpsSet.SELECT_TF_OPS,
+        ]
+    else:
+        converter.target_spec.supported_ops = [
+            tf.lite.OpsSet.TFLITE_BUILTINS,
+        ]
     if not lower_tensor_list_ops:
         converter._experimental_lower_tensor_list_ops = False
     return converter.convert()
@@ -104,6 +115,7 @@ def export_to_tflite(
     output_tflite_path: str,
     quantize_int8: bool = False,
     seq_len: Optional[int] = None,
+    allow_select_tf_ops: bool = False,
 ) -> dict[str, Any]:
     """Export a trained Flax speaker encoder to TFLite (`.tflite`).
 
@@ -113,6 +125,9 @@ def export_to_tflite(
         output_tflite_path: Destination `.tflite` file path.
         quantize_int8: Whether to apply post-training dynamic range quantization.
         seq_len: Optional sequence length override for exported input signature.
+        allow_select_tf_ops: Whether to permit `SELECT_TF_OPS` (e.g. XLA
+            fallback for Mamba's `associative_scan`). Defaults to `False` so
+            standard exports enforce pure `TFLITE_BUILTINS`.
 
     Returns:
         Dictionary with `tflite_path`, `size_bytes`, `size_kb`, and `quantize_int8`.
@@ -126,12 +141,19 @@ def export_to_tflite(
 
     try:
         tf_mod, input_spec = _make_tf_module(state, resolved_seq_len, feat_dim, enable_xla=False)
-        tflite_model = _convert_tflite(tf_mod, input_spec, quantize_int8)
+        tflite_model = _convert_tflite(
+            tf_mod,
+            input_spec,
+            quantize_int8,
+            allow_select_tf_ops=allow_select_tf_ops,
+        )
     except Exception as first_exc:  # converter errors are not a single exception type
-        # Fallback for models using XLA-specific primitives (e.g. Mamba's
-        # associative_scan): emit XLA ops and rely on SELECT_TF_OPS. The first
-        # error is surfaced instead of being swallowed so that a genuine export
-        # bug is not hidden behind the fallback.
+        if not allow_select_tf_ops:
+            raise RuntimeError(
+                "Non-XLA pure TFLITE_BUILTINS conversion failed "
+                f"({type(first_exc).__name__}: {first_exc}). Pass "
+                "`allow_select_tf_ops=True` if exporting an XLA-dependent model."
+            ) from first_exc
         warnings.warn(
             "jax2tf conversion without XLA ops failed "
             f"({type(first_exc).__name__}: {first_exc}); retrying with enable_xla=True.",
@@ -139,7 +161,13 @@ def export_to_tflite(
             stacklevel=2,
         )
         tf_mod, input_spec = _make_tf_module(state, resolved_seq_len, feat_dim, enable_xla=True)
-        tflite_model = _convert_tflite(tf_mod, input_spec, quantize_int8, lower_tensor_list_ops=False)
+        tflite_model = _convert_tflite(
+            tf_mod,
+            input_spec,
+            quantize_int8,
+            lower_tensor_list_ops=False,
+            allow_select_tf_ops=True,
+        )
 
     with open(output_tflite_path, "wb") as f:
         f.write(tflite_model)

@@ -179,11 +179,16 @@ def _score_single_trials_array(
     exp_cfg: configs.ExperimentConfig,
     utt_to_emb: dict[str, np.ndarray],
     cohort_embs: Optional[np.ndarray] = None,
-    as_norm_top_k: int = 100,
+    as_norm_top_k: Optional[int] = None,
 ) -> tuple[np.ndarray, Optional[np.ndarray]]:
     """Computes `(raw_scores, as_norm_scores)` for arbitrary-scale single-utterance trial lists."""
     scoring_t = str(
         getattr(exp_cfg.model.scoring_type, "value", exp_cfg.model.scoring_type)
+    )
+    resolved_top_k = (
+        int(as_norm_top_k)
+        if as_norm_top_k is not None
+        else int(getattr(exp_cfg.eval, "as_norm_top_k", 180))
     )
     unique_utts = sorted({u for _, u1, u2 in trials for u in (u1, u2)})
     u_idx = {u: i for i, u in enumerate(unique_utts)}
@@ -192,6 +197,8 @@ def _score_single_trials_array(
     raw_scores = np.empty((n_tr,), dtype=np.float64)
     pfas_cfg_opt = None
     pfas_scale_opt = 16.0
+    cos_dim_opt = int(exp_cfg.model.embedding_dim)
+    h_alpha_opt = float(getattr(exp_cfg.model.pfas, "hybrid_alpha", 0.25))
 
     if scoring_t == "pfas":
         import functools
@@ -258,6 +265,58 @@ def _score_single_trials_array(
                     jnp.asarray(u_vals[ei]),
                 )
             )
+    elif scoring_t == "hybrid_pfas":
+        import functools
+        import jax
+
+        pfas_cfg, pfas_scale, h_alpha, cos_dim = (
+            evaluation._resolve_pfas_eval_params(state, exp_cfg)
+        )
+        pfas_cfg_opt = pfas_cfg
+        pfas_scale_opt = pfas_scale
+        cos_dim_opt = cos_dim
+        h_alpha_opt = h_alpha
+        pair_fn = jax.jit(
+            jax.vmap(
+                functools.partial(
+                    scoring.hybrid_pfas_score_pair,
+                    cosine_dim=cos_dim,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                    hybrid_alpha=h_alpha,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=getattr(
+                        pfas_cfg, "apply_softmax_per_test_key", False
+                    ),
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
+            )
+        )
+        for s_i in range(0, n_tr, 16384):
+            e_i = min(n_tr, s_i + 16384)
+            sub = trials[s_i:e_i]
+            ei = np.fromiter(
+                (u_idx[u1] for _, u1, _ in sub), dtype=np.int64, count=len(sub)
+            )
+            ti = np.fromiter(
+                (u_idx[u2] for _, _, u2 in sub), dtype=np.int64, count=len(sub)
+            )
+            raw_scores[s_i:e_i] = np.asarray(
+                pair_fn(jnp.asarray(u_mat[ti]), jnp.asarray(u_mat[ei]))
+            )
     elif scoring_t == "dr_vector" and "_aux_dr_net" in state.params:
         import jax
 
@@ -295,10 +354,12 @@ def _score_single_trials_array(
             trials,
             {u: utt_to_emb[u] for u in unique_utts},
             cohort,
-            top_k=as_norm_top_k,
+            top_k=resolved_top_k,
             scoring_type=scoring_t,
             pfas_cfg=pfas_cfg_opt,
             pfas_scale=pfas_scale_opt,
+            cosine_dim=cos_dim_opt,
+            hybrid_alpha=h_alpha_opt,
         )
     return raw_scores, asn_scores
 

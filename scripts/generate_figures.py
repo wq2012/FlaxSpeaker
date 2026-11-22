@@ -207,7 +207,7 @@ def draw_architecture_diagram(
         2.65,
         h_top,
         "3. Masked Backbones (x7)",
-        "Frame states $\\mathbf{H} \\in \\mathbb{R}^{B \\times T \\times D}$",
+        "Frame states $\\mathbf{H} \\in \\mathbb{R}^{B \\times T' \\times D}$",
         [
             "SimAM-ERes2Conformer (Large / V2 / XL)",
             "Conformer (Small–Large) | Mamba SSM",
@@ -226,13 +226,13 @@ def draw_architecture_diagram(
         2.75,
         h_top,
         "4. Pooling Heads (x10) & Neck",
-        "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS: 640–1536-D)",
+        "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS: 640–2048-D)",
         [
             "Context-ATP, Hybrid-PFAS, ATP, ASP,",
             "  SAP, Stats, Mean, Last, CumStats",
             "  → LN/BN-Neck → FC(256) → $L_2$",
-            "PFAS / Hybrid-PFAS: $K{=}4..32$ keys",
-            "  ($d_k{=}16..32, d_v{=}48..128$)",
+            "PFAS / Hybrid-PFAS: $K = 4$–$32$ keys",
+            "  ($d_k = 16$–$32$, $d_v = 48$–$128$)",
         ],
         "#FAF5FF",
         "#A855F7",
@@ -251,13 +251,16 @@ def draw_architecture_diagram(
         y_bot,
         6.60,
         h_bot,
-        "5. Nine Losses & Four Scorers (+ Clean-K3 LMFT & Inter-TopK)",
-        "Batch ($N{=}8..128$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
+        "5. Ten Losses & Four Scorers (+ Clean-K3 LMFT & Inter-TopK)",
+        (
+            "Batch ($N = 8$–$128$, $M = 4$) → loss $\\mathcal{L}$;  "
+            "trial ($\\mathbf{e}_{\\mathrm{test}}$, $\\mathbf{e}_{\\mathrm{enr}}$) → score $s$"
+        ),
         [
-            "Losses: Sub-Center (K=3) ArcFace (+ Inter-TopK) | CosFace, SphereFace, Softmax",
-            "  | GE2E softmax / contrast | Extended-Set Softmax (pure Eq. 2 or BXS) | Triplet",
+            "Losses: Sub-Center ($K_{\\mathrm{sc}}{=}3$) ArcFace (+ Inter-TopK) | CosFace, SphereFace, Softmax",
+            "  | GE2E softmax / contrast | Extended-Set Softmax (pure Eq. 2 or BXS) | Pairwise, Triplet",
             (
-                "Scoring: cosine (+ AS-Norm & QMF-v2) | Hybrid-PFAS "
+                "Scoring: cosine (+ AS-Norm & QMF/QMF-v2) | Hybrid-PFAS "
                 "| PFAS | Dr-Vector"
             ),
         ],
@@ -745,7 +748,7 @@ def draw_benchmark_charts(
     ax.set_xlim(-0.55, 2.82)
     ax.set_ylabel("Model File Size (MB, $10^6$ bytes)", fontsize=9.2)
     ax.set_title(
-        "(d) TFLite export (x86 CPU, fixed 1.8 s window): FP32 vs. INT8",
+        "(d) Tier-1 TFLite sizes & CPU latencies (1.8 s window)",
         fontsize=10.0,
         fontweight="bold",
     )
@@ -785,7 +788,7 @@ def draw_flagship_and_ablation_chart(
     fus = flag_data.get("heterogeneous_fusion", {})
 
     plt.close("all")
-    fig, axes = plt.subplots(1, 2, figsize=(11.6, 3.65), dpi=300)
+    fig, axes = plt.subplots(1, 2, figsize=(11.9, 3.75), dpi=300)
     fig.patch.set_facecolor("#FFFFFF")
 
     # Panel (a): Tier-2 Flagships + Fusion on Official VoxCeleb1-O & CN-Celeb-E
@@ -793,15 +796,15 @@ def draw_flagship_and_ablation_chart(
     model_rows = [
         ("Conf-L\nArcFace", "univ_full_conformer_large_arcface"),
         ("ECAPA\nc1024", "univ_full_ecapa_c1024_arcface"),
-        ("SE-ResNet\n34", "univ_full_resnet34_arcface"),
-        ("ERes2Conf\nLarge", "univ_full_eres2conformer_large"),
+        ("ResNet-34\nArcFace", "univ_full_resnet34_arcface"),
+        ("ERes2-L\nCosine", "univ_full_eres2conformer_large"),
     ]
     for lbl_opt, k_opt in (
-        ("Large\nHybPFAS", "univ_full_eres2conformer_large_pfas"),
-        ("V2-Large\nCosine", "univ_full_eres2conformer_v2_large"),
-        ("V2-Large\nHybPFAS", "univ_full_eres2conformer_v2_pfas"),
-        ("XL-64M\nHybPFAS", "univ_full_eres2conformer_xl_pfas"),
-        ("XL-64M\nCosine", "univ_full_eres2conformer_xl"),
+        ("ERes2-L\nHybPFAS", "univ_full_eres2conformer_large_pfas"),
+        ("ERes2-V2\nCosine", "univ_full_eres2conformer_v2_large"),
+        ("ERes2-V2\nHybPFAS", "univ_full_eres2conformer_v2_pfas"),
+        ("ERes2-XL\nHybPFAS", "univ_full_eres2conformer_xl_pfas"),
+        ("ERes2-XL\nCosine", "univ_full_eres2conformer_xl"),
     ):
         if k_opt in fm:
             model_rows.append((lbl_opt, k_opt))
@@ -861,7 +864,7 @@ def draw_flagship_and_ablation_chart(
                 color=col,
             )
     ax.set_xticks(xa)
-    ax.set_xticklabels(labels_a, fontsize=6.6)
+    ax.set_xticklabels(labels_a, fontsize=6.4)
     ax.set_ylabel("Official Zero-Shot EER (%)", fontsize=9.0)
     ax.set_title(
         "(a) Tier-2 full-data universal flagships & fusion (12,193 spk)",

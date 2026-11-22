@@ -3083,6 +3083,291 @@ class TestV070Innovations(unittest.TestCase):
             lh["xl_64m_clean_145k"]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"],
         )
 
+    def test_train_cli_subcenter_arcface_and_eval_config_wiring(self):
+        import json
+        import subprocess
+        import sys
+        import wave
+
+        from scripts import train_full_data_flagships as tff
+
+        # 1. Verify compute_multi_enroll_weights with length_gamma and max_weight cap
+        w_unif = scoring.compute_multi_enroll_weights([100, 400, 900], length_gamma=0.0, max_weight=0.20)
+        self.assertTrue(np.allclose(w_unif, [1.0 / 3.0] * 3))
+        w_cap = scoring.compute_multi_enroll_weights(
+            [100, 100, 100, 100, 100, 10000], length_gamma=0.5, max_weight=0.20
+        )
+        self.assertAlmostEqual(float(np.sum(w_cap)), 1.0, places=6)
+        self.assertLessEqual(float(np.max(w_cap)), 0.20 + 1e-6)
+        self.assertGreater(float(w_cap[-1]), float(w_cap[0]))
+
+        # 2. Verify EvalConfig.use_qmf, qmf_use_cohort_stats, multi_enroll_length_gamma,
+        #    PfasConfig.multi_enroll_max_weight, and train_full_data_flagships hybrid_pfas
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.CONFORMER
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.embedding_dim = 32
+        cfg.model.pooling.pooling_type = configs.PoolingType.HYBRID_PFAS
+        cfg.model.scoring_type = configs.ScoringType.HYBRID_PFAS
+        cfg.model.pfas.num_keys = 2
+        cfg.model.pfas.key_dim = 8
+        cfg.model.pfas.value_dim = 16
+        cfg.model.pfas.hybrid_alpha = 0.35
+        cfg.model.pfas.multi_enroll_max_weight = 0.25
+        cfg.model.seq_len = 24
+        cfg.train.loss.loss_type = configs.LossType.EXTENDED_SET_SOFTMAX
+        cfg.train.loss.scoring_type = configs.ScoringType.HYBRID_PFAS
+        cfg.loss = cfg.train.loss
+        cfg.eval.use_qmf = True
+        cfg.eval.qmf_use_cohort_stats = True
+        cfg.eval.as_norm_top_k = 4
+        cfg.eval.multi_enroll_length_gamma = 0.4
+
+        _, st = neural_net.get_speaker_encoder(cfg, skip_warm_start=True)
+        rng = np.random.default_rng(91)
+        dim = cfg.model.output_embedding_dim
+        spks = [rng.standard_normal((dim,)).astype(np.float32) for _ in range(4)]
+        pre_embs = {}
+        frame_map = {}
+        norm_map = {}
+        for s_idx, base_v in enumerate(spks):
+            for u_idx in range(3):
+                uk = f"s{s_idx}_u{u_idx}"
+                pre_embs[uk] = (base_v + 0.05 * rng.standard_normal((dim,))).astype(np.float32)
+                frame_map[uk] = 120 + 60 * u_idx
+                norm_map[uk] = 9.0 + float(u_idx)
+
+        val_trials = [
+            (1, "s0_u0", "s0_u1"),
+            (1, "s1_u0", "s1_u1"),
+            (0, "s0_u0", "s1_u1"),
+            (0, "s1_u0", "s0_u1"),
+        ]
+        eval_trials = [
+            (1, "s2_u0", "s2_u1"),
+            (1, "s3_u0", "s3_u1"),
+            (0, "s2_u0", "s3_u1"),
+            (0, "s3_u0", "s2_u1"),
+        ]
+        cohort = rng.standard_normal((10, dim)).astype(np.float32)
+
+        # Overlapping val/eval trials must raise ValueError (strict zero-leakage guard)
+        with self.assertRaises(ValueError):
+            evaluation.evaluate_verification_trials(
+                st,
+                eval_trials,
+                cfg,
+                precomputed_embeddings=pre_embs,
+                cohort_embeddings=cohort,
+                qmf_val_trials=eval_trials,
+                utt_to_frames=frame_map,
+                utt_to_norms=norm_map,
+            )
+
+        # Missing cohort_embeddings when qmf_use_cohort_stats=True must raise ValueError
+        with self.assertRaises(ValueError):
+            evaluation.evaluate_verification_trials(
+                st,
+                eval_trials,
+                cfg,
+                precomputed_embeddings=pre_embs,
+                cohort_embeddings=None,
+                qmf_val_trials=val_trials,
+                utt_to_frames=frame_map,
+                utt_to_norms=norm_map,
+            )
+        with self.assertRaises(ValueError):
+            evaluation.fit_qmf_calibrator(
+                st,
+                val_trials,
+                cfg,
+                precomputed_embeddings=pre_embs,
+                cohort_embeddings=None,
+                utt_to_frames=frame_map,
+                utt_to_norms=norm_map,
+            )
+
+        res_qmf = evaluation.evaluate_verification_trials(
+            st,
+            eval_trials,
+            cfg,
+            precomputed_embeddings=pre_embs,
+            cohort_embeddings=cohort,
+            qmf_val_trials=val_trials,
+            utt_to_frames=frame_map,
+            utt_to_norms=norm_map,
+        )
+        self.assertIn("eer_percent", res_qmf)
+        self.assertLessEqual(res_qmf["eer_percent"], 25.0)
+
+        # Shipped-checkpoint mode (use_qmf=False, use_as_norm=False) must still emit
+        # "as_norm" and "qmf" breakdowns when cohort/val trials are passed.
+        cfg_shipped = configs.ExperimentConfig.from_dict(cfg.to_dict())
+        cfg_shipped.eval.use_qmf = False
+        cfg_shipped.eval.use_as_norm = False
+        cfg_shipped.eval.apply_as_norm = False
+        res_ship = evaluation.evaluate_verification_trials(
+            st,
+            eval_trials,
+            cfg_shipped,
+            precomputed_embeddings=pre_embs,
+            cohort_embeddings=cohort,
+            include_as_norm_breakdown=True,
+            qmf_val_trials=val_trials,
+            utt_to_frames=frame_map,
+            utt_to_norms=norm_map,
+        )
+        self.assertIn("as_norm", res_ship)
+        self.assertIn("qmf", res_ship)
+
+        # Verify _score_single_trials_array handles hybrid_pfas without falling back to plain cosine
+        raw_h, asn_h = tff._score_single_trials_array(
+            st, eval_trials, cfg, pre_embs, cohort_embs=cohort
+        )
+        self.assertEqual(raw_h.shape, (4,))
+        self.assertIsNotNone(asn_h)
+        self.assertGreater(float(raw_h[0]), float(raw_h[2]))
+
+        # Verify multi-enroll length-weighted Hybrid-PFAS scoring
+        m_trials = [
+            (1, ["s2_u0", "s2_u1", "s2_u2", "s2_u0", "s2_u1"], "s2_u2"),
+            (0, ["s2_u0", "s2_u1", "s2_u2", "s2_u0", "s2_u1"], "s3_u2"),
+        ]
+        res_me = evaluation.evaluate_multi_enroll_trials(
+            st,
+            m_trials,
+            cfg,
+            precomputed_embeddings=pre_embs,
+            cohort_embeddings=cohort,
+            utt_to_frames=frame_map,
+        )
+        self.assertEqual(res_me["eer_percent"], 0.0)
+
+        # 3. Verify scripts/train.py runs subcenter_arcface end-to-end without crashing
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        with tempfile.TemporaryDirectory() as tmpd:
+            wav_paths = []
+            sr = 16000
+            t_vec = np.linspace(0.0, 0.4, int(0.4 * sr), endpoint=False)
+            for s_i in range(2):
+                for u_i in range(2):
+                    wp = os.path.join(tmpd, f"spk{s_i}_{u_i}.wav")
+                    sig = (0.3 * np.sin(2.0 * np.pi * (220.0 + 90.0 * s_i) * t_vec) * 32767.0).astype(np.int16)
+                    with wave.open(wp, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(sr)
+                        wf.writeframes(sig.tobytes())
+                    wav_paths.append((f"spk{s_i}", wp))
+
+            train_csv = os.path.join(tmpd, "train.csv")
+            with open(train_csv, "w", encoding="utf-8") as f:
+                for spk_id, wp in wav_paths:
+                    f.write(f"{spk_id},{wp}\n")
+            trials_tsv = os.path.join(tmpd, "trials.tsv")
+            with open(trials_tsv, "w", encoding="utf-8") as f:
+                f.write(f"1\t{wav_paths[0][1]}\t{wav_paths[1][1]}\n")
+                f.write(f"0\t{wav_paths[0][1]}\t{wav_paths[2][1]}\n")
+
+            sc_cfg = configs.ExperimentConfig()
+            sc_cfg.model.backbone = configs.BackboneType.ECAPA_TDNN
+            sc_cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+            sc_cfg.model.seq_len = 32
+            sc_cfg.model.min_seq_len = 24
+            sc_cfg.model.embedding_dim = 32
+            sc_cfg.train.batch_size = 4
+            sc_cfg.train.num_steps = 2
+            sc_cfg.train.loss.loss_type = configs.LossType.SUBCENTER_ARCFACE
+            sc_cfg.train.loss.subcenter_k = 3
+            sc_cfg.loss = sc_cfg.train.loss
+            yml_path = os.path.join(tmpd, "subcenter.yml")
+            sc_cfg.to_yaml(yml_path)
+            out_ckpt = os.path.join(tmpd, "ckpt")
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(repo_root, "scripts", "train.py"),
+                    "--config",
+                    yml_path,
+                    "--train_csv",
+                    train_csv,
+                    "--eval_csv",
+                    train_csv,
+                    "--trials_file",
+                    trials_tsv,
+                    "--output_dir",
+                    out_ckpt,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr + "\n" + proc.stdout)
+            self.assertTrue(os.path.exists(os.path.join(out_ckpt, "model.safetensors")))
+
+            # 4. Verify scripts/evaluate.py --cohort_csv & --val_trials_file emit
+            #    "as_norm" and "qmf" breakdowns on a shipped-style (use_qmf=False) checkpoint
+            extra_wavs = []
+            for s_i in range(2, 14):
+                n_u = 2 if s_i < 4 else 1
+                for u_i in range(n_u):
+                    wp = os.path.join(tmpd, f"spk{s_i}_{u_i}.wav")
+                    sig = (
+                        0.3
+                        * np.sin(2.0 * np.pi * (180.0 + 45.0 * s_i) * t_vec)
+                        * 32767.0
+                    ).astype(np.int16)
+                    with wave.open(wp, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(sr)
+                        wf.writeframes(sig.tobytes())
+                    extra_wavs.append((f"spk{s_i}", wp))
+
+            cohort_csv = os.path.join(tmpd, "cohort.csv")
+            with open(cohort_csv, "w", encoding="utf-8") as f:
+                for spk_id, wp in extra_wavs[4:]:
+                    f.write(f"{spk_id},{wp}\n")
+            eval_tsv = os.path.join(tmpd, "eval_trials.tsv")
+            with open(eval_tsv, "w", encoding="utf-8") as f:
+                f.write(f"1\t{extra_wavs[0][1]}\t{extra_wavs[1][1]}\n")
+                f.write(f"0\t{extra_wavs[0][1]}\t{extra_wavs[2][1]}\n")
+            multi_tsv = os.path.join(tmpd, "multi_trials.tsv")
+            with open(multi_tsv, "w", encoding="utf-8") as f:
+                f.write(f"1\t{extra_wavs[0][1]},{extra_wavs[1][1]}\t{extra_wavs[1][1]}\n")
+                f.write(f"0\t{extra_wavs[0][1]},{extra_wavs[1][1]}\t{extra_wavs[2][1]}\n")
+            eval_json = os.path.join(tmpd, "eval_out.json")
+            proc_eval = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(repo_root, "scripts", "evaluate.py"),
+                    "--model_dir",
+                    out_ckpt,
+                    "--trials_file",
+                    eval_tsv,
+                    "--multi_trials_file",
+                    multi_tsv,
+                    "--cohort_csv",
+                    cohort_csv,
+                    "--val_trials_file",
+                    trials_tsv,
+                    "--output_json",
+                    eval_json,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                proc_eval.returncode, 0, msg=proc_eval.stderr + "\n" + proc_eval.stdout
+            )
+            with open(eval_json, "r", encoding="utf-8") as f:
+                eval_payload = json.load(f)
+            self.assertIn("as_norm", eval_payload["trials_1utt"])
+            self.assertIn("qmf", eval_payload["trials_1utt"])
+            self.assertIn("as_norm", eval_payload["trials_multi_enroll"])
+
 
 if __name__ == "__main__":
     unittest.main()

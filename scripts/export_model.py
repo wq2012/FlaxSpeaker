@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export a FlaxSpeaker model to HuggingFace SafeTensors and TensorFlow Lite (FP32 / INT8).
 
-All 44 pretrained models are available in the Hugging Face FlaxSpeaker Collection:
+All 55 pretrained models are available in the Hugging Face FlaxSpeaker Collection:
 https://huggingface.co/collections/wq2012/flaxspeaker
 
 Usage:
@@ -54,6 +54,11 @@ def main() -> None:
         action="store_true",
         help="Also export dynamic-range INT8 quantized .tflite flatbuffer.",
     )
+    parser.add_argument(
+        "--allow_select_tf_ops",
+        action="store_true",
+        help="Allow SELECT_TF_OPS fallback if pure TFLITE_BUILTINS conversion fails.",
+    )
     args = parser.parse_args()
 
     model = hf_compat.FlaxSpeakerModel.from_pretrained(args.model_dir)
@@ -89,7 +94,11 @@ def main() -> None:
             suffix = "int8" if q else "fp32"
             tfl_path = os.path.join(out_dir, f"model_{suffix}.tflite")
             info = export.export_to_tflite(
-                model.state, model.exp_config, tfl_path, quantize_int8=q
+                model.state,
+                model.exp_config,
+                tfl_path,
+                quantize_int8=q,
+                allow_select_tf_ops=args.allow_select_tf_ops,
             )
             runner = export.TFLiteSpeakerRunner(tfl_path)
             tfl_emb = runner(sample_feat)  # first call (interpreter warm-up)

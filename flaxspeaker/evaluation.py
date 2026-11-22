@@ -1,4 +1,4 @@
-"""Speaker verification evaluation metrics and trial scoring pipelines for FlaxSpeaker v0.5.0.
+"""Speaker verification evaluation metrics and trial scoring pipelines for FlaxSpeaker v0.7.0.
 
 Provides:
 - Exact Equal Error Rate (`compute_eer_exact`) and threshold sweep (`compute_eer`)
@@ -6,9 +6,9 @@ Provides:
 - Area Under ROC Curve (`compute_roc_auc`) and 95% bootstrap CIs (`compute_bootstrap_eer_ci`)
 - Full-utterance bucketed masked JAX inference (up to `eval.max_eval_frames_cap = 3000` frames = 30s)
 - Single-utterance and multi-utterance enrollment trial scoring with Cosine,
-  Parameter-Free Attentive Scoring (PFAS), and Decision Residual Networks (Dr-Vectors)
-- Vectorized `O(U * C)` Top-300 Adaptive Symmetric Score Normalization (AS-Norm)
-  and optional Quality Measure Function (QMF) calibration
+  Parameter-Free Attentive Scoring (PFAS), Hybrid-PFAS, and Decision Residual Networks (Dr-Vectors)
+- Vectorized `O(U * C)` Top-180 / Top-300 Adaptive Symmetric Score Normalization (AS-Norm)
+  and speaker-disjoint Quality Measure Function (`QMF` / cohort-aware `QMF-v2`) calibration
 """
 
 import functools
@@ -325,7 +325,7 @@ def encode_features(
     return np.asarray(emb[0], dtype=np.float32)
 
 
-def _extract_eval_embeddings(
+def _extract_eval_embeddings_with_meta(
     unique_utts: Sequence[str],
     state: train_state.TrainState,
     exp_cfg: configs.ExperimentConfig,
@@ -333,16 +333,31 @@ def _extract_eval_embeddings(
     feature_cache: Optional[feature_extraction.FeatureCache] = None,
     batch_size: int = 64,
     precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
-) -> tuple[dict[str, np.ndarray], float]:
-    """Extracts utterance embeddings grouped by length bucket for fast masked JAX inference."""
+    utt_to_frames: Optional[dict[str, int]] = None,
+    utt_to_norms: Optional[dict[str, float]] = None,
+    extract_pre_norms: bool = False,
+) -> tuple[dict[str, np.ndarray], dict[str, int], dict[str, float], float]:
+    """Extracts utterance embeddings, valid frame counts, and optional pre-norm L2 magnitudes."""
     utt_to_emb: dict[str, np.ndarray] = (
-        precomputed_embeddings if precomputed_embeddings is not None else {}
+        dict(precomputed_embeddings) if precomputed_embeddings is not None else {}
     )
+    frame_map: dict[str, int] = dict(utt_to_frames) if utt_to_frames is not None else {}
+    norm_map: dict[str, float] = dict(utt_to_norms) if utt_to_norms is not None else {}
+
     missing_utts = [u for u in unique_utts if u not in utt_to_emb]
     if not missing_utts:
-        return utt_to_emb, 0.0
+        for u in unique_utts:
+            if u not in norm_map and u in utt_to_emb:
+                norm_map[u] = float(np.linalg.norm(utt_to_emb[u]))
+        return utt_to_emb, frame_map, norm_map, 0.0
 
     variables = _state_variables(state)
+    unnorm_apply_fn: Any = None
+    if extract_pre_norms and bool(getattr(exp_cfg.model, "normalize_embedding", True)):
+        cfg_unnorm = configs.ExperimentConfig.from_dict(exp_cfg.to_dict())
+        cfg_unnorm.model.normalize_embedding = False
+        unnorm_apply_fn = neural_net.build_modern_encoder_from_config(cfg_unnorm).apply
+
     full_seq = _get_full_seq_flag(exp_cfg)
     infer_start = time.time()
 
@@ -354,6 +369,7 @@ def _extract_eval_embeddings(
             if feature_cache is not None
             else frontend.extract_from_file(u)
         )
+        frame_map[u] = int(raw.shape[0])
         b_len = (
             _resolve_bucket_pad_len(raw.shape[0], exp_cfg)
             if full_seq
@@ -380,11 +396,51 @@ def _extract_eval_embeddings(
                     state.apply_fn, variables, batch_arr, mask_arr
                 )
             )
-            for (u, _), e in zip(chunk, embs):
+            if unnorm_apply_fn is not None:
+                raw_embs = np.asarray(
+                    _jit_encode_eval_batch(
+                        unnorm_apply_fn, variables, batch_arr, mask_arr
+                    )
+                )
+                cos_dim = int(exp_cfg.model.embedding_dim)
+                pre_norms = np.linalg.norm(raw_embs[:, :cos_dim], axis=-1)
+            else:
+                pre_norms = np.linalg.norm(embs, axis=-1)
+            for (u, _), e, n_val in zip(chunk, embs, pre_norms):
                 utt_to_emb[u] = e
+                norm_map[u] = float(n_val)
 
     infer_elapsed = time.time() - infer_start
     latency_ms = (infer_elapsed * 1000.0) / max(1, len(missing_utts))
+    return utt_to_emb, frame_map, norm_map, latency_ms
+
+
+def _extract_eval_embeddings(
+    unique_utts: Sequence[str],
+    state: train_state.TrainState,
+    exp_cfg: configs.ExperimentConfig,
+    frontend: feature_extraction.AudioFrontend,
+    feature_cache: Optional[feature_extraction.FeatureCache] = None,
+    batch_size: int = 64,
+    precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
+) -> tuple[dict[str, np.ndarray], float]:
+    """Extracts utterance embeddings grouped by length bucket for fast masked JAX inference."""
+    if precomputed_embeddings is not None:
+        missing = [u for u in unique_utts if u not in precomputed_embeddings]
+        if not missing:
+            return precomputed_embeddings, 0.0
+    utt_to_emb, _, _, latency_ms = _extract_eval_embeddings_with_meta(
+        unique_utts,
+        state,
+        exp_cfg,
+        frontend,
+        feature_cache=feature_cache,
+        batch_size=batch_size,
+        precomputed_embeddings=precomputed_embeddings,
+    )
+    if precomputed_embeddings is not None:
+        precomputed_embeddings.update(utt_to_emb)
+        return precomputed_embeddings, latency_ms
     return utt_to_emb, latency_ms
 
 
@@ -572,9 +628,7 @@ def _resolve_pfas_eval_params(
     return pfas_cfg, pfas_scale, hybrid_alpha, cosine_dim
 
 
-def _apply_unique_utt_as_norm(
-    raw_scores: np.ndarray,
-    trials: Sequence[dataset.TrialPair],
+def _compute_unique_utt_cohort_stats(
     utt_to_emb: dict[str, np.ndarray],
     cohort: np.ndarray,
     top_k: int,
@@ -583,8 +637,8 @@ def _apply_unique_utt_as_norm(
     pfas_scale: float = 16.0,
     cosine_dim: int = 256,
     hybrid_alpha: float = 0.25,
-) -> np.ndarray:
-    """Computes exact AS-Norm in `O(U * C + N_trials)` via unique-utterance cohort stats."""
+) -> tuple[list[str], dict[str, int], np.ndarray, np.ndarray]:
+    """Computes per-utterance Top-`top_k` cohort mean and std arrays."""
     u_keys = list(utt_to_emb.keys())
     u_idx = {u: i for i, u in enumerate(u_keys)}
     u_mat = np.stack([utt_to_emb[u] for u in u_keys], axis=0)
@@ -610,7 +664,32 @@ def _apply_unique_utt_as_norm(
         mu_u, std_u = scoring.compute_cohort_topk_stats(
             u_mat, cohort, top_k=top_k
         )
+    return u_keys, u_idx, mu_u, std_u
 
+
+def _apply_unique_utt_as_norm(
+    raw_scores: np.ndarray,
+    trials: Sequence[dataset.TrialPair],
+    utt_to_emb: dict[str, np.ndarray],
+    cohort: np.ndarray,
+    top_k: int,
+    scoring_type: str = "cosine",
+    pfas_cfg: Any = None,
+    pfas_scale: float = 16.0,
+    cosine_dim: int = 256,
+    hybrid_alpha: float = 0.25,
+) -> np.ndarray:
+    """Computes exact AS-Norm in `O(U * C + N_trials)` via unique-utterance cohort stats."""
+    _, u_idx, mu_u, std_u = _compute_unique_utt_cohort_stats(
+        utt_to_emb,
+        cohort,
+        top_k=top_k,
+        scoring_type=scoring_type,
+        pfas_cfg=pfas_cfg,
+        pfas_scale=pfas_scale,
+        cosine_dim=cosine_dim,
+        hybrid_alpha=hybrid_alpha,
+    )
     e_indices = np.fromiter(
         (u_idx[u1] for _, u1, _ in trials), dtype=np.int64, count=len(trials)
     )
@@ -624,6 +703,97 @@ def _apply_unique_utt_as_norm(
     )
 
 
+def _build_qmf_feature_kwargs(
+    trials: Sequence[dataset.TrialPair],
+    frame_map: dict[str, int],
+    norm_map: dict[str, float],
+    use_cohort_stats: bool,
+    cohort_mu_map: Optional[dict[str, float]] = None,
+    cohort_std_map: Optional[dict[str, float]] = None,
+) -> dict[str, Optional[np.ndarray]]:
+    """Assembles QMF-v1 (4-feature) or cohort-aware QMF-v2 (9-feature) kwargs."""
+    kw: dict[str, Optional[np.ndarray]] = {}
+    if all(u1 in frame_map and u2 in frame_map for _, u1, u2 in trials):
+        kw["enroll_frames"] = np.array(
+            [frame_map[u1] for _, u1, _ in trials], dtype=np.float64
+        )
+        kw["test_frames"] = np.array(
+            [frame_map[u2] for _, _, u2 in trials], dtype=np.float64
+        )
+    if use_cohort_stats:
+        if cohort_mu_map is None or cohort_std_map is None:
+            raise ValueError(
+                "Cohort-aware QMF-v2 (`eval.qmf_use_cohort_stats=True`) requires "
+                "`cohort_embeddings`."
+            )
+        if not all(u1 in norm_map and u2 in norm_map for _, u1, u2 in trials):
+            raise ValueError(
+                "Cohort-aware QMF-v2 (`eval.qmf_use_cohort_stats=True`) requires "
+                "pre-normalization embedding norms for all trial utterances."
+            )
+        kw["enroll_norms"] = np.array(
+            [norm_map[u1] for _, u1, _ in trials], dtype=np.float64
+        )
+        kw["test_norms"] = np.array(
+            [norm_map[u2] for _, _, u2 in trials], dtype=np.float64
+        )
+        kw["enroll_cohort_mean"] = np.array(
+            [cohort_mu_map[u1] for _, u1, _ in trials], dtype=np.float64
+        )
+        kw["test_cohort_mean"] = np.array(
+            [cohort_mu_map[u2] for _, _, u2 in trials], dtype=np.float64
+        )
+        kw["enroll_cohort_std"] = np.array(
+            [cohort_std_map[u1] for _, u1, _ in trials], dtype=np.float64
+        )
+        kw["test_cohort_std"] = np.array(
+            [cohort_std_map[u2] for _, _, u2 in trials], dtype=np.float64
+        )
+    return kw
+
+
+def fit_qmf_calibrator(
+    state: train_state.TrainState,
+    val_trials: Sequence[dataset.TrialPair],
+    myconfig: Any,
+    feature_cache: Optional[feature_extraction.FeatureCache] = None,
+    scoring_override: Optional[str] = None,
+    precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
+    cohort_embeddings: Optional[np.ndarray] = None,
+    utt_to_frames: Optional[dict[str, int]] = None,
+    utt_to_norms: Optional[dict[str, float]] = None,
+    c_reg: float = 1.0,
+) -> scoring.QualityMeasureCalibrator:
+    """Fits a speaker-disjoint `QualityMeasureCalibrator` (QMF-v1 or QMF-v2) on `val_trials`."""
+    exp_cfg = configs.ExperimentConfig.from_any(myconfig)
+    if (
+        bool(getattr(exp_cfg.eval, "qmf_use_cohort_stats", False))
+        and cohort_embeddings is None
+    ):
+        raise ValueError(
+            "Cohort-aware QMF-v2 (`eval.qmf_use_cohort_stats=True`) requires "
+            "`cohort_embeddings`."
+        )
+    val_cfg = configs.ExperimentConfig.from_dict(exp_cfg.to_dict())
+    val_cfg.eval.use_qmf = False
+    res = evaluate_verification_trials(
+        state,
+        val_trials,
+        val_cfg,
+        feature_cache=feature_cache,
+        scoring_override=scoring_override,
+        precomputed_embeddings=precomputed_embeddings,
+        cohort_embeddings=cohort_embeddings,
+        utt_to_frames=utt_to_frames,
+        utt_to_norms=utt_to_norms,
+        _return_qmf_fit_payload=True,
+    )
+    payload = res["_qmf_payload"]
+    cal = scoring.QualityMeasureCalibrator(c_reg=c_reg)
+    cal.fit(payload["base_scores"], payload["labels"], **payload["qmf_kwargs"])
+    return cal
+
+
 def evaluate_verification_trials(
     state: train_state.TrainState,
     trials: Sequence[dataset.TrialPair],
@@ -633,21 +803,48 @@ def evaluate_verification_trials(
     precomputed_embeddings: Optional[dict[str, np.ndarray]] = None,
     cohort_embeddings: Optional[np.ndarray] = None,
     include_as_norm_breakdown: bool = False,
+    qmf_calibrator: Optional[scoring.QualityMeasureCalibrator] = None,
+    qmf_val_trials: Optional[Sequence[dataset.TrialPair]] = None,
+    include_qmf_breakdown: bool = False,
+    utt_to_frames: Optional[dict[str, int]] = None,
+    utt_to_norms: Optional[dict[str, float]] = None,
+    _return_qmf_fit_payload: bool = False,
 ) -> dict[str, Any]:
     """Evaluate speaker verification on a list of `(label, enroll_utt, test_utt)` trials."""
     t0 = time.time()
     exp_cfg = configs.ExperimentConfig.from_any(myconfig)
     frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
+    use_qmf = bool(getattr(exp_cfg.eval, "use_qmf", False))
+    qmf_use_cohort = bool(getattr(exp_cfg.eval, "qmf_use_cohort_stats", False))
+    emit_qmf = (
+        use_qmf
+        or include_qmf_breakdown
+        or qmf_calibrator is not None
+        or qmf_val_trials is not None
+    )
+    want_qmf = emit_qmf or _return_qmf_fit_payload
+    if want_qmf and qmf_use_cohort and cohort_embeddings is None:
+        raise ValueError(
+            "Cohort-aware QMF-v2 (`eval.qmf_use_cohort_stats=True`) requires "
+            "`cohort_embeddings`."
+        )
 
     unique_utts = sorted({u for _, u1, u2 in trials for u in (u1, u2)})
-    utt_to_emb, latency_ms = _extract_eval_embeddings(
-        unique_utts,
-        state,
-        exp_cfg,
-        frontend,
-        feature_cache,
-        precomputed_embeddings=precomputed_embeddings,
+    utt_to_emb, frame_map, norm_map, latency_ms = (
+        _extract_eval_embeddings_with_meta(
+            unique_utts,
+            state,
+            exp_cfg,
+            frontend,
+            feature_cache,
+            precomputed_embeddings=precomputed_embeddings,
+            utt_to_frames=utt_to_frames,
+            utt_to_norms=utt_to_norms,
+            extract_pre_norms=(want_qmf and qmf_use_cohort),
+        )
     )
+    if precomputed_embeddings is not None:
+        precomputed_embeddings.update(utt_to_emb)
 
     scoring_type = scoring_override or str(
         getattr(
@@ -813,24 +1010,26 @@ def evaluate_verification_trials(
     c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
 
     as_norm_subdict: Optional[dict[str, Any]] = None
+    qmf_subdict: Optional[dict[str, Any]] = None
+    cohort_mu_map: Optional[dict[str, float]] = None
+    cohort_std_map: Optional[dict[str, float]] = None
     pfas_cfg_r, pfas_scale_opt, h_alpha_opt, cos_dim_opt = (
         _resolve_pfas_eval_params(state, exp_cfg)
     )
     pfas_cfg_opt = (
         pfas_cfg_r if scoring_type in ("pfas", "hybrid_pfas") else None
     )
-    if use_as_norm and scoring_type in (
-        "cosine",
-        "dr_vector",
-        "pfas",
-        "hybrid_pfas",
-    ):
+    need_cohort_stats = (
+        (use_as_norm or (include_as_norm_breakdown and cohort_embeddings is not None))
+        or (want_qmf and qmf_use_cohort and cohort_embeddings is not None)
+    ) and scoring_type in ("cosine", "dr_vector", "pfas", "hybrid_pfas")
+
+    asn_scores: Optional[np.ndarray] = None
+    if need_cohort_stats:
         cohort = require_disjoint_cohort(
             cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
         )
-        scores_arr = _apply_unique_utt_as_norm(
-            scores_arr,
-            trials,
+        u_keys_c, u_idx_c, mu_u, std_u = _compute_unique_utt_cohort_stats(
             {u: utt_to_emb[u] for u in unique_utts},
             cohort,
             top_k=top_k,
@@ -840,30 +1039,100 @@ def evaluate_verification_trials(
             cosine_dim=cos_dim_opt,
             hybrid_alpha=h_alpha_opt,
         )
-    elif (
-        include_as_norm_breakdown
-        and cohort_embeddings is not None
-        and scoring_type in ("cosine", "dr_vector", "pfas", "hybrid_pfas")
-    ):
-        cohort = require_disjoint_cohort(
-            cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
+        cohort_mu_map = {u: float(mu_u[i]) for i, u in enumerate(u_keys_c)}
+        cohort_std_map = {u: float(std_u[i]) for i, u in enumerate(u_keys_c)}
+        e_idx_c = np.fromiter(
+            (u_idx_c[u1] for _, u1, _ in trials),
+            dtype=np.int64,
+            count=len(trials),
         )
-        asn_scores = _apply_unique_utt_as_norm(
-            scores_arr,
+        t_idx_c = np.fromiter(
+            (u_idx_c[u2] for _, _, u2 in trials),
+            dtype=np.int64,
+            count=len(trials),
+        )
+        scores_f64 = np.asarray(scores_arr, dtype=np.float64)
+        asn_scores = 0.5 * (
+            (scores_f64 - mu_u[e_idx_c]) / std_u[e_idx_c]
+            + (scores_f64 - mu_u[t_idx_c]) / std_u[t_idx_c]
+        )
+        if use_as_norm:
+            scores_arr = asn_scores
+        elif include_as_norm_breakdown:
+            as_norm_subdict = _compute_metrics_dict(
+                labels,
+                asn_scores,
+                c_miss=c_miss,
+                c_fa=c_fa,
+                compute_ci=len(trials) <= 50000,
+            )
+            as_norm_subdict["top_k"] = top_k
+
+    qmf_base_scores = asn_scores if asn_scores is not None else scores_arr
+    if _return_qmf_fit_payload:
+        qmf_kw = _build_qmf_feature_kwargs(
             trials,
-            {u: utt_to_emb[u] for u in unique_utts},
-            cohort,
-            top_k=top_k,
-            scoring_type=scoring_type,
-            pfas_cfg=pfas_cfg_opt,
-            pfas_scale=pfas_scale_opt,
-            cosine_dim=cos_dim_opt,
-            hybrid_alpha=h_alpha_opt,
+            frame_map,
+            norm_map,
+            use_cohort_stats=qmf_use_cohort,
+            cohort_mu_map=cohort_mu_map,
+            cohort_std_map=cohort_std_map,
         )
-        as_norm_subdict = _compute_metrics_dict(
-            labels, asn_scores, c_miss=c_miss, c_fa=c_fa, compute_ci=len(trials) <= 50000
-        )
-        as_norm_subdict["top_k"] = top_k
+        return {
+            "_qmf_payload": {
+                "base_scores": qmf_base_scores,
+                "labels": labels,
+                "qmf_kwargs": qmf_kw,
+            }
+        }
+
+    if emit_qmf:
+        cal = qmf_calibrator
+        if cal is None and qmf_val_trials is not None:
+            val_utts = {u for _, u1, u2 in qmf_val_trials for u in (u1, u2)}
+            overlap = val_utts.intersection(unique_utts)
+            if overlap:
+                raise ValueError(
+                    "QMF validation trials overlap evaluation utterances "
+                    f"({len(overlap)} shared utterances). QMF must be fit on a "
+                    "speaker/utterance-disjoint validation split."
+                )
+            cal = fit_qmf_calibrator(
+                state,
+                qmf_val_trials,
+                exp_cfg,
+                feature_cache=feature_cache,
+                scoring_override=scoring_type,
+                precomputed_embeddings=precomputed_embeddings,
+                cohort_embeddings=cohort_embeddings,
+                utt_to_frames=utt_to_frames,
+                utt_to_norms=utt_to_norms,
+            )
+        if cal is None and use_qmf:
+            raise ValueError(
+                "QMF calibration (`eval.use_qmf=True`) requires a pre-fit "
+                "`qmf_calibrator` or speaker-disjoint `qmf_val_trials`."
+            )
+        if cal is not None:
+            qmf_kw = _build_qmf_feature_kwargs(
+                trials,
+                frame_map,
+                norm_map,
+                use_cohort_stats=qmf_use_cohort,
+                cohort_mu_map=cohort_mu_map,
+                cohort_std_map=cohort_std_map,
+            )
+            qmf_scores = cal.predict(qmf_base_scores, **qmf_kw)
+            if use_qmf:
+                scores_arr = qmf_scores
+            else:
+                qmf_subdict = _compute_metrics_dict(
+                    labels,
+                    qmf_scores,
+                    c_miss=c_miss,
+                    c_fa=c_fa,
+                    compute_ci=len(trials) <= 50000,
+                )
 
     out = _compute_metrics_dict(
         labels, scores_arr, c_miss=c_miss, c_fa=c_fa, compute_ci=len(trials) <= 50000
@@ -880,6 +1149,8 @@ def evaluate_verification_trials(
     )
     if as_norm_subdict is not None:
         out["as_norm"] = as_norm_subdict
+    if qmf_subdict is not None:
+        out["qmf"] = qmf_subdict
     return out
 
 
@@ -892,22 +1163,39 @@ def evaluate_multi_enroll_trials(
     cohort_embeddings: Optional[np.ndarray] = None,
     include_as_norm_breakdown: bool = False,
     return_scores: bool = False,
+    utt_to_frames: Optional[dict[str, int]] = None,
 ) -> Any:
     """Evaluate multi-utterance enrollment trials `(label, [enroll_utts], test_utt)`."""
     exp_cfg = configs.ExperimentConfig.from_any(myconfig)
     frontend = feature_extraction.AudioFrontend(exp_cfg.frontend, exp_cfg.vad)
+    length_gamma = float(getattr(exp_cfg.eval, "multi_enroll_length_gamma", 0.0))
+    max_enroll_w = float(getattr(exp_cfg.model.pfas, "multi_enroll_max_weight", 0.0))
 
     unique_utts = sorted(
         {u for _, e_list, t_u in trials for u in list(e_list) + [t_u]}
     )
-    utt_to_emb, _ = _extract_eval_embeddings(
+    utt_to_emb, frame_map, _, _ = _extract_eval_embeddings_with_meta(
         unique_utts,
         state,
         exp_cfg,
         frontend,
         feature_cache,
         precomputed_embeddings=precomputed_embeddings,
+        utt_to_frames=utt_to_frames,
     )
+    if precomputed_embeddings is not None:
+        precomputed_embeddings.update(utt_to_emb)
+
+    def _enroll_weights_for_tuple(key_tup: tuple[str, ...]) -> Optional[np.ndarray]:
+        if length_gamma <= 0.0 or len(key_tup) <= 1:
+            return None
+        if not all(u in frame_map for u in key_tup):
+            return None
+        return scoring.compute_multi_enroll_weights(
+            [frame_map[u] for u in key_tup],
+            length_gamma=length_gamma,
+            max_weight=max_enroll_w,
+        )
 
     scoring_type = str(
         getattr(
@@ -1005,6 +1293,7 @@ def evaluate_multi_enroll_trials(
         for idx_t, (_, e_utts, _) in enumerate(trials):
             e_key_tup = tuple(e_utts)
             if e_key_tup not in enroll_key_to_stacked:
+                w_tup = _enroll_weights_for_tuple(e_key_tup)
                 enroll_key_to_stacked[e_key_tup] = np.asarray(
                     scoring.stack_multi_enroll_hybrid_pfas(
                         [utt_to_emb[u] for u in e_key_tup],
@@ -1012,6 +1301,8 @@ def evaluate_multi_enroll_trials(
                         num_keys=pfas_cfg.num_keys,
                         key_dim=pfas_cfg.key_dim,
                         value_dim=pfas_cfg.value_dim,
+                        weights=w_tup,
+                        max_weight=max_enroll_w,
                     ),
                     dtype=np.float32,
                 )
@@ -1079,7 +1370,13 @@ def evaluate_multi_enroll_trials(
                     utt_to_emb[u] / (np.linalg.norm(utt_to_emb[u]) + 1e-6)
                     for u in key
                 ]
-                c = np.mean(normed_list, axis=0)
+                w_tup = _enroll_weights_for_tuple(key)
+                if w_tup is not None:
+                    c = np.sum(
+                        np.stack(normed_list, axis=0) * w_tup[:, None], axis=0
+                    )
+                else:
+                    c = np.mean(normed_list, axis=0)
                 c = (c / (np.linalg.norm(c) + 1e-6)).astype(np.float32)
                 enroll_key_to_centroid[key] = c
 

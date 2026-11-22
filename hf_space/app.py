@@ -363,8 +363,8 @@ def verify_pair(
     if threshold is None or auto_threshold:
         threshold = operating_points[op_key]
         threshold_source = (
-            f"eval_results.json {op_key} EER operating point "
-            f"({len(enroll_paths)} enrollment utterance(s))"
+            f"eval_results.json raw-score {op_key} EER operating point "
+            f"(controlled universal_pooled split, {len(enroll_paths)} enrollment utterance(s))"
         )
     else:
         threshold_source = "manual slider"

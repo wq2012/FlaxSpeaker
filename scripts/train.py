@@ -119,7 +119,13 @@ def main() -> None:
     cache.precompute_dataset(spk_train, num_workers=8)
 
     loss_type = str(exp_cfg.train.loss.loss_type).lower()
-    is_cls = loss_type in ("arcface", "cosface", "sphereface", "softmax")
+    is_cls = loss_type in (
+        "arcface",
+        "subcenter_arcface",
+        "cosface",
+        "sphereface",
+        "softmax",
+    )
     speaker_to_id = {s: i for i, s in enumerate(sorted(spk_train.keys()))}
     num_classes = len(speaker_to_id) if is_cls else 0
 

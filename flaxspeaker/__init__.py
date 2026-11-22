@@ -4,8 +4,9 @@ Features:
 - Neural Backbones: LSTM, Transformer, Conformer, Mamba (Selective SSM),
   ECAPA-TDNN, SE-ResNet-18 / ResNet-34, SimAM-ERes2Conformer
   (`flaxspeaker.backbones`)
-- Temporal Pooling: Mean, Last, Stats, SAP, ASP, ATP, Context-ATP (`catp`),
-  Cumulative Stats, PFAS (`flaxspeaker.pooling`)
+- Temporal Pooling (10 heads): Mean, Last, Stats, SAP, ASP, ATP,
+  Context-ATP (`catp`), Cumulative Stats, PFAS, Hybrid-PFAS
+  (`flaxspeaker.pooling`)
 - Losses & Scoring:
   - Generalized End-to-End Loss (GE2E Softmax & Contrast)
   - Parameter-Free Attentive Scoring (PFAS)
