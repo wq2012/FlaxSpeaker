@@ -239,6 +239,12 @@ def scorer_label(exp_cfg: configs.ExperimentConfig) -> str:
             f"{' + global ATP anchor' if pf.use_global_anchor else ''}; {pf.num_keys} keys x "
             f"({pf.key_dim} + {pf.value_dim}); paper scoring Eqs. 5-7)"
         )
+    if st == "hybrid_pfas":
+        pf = exp_cfg.model.pfas
+        return (
+            f"Hybrid Cosine + PFAS-SN (`(1 - alpha)*cos + alpha*PFAS`, alpha={float(pf.hybrid_alpha):g}; "
+            f"{int(exp_cfg.model.embedding_dim)}-D cosine + {pf.num_keys} keys x ({pf.key_dim} + {pf.value_dim}))"
+        )
     if st == "dr_vector":
         dr = exp_cfg.model.dr_vector
         if int(getattr(dr, "cosine_dims", 0)) > 0:
@@ -259,6 +265,7 @@ def deviations_from_papers(
     train_spks_override: Optional[int] = None,
     train_utts_override: Optional[int] = None,
     train_epochs_override: Optional[float] = None,
+    num_steps_override: Optional[int] = None,
 ) -> list[str]:
     """Checkpoint-specific list of known deviations from the cited source papers."""
     out: list[str] = []
@@ -266,7 +273,11 @@ def deviations_from_papers(
     lt = str(getattr(loss.loss_type, "value", loss.loss_type))
     st = str(getattr(loss.scoring_type, "value", loss.scoring_type))
     bb = str(getattr(exp_cfg.model.backbone, "value", exp_cfg.model.backbone))
-    num_steps = int(exp_cfg.train.num_steps)
+    num_steps = (
+        int(num_steps_override)
+        if num_steps_override is not None
+        else int(exp_cfg.train.num_steps)
+    )
     batch_size = int(exp_cfg.train.batch_size)
     ds_info = DOMAIN_TRAIN_STATS.get(str(train_ds), DOMAIN_TRAIN_STATS["universal"])
     train_utts = (
@@ -334,6 +345,15 @@ def deviations_from_papers(
             "(FlaxSpeaker 'PFAS-SN'); the paper uses ATP -> affine+ReLU -> linear with "
             "32 tied keys (`odyssey2022_pfas_config(pure_paper_mode=True)`)."
         )
+    if st == "hybrid_pfas":
+        pf = exp_cfg.model.pfas
+        out.append(
+            f"**Hybrid Cosine + PFAS-SN head**: concatenates the exact {int(exp_cfg.model.embedding_dim)}-D "
+            f"`Context-ATP + BN-Neck` cosine embedding (`emb[:{int(exp_cfg.model.embedding_dim)}]`) with "
+            f"`{pf.num_keys}` frame-attentive `PFAS-SN` keys x `({pf.key_dim} + {pf.value_dim})` "
+            f"(`emb[{int(exp_cfg.model.embedding_dim)}:]`) and scores via `(1 - alpha)*cos + alpha*PFAS` "
+            f"(`alpha = {float(pf.hybrid_alpha):g}` calibrated on held-out validation trials)."
+        )
     if st == "dr_vector" and int(getattr(exp_cfg.model.dr_vector, "cosine_dims", 0)) == 0:
         dr = exp_cfg.model.dr_vector
         out.append(
@@ -384,13 +404,30 @@ def deviations_from_papers(
         )
     if bb == "eres2conformer":
         erc = exp_cfg.model.eres2conformer
+        se_desc = (
+            "SimAM+2D-fwSE+AFF"
+            if bool(getattr(erc, "use_fwse", False))
+            else "SimAM+SE+AFF"
+        )
+        mfa_desc = (
+            "3-Stage (2+3+4) MFA"
+            if bool(getattr(erc, "use_mfa_stage123", False))
+            else "Stage-3/4 MFA"
+        )
+        pool_lbl = str(
+            getattr(
+                exp_cfg.model.pooling.pooling_type,
+                "value",
+                exp_cfg.model.pooling.pooling_type,
+            )
+        )
         out.append(
             f"**SimAM-ERes2Conformer**: unified 2D multi-scale `SimAM-SERes2Net` "
             f"(`base_channels={erc.base_channels}`, `num_blocks={tuple(erc.num_blocks)}`, "
-            f"`scale={erc.scale}`, `width_mult={erc.width_mult:g}`, `SimAM+SE+AFF`, "
-            f"`temporal_strides={tuple(erc.temporal_strides)}`) + Stage-3/4 `MFA` + "
+            f"`scale={erc.scale}`, `width_mult={erc.width_mult:g}`, `{se_desc}`, "
+            f"`temporal_strides={tuple(erc.temporal_strides)}`) + `{mfa_desc}` + "
             f"{erc.num_conformer_layers}x `{erc.conformer_dim}`-D `RoPE+QK-Norm+BatchNorm` "
-            "Conformer blocks + `Context-ATP` (`catp`) + `BN-Neck`."
+            f"Conformer blocks + `{pool_lbl}` + `BN-Neck`."
         )
     max_eval_cap = (
         int(exp_cfg.model.max_eval_seq_len)
@@ -732,7 +769,7 @@ def build_model_card(
         "",
         "### Python API (from Hugging Face Hub or Local Directory)",
         "",
-        "Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).",
+        "Requires `flaxspeaker >= 0.7.0` (`pip install -U flaxspeaker`).",
         "",
         "```python",
         "from flaxspeaker import load_pretrained",
@@ -938,6 +975,7 @@ def build_model_card(
             train_spks_override=train_spks,
             train_utts_override=train_utts,
             train_epochs_override=train_epochs_override,
+            num_steps_override=num_steps,
         )
     ]
     lines += [

@@ -682,8 +682,8 @@ class TestExportAndHuggingFaceCompat(TestBase):
         from unittest import mock
 
         self.assertEqual(len(hf_compat.CONTROLLED_ABLATION_MODEL_IDS), 44)
-        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 6)
-        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 50)
+        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 11)
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 55)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
             "https://huggingface.co/collections/wq2012/flaxspeaker",
@@ -1959,8 +1959,10 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
             bench = json.load(f)
 
-        self.assertIn(len(bench["experiments"]), (44, 48, 49, 50))
-        self.assertIn(len(bench.get("tflite_exports", {})), (12, 14, 16, 18, 20))
+        self.assertIn(len(bench["experiments"]), (44, 48, 49, 50, 54, 55))
+        self.assertIn(
+            len(bench.get("tflite_exports", {})), (12, 14, 16, 18, 20, 22, 24)
+        )
 
         vox_ds = bench["datasets"]["voxceleb1"]
         self.assertIn("vox1_o_10spk_subset_note", vox_ds)
@@ -2734,6 +2736,352 @@ class TestAntiCheatingAndProvenanceIntegrity(unittest.TestCase):
         ]["qmf"]["eer_percent"]
         self.assertLess(sgd_vox, adamw_vox)
         self.assertLess(sgd_vox, noconf_vox)
+
+
+class TestV070Innovations(unittest.TestCase):
+    """Tests for v0.7.0 fwSE, 3-stage MFA, XL preset, Inter-TopK, Hybrid-PFAS, Clean LMFT, SWA & Exact BN."""
+
+    def test_eres2conformer_v2_fwse_mfa123_odd_len_inter_topk_and_xl_preset(self):
+        xl_cfg = configs.ExperimentConfig()
+        xl_cfg.model.backbone = configs.BackboneType.ERES2CONFORMER
+        xl_cfg.model.apply_size_variant(configs.SizeVariant.XL)
+        xl_cfg.model.pooling.pooling_type = configs.PoolingType.CATP
+        xl_cfg.model.pooling.use_bn_neck = True
+        xl_cfg.model.pooling.use_nonlinear_bottleneck = False
+        self.assertTrue(xl_cfg.model.eres2conformer.use_fwse)
+        self.assertTrue(xl_cfg.model.eres2conformer.use_mfa_stage123)
+        self.assertEqual(xl_cfg.model.eres2conformer.num_conformer_layers, 4)
+
+        # Tiny v2 config for fast mask-invariance & Inter-TopK step check
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.ERES2CONFORMER
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.eres2conformer.use_fwse = True
+        cfg.model.eres2conformer.use_mfa_stage123 = True
+        cfg.model.pooling.pooling_type = configs.PoolingType.CATP
+        cfg.model.pooling.use_bn_neck = True
+        cfg.model.pooling.use_nonlinear_bottleneck = False
+        cfg.model.seq_len = 35
+        cfg.train.loss.loss_type = configs.LossType.SUBCENTER_ARCFACE
+        cfg.train.loss.subcenter_k = 3
+        cfg.train.loss.inter_topk = 3
+        cfg.train.loss.inter_margin = 0.06
+        cfg.loss = cfg.train.loss
+
+        enc, st = neural_net.get_speaker_encoder(cfg, num_classes=7, skip_warm_start=True)
+        x = jax.random.normal(jax.random.PRNGKey(31), (4, 35, 80))
+        mask = jnp.array(
+            [
+                [1.0] * 19 + [0.0] * 16,
+                [1.0] * 35,
+                [1.0] * 23 + [0.0] * 12,
+                [1.0] * 27 + [0.0] * 8,
+            ],
+            dtype=jnp.float32,
+        )
+        labels = jnp.array([0, 2, 4, 6], dtype=jnp.int32)
+        st2, loss_v = neural_net.make_modern_train_step(cfg)(st, x, labels, mask)
+        self.assertTrue(np.isfinite(float(loss_v)))
+
+        # Inter-TopK margin must strictly increase loss relative to inter_topk=0
+        loss_no_inter = losses.subcenter_arcface_loss(
+            enc.apply(
+                {"params": st.params, "batch_stats": st.batch_stats},
+                x,
+                mask=mask,
+                deterministic=True,
+            ),
+            st.params["_aux_class_weights"],
+            labels,
+            subcenter_k=3,
+            inter_topk=0,
+            inter_margin=0.0,
+        )
+        loss_with_inter = losses.subcenter_arcface_loss(
+            enc.apply(
+                {"params": st.params, "batch_stats": st.batch_stats},
+                x,
+                mask=mask,
+                deterministic=True,
+            ),
+            st.params["_aux_class_weights"],
+            labels,
+            subcenter_k=3,
+            inter_topk=3,
+            inter_margin=0.08,
+        )
+        self.assertGreater(float(loss_with_inter), float(loss_no_inter))
+
+        enc_p = {k: v for k, v in st2.params.items() if not k.startswith("_aux_")}
+        vars_eval = {"params": enc_p, "batch_stats": st2.batch_stats}
+        e19 = enc.apply(vars_eval, x[:1, :19, :], mask=jnp.ones((1, 19)), deterministic=True)
+        e35 = enc.apply(
+            vars_eval,
+            jnp.pad(x[:1, :19, :], ((0, 0), (0, 16), (0, 0))),
+            mask=jnp.array([[1.0] * 19 + [0.0] * 16]),
+            deterministic=True,
+        )
+        self.assertTrue(np.allclose(np.asarray(e19), np.asarray(e35), atol=1e-5))
+
+    def test_channel_specaug_narrowband_and_spectral_tilt(self):
+        x = jax.random.normal(jax.random.PRNGKey(5), (3, 30, 80))
+        mask = jnp.array(
+            [[1.0] * 20 + [0.0] * 10, [1.0] * 30, [1.0] * 15 + [0.0] * 15],
+            dtype=jnp.float32,
+        )
+        y = specaug.apply_masked_specaug_batch_jax(
+            x,
+            mask,
+            jax.random.PRNGKey(11),
+            apply_prob=1.0,
+            freq_width=6,
+            time_width=4,
+            narrowband_prob=1.0,
+            spectral_tilt_prob=1.0,
+        )
+        self.assertEqual(y.shape, x.shape)
+        self.assertTrue(np.all(np.isfinite(np.asarray(y))))
+        # Padded frames must remain identically zero
+        self.assertTrue(np.allclose(np.asarray(y[0, 20:, :]), 0.0, atol=1e-7))
+        self.assertTrue(np.allclose(np.asarray(y[2, 15:, :]), 0.0, atol=1e-7))
+
+    def test_hybrid_pfas_warmstart_freeze_cosine_and_multi_enroll(self):
+        import tempfile
+
+        base_cfg = configs.ExperimentConfig()
+        base_cfg.model.backbone = configs.BackboneType.ERES2CONFORMER
+        base_cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        base_cfg.model.embedding_dim = 64
+        base_cfg.model.pooling.pooling_type = configs.PoolingType.CATP
+        base_cfg.model.pooling.num_heads = 2
+        base_cfg.model.pooling.use_bn_neck = True
+        base_cfg.model.pooling.use_nonlinear_bottleneck = False
+        base_cfg.model.seq_len = 24
+        base_cfg.train.loss.loss_type = configs.LossType.SUBCENTER_ARCFACE
+        base_cfg.loss = base_cfg.train.loss
+
+        base_enc, base_st = neural_net.get_speaker_encoder(
+            base_cfg, num_classes=5, skip_warm_start=True
+        )
+        x_probe = jax.random.normal(jax.random.PRNGKey(41), (6, 24, 80))
+        m_probe = jnp.ones((6, 24), dtype=jnp.float32)
+        base_vars = {
+            "params": {k: v for k, v in base_st.params.items() if not k.startswith("_aux_")},
+            "batch_stats": base_st.batch_stats,
+        }
+        e_base = np.asarray(base_enc.apply(base_vars, x_probe, mask=m_probe, deterministic=True))
+
+        with tempfile.TemporaryDirectory() as tmpd:
+            ckpt_p = os.path.join(tmpd, "base.msgpack")
+            neural_net.save_model(ckpt_p, base_vars["params"], batch_stats=base_st.batch_stats)
+
+            hyb_cfg = configs.ExperimentConfig.from_dict(base_cfg.to_dict())
+            hyb_cfg.model.pooling.pooling_type = configs.PoolingType.HYBRID_PFAS
+            hyb_cfg.model.scoring_type = configs.ScoringType.HYBRID_PFAS
+            hyb_cfg.model.pfas.num_keys = 4
+            hyb_cfg.model.pfas.key_dim = 16
+            hyb_cfg.model.pfas.value_dim = 32
+            hyb_cfg.model.pfas.hybrid_alpha = 0.25
+            hyb_cfg.train.init_from_checkpoint = ckpt_p
+            hyb_cfg.train.freeze_trunk = True
+            hyb_cfg.train.batch_size = 6
+            hyb_cfg.train.loss.loss_type = configs.LossType.EXTENDED_SET_SOFTMAX
+            hyb_cfg.train.loss.scoring_type = configs.ScoringType.HYBRID_PFAS
+            hyb_cfg.train.loss.num_speakers_per_batch = 3
+            hyb_cfg.train.loss.num_utts_per_speaker = 2
+            hyb_cfg.loss = hyb_cfg.train.loss
+
+            hyb_enc, hyb_st = neural_net.get_speaker_encoder(hyb_cfg)
+            self.assertEqual(hyb_cfg.model.output_embedding_dim, 64 + 4 * (16 + 32))
+
+            hyb_vars0 = {
+                "params": {k: v for k, v in hyb_st.params.items() if not k.startswith("_aux_")},
+                "batch_stats": hyb_st.batch_stats,
+            }
+            e_hyb0 = np.asarray(hyb_enc.apply(hyb_vars0, x_probe, mask=m_probe, deterministic=True))
+            # Warm-started cosine slice [:64] must match base model identically
+            self.assertTrue(np.allclose(e_hyb0[:, :64], e_base, atol=1e-6))
+
+            step_fn = neural_net.make_modern_train_step(hyb_cfg)
+            hyb_st2, l1 = step_fn(hyb_st, x_probe, None, m_probe)
+            hyb_st3, l2 = step_fn(hyb_st2, x_probe, None, m_probe)
+            self.assertTrue(np.isfinite(float(l1)) and np.isfinite(float(l2)))
+
+            hyb_vars3 = {
+                "params": {k: v for k, v in hyb_st3.params.items() if not k.startswith("_aux_")},
+                "batch_stats": hyb_st3.batch_stats,
+            }
+            e_hyb3 = np.asarray(hyb_enc.apply(hyb_vars3, x_probe, mask=m_probe, deterministic=True))
+            # With freeze_trunk=True, cosine slice [:64] MUST remain 100% unchanged while PFAS tail updates!
+            self.assertTrue(np.allclose(e_hyb3[:, :64], e_base, atol=1e-6))
+            self.assertFalse(np.allclose(e_hyb3[:, 64:], e_hyb0[:, 64:], atol=1e-6))
+
+            # Verify HF wrapper & multi-enroll evaluation + AS-Norm
+            hf_m = hf_compat.FlaxSpeakerModel(
+                hf_compat.FlaxSpeakerConfig.from_experiment_config(hyb_cfg),
+                params=hyb_st3.params,
+                batch_stats=hyb_st3.batch_stats,
+            )
+            s_1 = hf_m.score_embeddings(e_hyb3[0], e_hyb3[1])
+            s_m = hf_m.score_embeddings([e_hyb3[0], e_hyb3[1]], e_hyb3[2])
+            self.assertTrue(np.isfinite(s_1) and np.isfinite(s_m))
+
+            pre_map = {f"u{i}": e_hyb3[i] for i in range(6)}
+            cohort = np.random.default_rng(3).standard_normal((12, e_hyb3.shape[1])).astype(np.float32)
+            trials_1 = [(1, "u0", "u1"), (1, "u2", "u3"), (0, "u0", "u2"), (0, "u1", "u4")]
+            res_1 = evaluation.evaluate_verification_trials(
+                hyb_st3,
+                trials_1,
+                hyb_cfg,
+                precomputed_embeddings=pre_map,
+                cohort_embeddings=cohort,
+                include_as_norm_breakdown=True,
+            )
+            self.assertIn("as_norm", res_1)
+            trials_m = [(1, ["u0", "u1"], "u0"), (0, ["u0", "u1"], "u3")]
+            res_m = evaluation.evaluate_multi_enroll_trials(
+                hyb_st3,
+                trials_m,
+                hyb_cfg,
+                precomputed_embeddings=pre_map,
+                cohort_embeddings=cohort,
+                include_as_norm_breakdown=True,
+            )
+            self.assertIn("as_norm", res_m)
+
+    def test_clean_lmft_pruning_checkpoint_soup_and_exact_bn_recalibration(self):
+        # 1. Clean LMFT class-weight pruning (9 total classes = 3 clean * 3 speeds, K=3 subcenters)
+        rng = np.random.default_rng(77)
+        w_raw = rng.standard_normal((16, 9 * 3)).astype(np.float32)
+        pruned_k3 = neural_net.prune_class_weights_for_clean_lmft(
+            jnp.asarray(w_raw), clean_class_indices=[0, 3, 6], subcenter_k=3
+        )
+        self.assertEqual(pruned_k3.shape, (16, 3 * 3))
+        norms_k3 = np.linalg.norm(np.asarray(pruned_k3), axis=0)
+        self.assertTrue(np.allclose(norms_k3, 1.0, atol=1e-5))
+        pruned_k1 = neural_net.prune_class_weights_for_clean_lmft(
+            jnp.asarray(w_raw),
+            clean_class_indices=[0, 3, 6],
+            subcenter_k=3,
+            dominant_subcenters=[0, 1, 2],
+            collapse_subcenters=True,
+        )
+        self.assertEqual(pruned_k1.shape, (16, 3))
+        norms = np.linalg.norm(np.asarray(pruned_k1), axis=0)
+        self.assertTrue(np.allclose(norms, 1.0, atol=1e-5))
+
+        # 2. Checkpoint souping
+        p1 = {"backbone": {"w": jnp.ones((4, 4))}, "_aux_class_weights": jnp.ones((4, 2))}
+        p2 = {"backbone": {"w": 3.0 * jnp.ones((4, 4))}, "_aux_class_weights": jnp.ones((4, 2))}
+        souped = neural_net.soup_checkpoints([p1, p2], weights=[0.25, 0.75])
+        self.assertTrue(np.allclose(np.asarray(souped["backbone"]["w"]), 2.5))
+        self.assertTrue(
+            np.allclose(np.linalg.norm(np.asarray(souped["_aux_class_weights"]), axis=0), 1.0, atol=1e-5)
+        )
+
+        # 3. Exact clean BatchNorm population stats recalibration (verifying law of total variance)
+        import flax
+        from flaxspeaker import backbones
+
+        class _ToyBN(flax.linen.Module):
+            @flax.linen.compact
+            def __call__(self, x, deterministic=True, mask=None):
+                h = backbones.MaskedBatchNorm1D(name="mbn")(
+                    x, use_running_average=deterministic, mask=mask
+                )
+                z = jnp.mean(h, axis=1)
+                return flax.linen.BatchNorm(use_running_average=deterministic, name="bn")(z)
+
+        toy = _ToyBN()
+        init_v = toy.init(jax.random.PRNGKey(0), jnp.ones((2, 8, 4)), deterministic=False)
+        b1 = jnp.full((4, 8, 4), -2.0) + jax.random.normal(jax.random.PRNGKey(1), (4, 8, 4)) * 0.5
+        b2 = jnp.full((4, 8, 4), +2.0) + jax.random.normal(jax.random.PRNGKey(2), (4, 8, 4)) * 0.5
+        m_full = jnp.ones((4, 8), dtype=jnp.float32)
+        recal_bs = neural_net.recompute_clean_batch_stats(
+            toy.apply, init_v["params"], init_v["batch_stats"], [(b1, m_full), (b2, m_full)]
+        )
+        combined = np.concatenate([np.asarray(b1), np.asarray(b2)], axis=0)
+        expected_mean = np.mean(combined, axis=(0, 1))
+        expected_var = np.var(combined, axis=(0, 1))
+        self.assertTrue(
+            np.allclose(np.asarray(recal_bs["mbn"]["running_mean"]), expected_mean, atol=1e-5)
+        )
+        self.assertTrue(
+            np.allclose(np.asarray(recal_bs["mbn"]["running_var"]), expected_var, atol=1e-4)
+        )
+
+    def test_cohort_aware_qmf_calibrator(self):
+        rng = np.random.default_rng(12)
+        n = 120
+        labels = np.array([1] * 60 + [0] * 60, dtype=np.int32)
+        scores = np.concatenate([rng.normal(0.6, 0.1, 60), rng.normal(0.2, 0.1, 60)])
+        ef = rng.uniform(150, 600, n)
+        tf = rng.uniform(150, 600, n)
+        en = rng.uniform(8.0, 14.0, n)
+        tn = rng.uniform(8.0, 14.0, n)
+        cm_e = rng.uniform(0.15, 0.35, n)
+        cm_t = rng.uniform(0.15, 0.35, n)
+        cs_e = rng.uniform(0.03, 0.08, n)
+        cs_t = rng.uniform(0.03, 0.08, n)
+
+        cal = scoring.QualityMeasureCalibrator(c_reg=1.0)
+        fmat = cal.build_features(scores, ef, tf, en, tn, cm_e, cm_t, cs_e, cs_t)
+        self.assertEqual(fmat.shape, (n, 9))
+        cal.fit(scores, labels, ef, tf, en, tn, cm_e, cm_t, cs_e, cs_t)
+        pred = cal.predict(scores, ef, tf, en, tn, cm_e, cm_t, cs_e, cs_t)
+        self.assertEqual(pred.shape, (n,))
+        eer, _ = evaluation.compute_eer_exact(labels, pred)
+        self.assertLess(eer, 0.05)
+
+    def test_hybrid_pfas_safetensors_roundtrip_and_v070_ablation_archive(self):
+        import json
+        import tempfile
+
+        cfg = configs.ExperimentConfig()
+        cfg.model.backbone = configs.BackboneType.ERES2CONFORMER
+        cfg.model.apply_size_variant(configs.SizeVariant.TINY)
+        cfg.model.embedding_dim = 64
+        cfg.model.pooling.pooling_type = configs.PoolingType.HYBRID_PFAS
+        cfg.model.pooling.num_heads = 2
+        cfg.model.pooling.use_bn_neck = True
+        cfg.model.pooling.use_nonlinear_bottleneck = False
+        cfg.model.scoring_type = configs.ScoringType.HYBRID_PFAS
+        cfg.model.pfas.num_keys = 4
+        cfg.model.pfas.key_dim = 16
+        cfg.model.pfas.value_dim = 32
+        cfg.model.pfas.hybrid_alpha = 0.4
+        cfg.model.seq_len = 24
+        cfg.train.loss.loss_type = configs.LossType.EXTENDED_SET_SOFTMAX
+        cfg.train.loss.scoring_type = configs.ScoringType.HYBRID_PFAS
+        cfg.loss = cfg.train.loss
+
+        _, st = neural_net.get_speaker_encoder(cfg, skip_warm_start=True)
+        hf_m = hf_compat.FlaxSpeakerModel(
+            hf_compat.FlaxSpeakerConfig.from_experiment_config(cfg),
+            params=st.params,
+            batch_stats=st.batch_stats,
+        )
+        e1 = np.random.default_rng(1).standard_normal((cfg.model.output_embedding_dim,)).astype(np.float32)
+        e2 = np.random.default_rng(2).standard_normal((cfg.model.output_embedding_dim,)).astype(np.float32)
+        s_orig = hf_m.score_embeddings(e1, e2)
+        with tempfile.TemporaryDirectory() as tmpd:
+            hf_m.save_pretrained(tmpd)
+            os.remove(os.path.join(tmpd, "flax_model.msgpack"))
+            loaded = hf_compat.FlaxSpeakerModel.from_pretrained(tmpd)
+            s_loaded = loaded.score_embeddings(e1, e2)
+            self.assertAlmostEqual(s_orig, s_loaded, places=5)
+
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        ab_path = os.path.join(repo_root, "pretrained_models", "v070_ablation_results.json")
+        with open(ab_path, "r", encoding="utf-8") as f:
+            v070 = json.load(f)
+        self.assertEqual(len(v070["arms"]), 7)
+        lh = v070["long_horizon_recipe_comparison"]["runs"]
+        self.assertEqual(len(lh), 4)
+        self.assertLess(
+            lh["xl_64m_interaug_145k"]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"],
+            lh["xl_64m_clean_145k"]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"],
+        )
 
 
 if __name__ == "__main__":

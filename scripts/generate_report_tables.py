@@ -22,6 +22,11 @@ ALL_FLAGSHIP_ORDER = [
     "univ_full_conformer_large_arcface",
     "univ_full_resnet34_arcface",
     "univ_full_eres2conformer_large",
+    "univ_full_eres2conformer_large_pfas",
+    "univ_full_eres2conformer_v2_large",
+    "univ_full_eres2conformer_v2_pfas",
+    "univ_full_eres2conformer_xl_pfas",
+    "univ_full_eres2conformer_xl",
 ]
 
 
@@ -153,6 +158,8 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             fus_cands.append(fus["three_way_backbone_official_benchmarks"])
         if "four_way_backbone_official_benchmarks" in fus and "univ_full_eres2conformer_large" in fm:
             fus_cands.append(fus["four_way_backbone_official_benchmarks"])
+        if "six_way_cosine_official_benchmarks" in fus and "univ_full_eres2conformer_xl" in fm:
+            fus_cands.append(fus["six_way_cosine_official_benchmarks"])
         min_f_vx_as = min(round(fc["voxceleb1_o"]["eer_percent"], 2) for fc in fus_cands)
         min_f_vx_qmf = min(round(fc["voxceleb1_o"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
         min_f_cn_qmf = min(round(fc["cnceleb_e"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
@@ -199,10 +206,22 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
                 f"4-Architecture Cosine + AS-Norm + QMF | `{p_4bb:,}` | — | "
                 f"{r4_vx} | {r4_cn} | {r4_ls} | — | — |"
             )
+        if "six_way_cosine_official_benchmarks" in fus and "univ_full_eres2conformer_xl" in fm:
+            fus_6c = fus["six_way_cosine_official_benchmarks"]
+            cos_mids = fus.get("six_way_cosine_models", [])
+            p_6c = sum(int(fm[m]["num_parameters"]) for m in cos_mids if m in fm)
+            r6c_vx, r6c_cn, r6c_ls = fmt_fus_row(fus_6c)
+            out.append(
+                "| **6-Way Cosine Backbone Fusion (`Conf-L + ECAPA + ResNet-34 + ERes2Conf-L + V2-Large + XL`)** | "
+                f"6-Backbone Pure Cosine + AS-Norm + QMF | `{p_6c:,}` | — | "
+                f"{r6c_vx} | {r6c_cn} | {r6c_ls} | — | — |"
+            )
         act_mids = fus.get("models", flagship_order)
         p_act = sum(int(fm[m]["num_parameters"]) for m in act_mids if m in fm)
         n_way = len(act_mids)
-        if n_way == 6:
+        if "univ_full_eres2conformer_xl_pfas" in act_mids:
+            lbl_fus = "6-Way Flagship Fusion (`ERes2Conf Large/V2/XL Cosine + Large/V2/XL Hybrid-PFAS`)"
+        elif n_way == 6:
             lbl_fus = "6-Way Flagship Fusion (`Conf-L + ECAPA + ResNet-34 + ERes2Conf + PFAS + DrV`)"
         elif n_way == 5:
             lbl_fus = "5-Way Flagship Fusion (`Conf-L + ECAPA + ResNet-34 + PFAS + DrV`)"
@@ -278,6 +297,89 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
                 f"{b}{f2(p1)}%{b} / {b}{f2(p3)}%{b} | {b}{f2(m1)}%{b} / {b}{f2(m3)}%{b} |"
             )
         out.append("<!-- END ERES2CONF_ABLATION_TABLE -->\n")
+
+    v070_abl_path = os.path.join(PM, "v070_ablation_results.json")
+    if os.path.isfile(v070_abl_path):
+        with open(v070_abl_path, "r", encoding="utf-8") as f:
+            v070_abl = json.load(f)
+        v_arms = v070_abl["arms"]
+        v_order = [
+            ("ctrl_base_noprune", "1. Base `ERes2Conf-L` (`33k` = `30k` + `3k` unpruned LMFT)"),
+            ("clean_lmft_medoid_k1", "2. `+ Medoid K=1` collapse (`33k`, collapses intra-spk modes)"),
+            ("clean_lmft_keep_k3_swa_bn", "3. `+ Clean-K3 LMFT + SWA + Exact BN + QMF-v2` (`33k`)"),
+            ("inter_topk_chan_aug_k3", "4. `+ Inter-TopK (K=5, 0.06) + NB/Tilt` at short `33k` horizon"),
+            ("v2_large_fwse_mfa123", "5. `V2-Large` (`2D-fwSE + 3-Stage MFA + 3x Conf`, `33k` Clean)"),
+            ("xl_64m_clean_k3", "6. `XL-64M` (`C=80, (3,4,8,3), 4x640D Conf`, `28k` Clean)"),
+            ("hybrid_pfas_attentive_scoring", "7. `+ Hybrid-PFAS` (`20k` episodes on frozen `Large` trunk)"),
+        ]
+        out.append("<!-- BEGIN V070_ABLATION_TABLE -->")
+        out.append(
+            "| Controlled `v0.7.0` Arm (`113` Shards / `1.26M` Clean Utts, TPU v6p, Batch `512`) | "
+            "Params | Steps | VoxCeleb1-O Raw / AS-Norm / QMF EER (%) | "
+            "CN-Celeb-E Single Raw / QMF / Multi-Enroll EER (%) | "
+            "LibriSpeech `test-clean` 1-Utt Raw / QMF / 3-Utt EER (%) | "
+            "Controlled Pooled 1/3-Utt EER (%) |"
+        )
+        out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+        for k_arm, lbl_arm in v_order:
+            if k_arm not in v_arms:
+                continue
+            va = v_arms[k_arm]
+            ob = va["official_benchmarks"]
+            vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
+            cn_me = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
+            ls_3 = ls["multi_enroll_3utt"].get("as_norm", ls["multi_enroll_3utt"])["eer_percent"]
+            p1 = d1(va, "universal_pooled")["eer_percent"]
+            p3 = min(
+                d3(va, "universal_pooled")["eer_percent"],
+                d3(va, "universal_pooled").get("as_norm", {}).get(
+                    "eer_percent", d3(va, "universal_pooled")["eer_percent"]
+                ),
+            )
+            out.append(
+                f"| {lbl_arm} | `{int(va['num_parameters']):,}` | `{int(va['num_steps']):,}` | "
+                f"{f2(vx['eer_percent'])}% / {f2(vx['as_norm']['eer_percent'])}% / {f2(vx['qmf']['eer_percent'])}% | "
+                f"{f2(cn['eer_percent'])}% / {f2(cn['qmf']['eer_percent'])}% / {f2(cn_me)}% | "
+                f"{f2(ls['eer_percent'])}% / {f2(ls['qmf']['eer_percent'])}% / {f2(ls_3)}% | "
+                f"{f2(p1)}% / {f2(p3)}% |"
+            )
+        out.append("<!-- END V070_ABLATION_TABLE -->\n")
+
+        lh = v070_abl.get("long_horizon_recipe_comparison", {}).get("runs", {})
+        if lh:
+            out.append("<!-- BEGIN V070_HORIZON_TABLE -->")
+            out.append(
+                "| Full-Corpus Long-Horizon Run (`145` Shards / `1.71M` Clean Utts / `4.35M` Items) | "
+                "Steps | Final Train Loss | Held-Out Val 1-Utt / Composite EER (%) | "
+                "VoxCeleb1-O Raw / AS-Norm / QMF EER (%) | "
+                "CN-Celeb-E Single QMF / Multi-Enroll EER (%) | "
+                "LibriSpeech 1-Utt QMF / 3-Utt EER (%) |"
+            )
+            out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: |")
+            for k_lh, lbl_lh, win_b in [
+                ("v2_large_clean_162k", "`V2-Large` (`36.32M`) — Clean Recipe (`0 / 0 / 0`)", ""),
+                ("v2_large_interaug_162k", "`V2-Large` (`36.32M`) — `InterAug` (`K=5, m=0.06, NB 0.20, Tilt 0.25`) [Val Winner]", "**"),
+                ("xl_64m_clean_145k", "`XL-64M` (`64.38M`) — Clean Recipe (`0 / 0 / 0`)", ""),
+                ("xl_64m_interaug_145k", "`XL-64M` (`64.38M`) — `InterAug` (`K=5, m=0.06, NB 0.20, Tilt 0.25`) [Val Winner]", "**"),
+            ]:
+                if k_lh not in lh:
+                    continue
+                r_lh = lh[k_lh]
+                ob = r_lh["official_benchmarks"]
+                vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
+                vt_last = r_lh["validation_trajectory"][-1]
+                val_1 = vt_last["val_1utt_eer_percent"]
+                val_c = vt_last["val_composite_eer_percent"]
+                cn_me = cn["multi_enroll_map"]["as_norm"]["eer_percent"]
+                ls_3 = ls["multi_enroll_3utt"]["as_norm"]["eer_percent"]
+                out.append(
+                    f"| {win_b}{lbl_lh}{win_b} | `{int(r_lh['num_steps']):,}` | `{r_lh['final_loss']:.4f}` | "
+                    f"{win_b}{f2(val_1)}% / {f2(val_c)}%{win_b} | "
+                    f"{win_b}{f2(vx['eer_percent'])}% / {f2(vx['as_norm']['eer_percent'])}% / {f2(vx['qmf']['eer_percent'])}%{win_b} | "
+                    f"{f2(cn['qmf']['eer_percent'])}% / {f2(cn_me)}% | "
+                    f"{f2(ls['qmf']['eer_percent'])}% / {f2(ls_3)}% |"
+                )
+            out.append("<!-- END V070_HORIZON_TABLE -->\n")
 
     out.append("<!-- BEGIN PFAS_SWEEP_TABLE -->")
     out.append(
@@ -710,6 +812,8 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
         "univ_full_ecapa_c1024_arcface",
         "univ_full_resnet34_arcface",
         "univ_full_eres2conformer_large",
+        "univ_full_eres2conformer_v2_large",
+        "univ_full_eres2conformer_xl",
         "univ_conformer_small_ge2e",
         "univ_ecapa_tdnn_small_ge2e",
         "univ_lstm_small_ge2e",

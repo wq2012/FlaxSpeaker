@@ -75,7 +75,7 @@ This flagship model was trained for **93,000 gradient steps** (warmup `2000` ste
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).
+Requires `flaxspeaker >= 0.7.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained
@@ -131,9 +131,9 @@ Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences b
 
 ## Deviations from the Source Papers
 
-- **Training regime**: 85,000 gradient steps x 512 utterances (~46.87 epochs) across 12,193 base speakers (972,254 clean utterances + 3x speed perturbation + MUSAN/RIR).
+- **Training regime**: 93,000 gradient steps x 512 utterances (~46.87 epochs) across 12,193 base speakers (972,254 clean utterances + 3x speed perturbation + MUSAN/RIR).
 - **Augmentation**: corpus-backed MUSAN environmental noise, music, and multi-speaker babble + RIRS_NOISES room impulse responses + 3-way polyphase speed perturbation (`0.9x`, `1.0x`, `1.1x`) + SpecAugment.
-- **SimAM-ERes2Conformer**: unified 2D multi-scale `SimAM-SERes2Net` (`base_channels=64`, `num_blocks=(3, 4, 6, 3)`, `scale=4`, `width_mult=2`, `SimAM+SE+AFF`, `temporal_strides=(1, 1, 2, 2)`) + Stage-3/4 `MFA` + 2x `512`-D `RoPE+QK-Norm+BatchNorm` Conformer blocks + `Context-ATP` (`catp`) + `BN-Neck`.
+- **SimAM-ERes2Conformer**: unified 2D multi-scale `SimAM-SERes2Net` (`base_channels=64`, `num_blocks=(3, 4, 6, 3)`, `scale=4`, `width_mult=2`, `SimAM+SE+AFF`, `temporal_strides=(1, 1, 2, 2)`) + `Stage-3/4 MFA` + 2x `512`-D `RoPE+QK-Norm+BatchNorm` Conformer blocks + `catp` + `BN-Neck`.
 - **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation processes up to 3000 frames (30.0 s).
 
 ## Citation

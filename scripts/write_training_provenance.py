@@ -73,7 +73,7 @@ def provenance_for(mid: str, fp: dict) -> tuple[dict, object]:
         actual = True
         crop = f"{fp['min_seq_len']}-{fp['seq_len']}"
         code = TRAINING_CODE_VARIABLE
-    elif match == "both":
+    elif match in ("both", "both_approx"):
         if mid.endswith("_ge2e_contrast") or bool(
             fp.get("yaml_variable_length_training", True)
         ):
@@ -111,6 +111,15 @@ def provenance_for(mid: str, fp: dict) -> tuple[dict, object]:
             "Both crop regimes reproduce the archived 4-decimal step-0 loss "
             f"(fixed {fp['head_fixed']}, variable {fp['head_variable']}); the crop regime "
             "is assigned from the git history, not from the fingerprint."
+        )
+    elif match == "both_approx":
+        block["fingerprint_discriminable"] = False
+        block["fingerprint_note"] = (
+            "Both crop regimes reproduce the archived TPU bfloat16 step-0 loss within "
+            f"6e-3 (fixed {fp['head_fixed']}, variable {fp['head_variable']} vs. archived "
+            f"{fp['released_initial_loss']}) because the warm-started frozen trunk is "
+            "already length-invariant across crop sizes; the crop regime is confirmed "
+            "from the training config."
         )
     if fp.get("legacy_lambda_used"):
         block["sphereface_note"] = (

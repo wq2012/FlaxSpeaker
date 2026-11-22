@@ -75,7 +75,7 @@ This flagship model was trained for **81,000 gradient steps** (warmup `2500` ste
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).
+Requires `flaxspeaker >= 0.7.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained
@@ -131,7 +131,7 @@ Single seed; the 95% bootstrap CIs resample trials (not speakers). Differences b
 
 ## Deviations from the Source Papers
 
-- **Training regime**: 75,000 gradient steps x 512 utterances (~85.97 epochs) across 12,193 base speakers (464,557 clean utterances + 3x speed perturbation + MUSAN/RIR).
+- **Training regime**: 81,000 gradient steps x 512 utterances (~85.97 epochs) across 12,193 base speakers (464,557 clean utterances + 3x speed perturbation + MUSAN/RIR).
 - **Augmentation**: corpus-backed MUSAN environmental noise, music, and multi-speaker babble + RIRS_NOISES room impulse responses + 3-way polyphase speed perturbation (`0.9x`, `1.0x`, `1.1x`) + SpecAugment.
 - **ECAPA-TDNN**: mask-aware post-activation BatchNorm (`use_batch_norm=True, norm_after_activation=True`).
 - **Frontend**: 80-D natural-log Mel + frame-level energy VAD (26 dB dynamic range) + CMVN; evaluation processes up to 3000 frames (30.0 s).

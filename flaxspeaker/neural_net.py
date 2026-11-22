@@ -155,6 +155,8 @@ def build_modern_encoder_from_config(
     )
     if scoring_type == "pfas":
         p_type = "pfas"
+    elif scoring_type == "hybrid_pfas":
+        p_type = "hybrid_pfas"
 
     if b_type == "lstm":
         b_kwargs = {
@@ -240,8 +242,10 @@ def build_modern_encoder_from_config(
             "width_mult": float(erc.width_mult),
             "use_simam": bool(erc.use_simam),
             "use_se": bool(erc.use_se),
+            "use_fwse": bool(getattr(erc, "use_fwse", False)),
             "use_aff": bool(erc.use_aff),
             "use_mfa_stage23": bool(erc.use_mfa_stage23),
+            "use_mfa_stage123": bool(getattr(erc, "use_mfa_stage123", False)),
             "conformer_dim": int(erc.conformer_dim),
             "num_conformer_layers": int(erc.num_conformer_layers),
             "num_heads": int(erc.num_heads),
@@ -253,38 +257,39 @@ def build_modern_encoder_from_config(
     else:
         raise ValueError(f"Unknown backbone: {b_type}")
 
+    pfas_head_kwargs = {
+        "num_keys": m_cfg.pfas.num_keys,
+        "key_dim": m_cfg.pfas.key_dim,
+        "value_dim": m_cfg.pfas.value_dim,
+        "attention_dim": m_cfg.pfas.attention_dim,
+        "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
+        "atp_num_heads": getattr(m_cfg.pooling, "num_heads", 4),
+        "attention_type": m_cfg.pfas.attention_type,
+        "atp_ffn_use_layer_norm": bool(
+            getattr(m_cfg.pfas, "atp_ffn_use_layer_norm", True)
+        ),
+        "atp_attention_dim": int(getattr(m_cfg.pooling, "attention_dim", 128)),
+        "atp_subspace_heads": bool(getattr(m_cfg.pooling, "subspace_heads", True)),
+        "apply_l2_norm_to_keys": getattr(
+            m_cfg.pfas, "apply_l2_norm_to_keys", True
+        ),
+        "apply_l2_norm_to_values": getattr(
+            m_cfg.pfas, "apply_l2_norm_to_values", False
+        ),
+        "apply_global_l2_norm_to_concat_form": getattr(
+            m_cfg.pfas, "apply_global_l2_norm_to_concat_form", True
+        ),
+        "use_global_anchor": getattr(
+            m_cfg.pfas, "use_global_anchor", True
+        ),
+        "local_value_scale": float(
+            getattr(m_cfg.pfas, "local_value_scale", 0.25)
+        ),
+        "normalize_keys_and_values": m_cfg.pfas.normalize_keys_and_values,
+        "normalize_overall_output": m_cfg.pfas.normalize_overall_output,
+    }
     if p_type == "pfas":
-        p_kwargs = {
-            "num_keys": m_cfg.pfas.num_keys,
-            "key_dim": m_cfg.pfas.key_dim,
-            "value_dim": m_cfg.pfas.value_dim,
-            "attention_dim": m_cfg.pfas.attention_dim,
-            "bottleneck_dim": getattr(m_cfg.pooling, "bottleneck_dim", 256),
-            "atp_num_heads": getattr(m_cfg.pooling, "num_heads", 4),
-            "attention_type": m_cfg.pfas.attention_type,
-            "atp_ffn_use_layer_norm": bool(
-                getattr(m_cfg.pfas, "atp_ffn_use_layer_norm", True)
-            ),
-            "atp_attention_dim": int(getattr(m_cfg.pooling, "attention_dim", 128)),
-            "atp_subspace_heads": bool(getattr(m_cfg.pooling, "subspace_heads", True)),
-            "apply_l2_norm_to_keys": getattr(
-                m_cfg.pfas, "apply_l2_norm_to_keys", True
-            ),
-            "apply_l2_norm_to_values": getattr(
-                m_cfg.pfas, "apply_l2_norm_to_values", False
-            ),
-            "apply_global_l2_norm_to_concat_form": getattr(
-                m_cfg.pfas, "apply_global_l2_norm_to_concat_form", True
-            ),
-            "use_global_anchor": getattr(
-                m_cfg.pfas, "use_global_anchor", True
-            ),
-            "local_value_scale": float(
-                getattr(m_cfg.pfas, "local_value_scale", 0.25)
-            ),
-            "normalize_keys_and_values": m_cfg.pfas.normalize_keys_and_values,
-            "normalize_overall_output": m_cfg.pfas.normalize_overall_output,
-        }
+        p_kwargs = pfas_head_kwargs
     else:
         stats_str = str(
             getattr(
@@ -313,6 +318,8 @@ def build_modern_encoder_from_config(
             ),
             "use_bn_neck": bool(getattr(m_cfg.pooling, "use_bn_neck", False)),
         }
+        if p_type == "hybrid_pfas":
+            p_kwargs["pfas_kwargs"] = pfas_head_kwargs
 
     return backbones.ModernSpeakerEncoder(
         backbone_type=b_type,
@@ -424,11 +431,34 @@ def build_optimizer(myconfig: Any) -> optax.GradientTransformation:
         if freeze_trunk
         else _make_single_tx(max(0.0, trunk_lr_mult))
     )
+    loss_cfg_opt = getattr(train_cfg, "loss", None)
+    raw_sc = (
+        getattr(loss_cfg_opt, "scoring_type", "cosine")
+        if loss_cfg_opt is not None
+        else "cosine"
+    )
+    is_hybrid_sc = str(getattr(raw_sc, "value", raw_sc)).lower() == "hybrid_pfas"
+    trunk_keys = (
+        frozenset(
+            {
+                "backbone",
+                "pool",
+                "neck_bn1",
+                "embedding_proj",
+                "neck_bn2",
+                "bottleneck_ln",
+                "bottleneck_fc",
+                "bottleneck_act_ln",
+            }
+        )
+        if is_hybrid_sc
+        else frozenset({"backbone"})
+    )
 
     def _partition_labels(params: dict[str, Any]) -> dict[str, Any]:
         labels: dict[str, Any] = {}
         for k, subtree in params.items():
-            tag = "trunk" if k == "backbone" else "head"
+            tag = "trunk" if k in trunk_keys else "head"
             labels[k] = jax.tree_util.tree_map(lambda _: tag, subtree)
         return labels
 
@@ -539,12 +569,22 @@ def create_train_state(
         params["_aux_w"] = jnp.array(init_w, dtype=jnp.float32)
         params["_aux_b"] = jnp.array(init_b, dtype=jnp.float32)
 
-    if scoring_type == "pfas" and getattr(
+    if scoring_type in ("pfas", "hybrid_pfas") and getattr(
         exp_cfg.model.pfas, "use_trainable_scale_factor", True
     ):
         init_scale = max(float(exp_cfg.model.pfas.scale_factor), 1.0)
         params["_aux_pfas_log_scale"] = jnp.array(
             float(np.log(init_scale)), dtype=jnp.float32
+        )
+
+    if scoring_type == "hybrid_pfas" and getattr(
+        exp_cfg.model.pfas, "use_trainable_hybrid_alpha", True
+    ):
+        init_alpha = min(
+            0.98, max(0.02, float(getattr(exp_cfg.model.pfas, "hybrid_alpha", 0.25)))
+        )
+        params["_aux_hybrid_logit"] = jnp.array(
+            float(np.log(init_alpha / (1.0 - init_alpha))), dtype=jnp.float32
         )
 
     if scoring_type == "dr_vector":
@@ -643,9 +683,9 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
         if (loss_type == "ge2e_contrast" and contrast_b_scale > 0.0)
         else wb_grad_scale
     )
-    if loss_type == "ge2e_contrast" and scoring_type == "pfas":
+    if loss_type == "ge2e_contrast" and scoring_type in ("pfas", "hybrid_pfas"):
         raise ValueError(
-            "loss_type='ge2e_contrast' does not support scoring_type='pfas' "
+            f"loss_type='ge2e_contrast' does not support scoring_type='{scoring_type}' "
             "(the packed PFAS key/value representation cannot be mean-pooled into "
             "GE2E centroids). Use 'ge2e_softmax' or 'extended_set_softmax' with PFAS."
         )
@@ -660,6 +700,8 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
     scale = float(loss_cfg.scale)
     margin = float(loss_cfg.margin)
     subcenter_k = max(1, int(getattr(loss_cfg, "subcenter_k", 3)))
+    inter_topk = int(getattr(loss_cfg, "inter_topk", 0))
+    inter_margin = float(getattr(loss_cfg, "inter_margin", 0.0))
     sphere_m = float(loss_cfg.sphereface_m)
     sf_l_min = float(getattr(loss_cfg, "sphereface_lambda_min", 5.0))
     sf_l_base = float(getattr(loss_cfg, "sphereface_lambda_base", 1000.0))
@@ -672,6 +714,24 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
 
     pfas_cfg = exp_cfg.model.pfas
     is_pfas = scoring_type == "pfas"
+    is_hybrid_pfas = scoring_type == "hybrid_pfas"
+    cosine_dim = int(exp_cfg.model.embedding_dim)
+    frozen_trunk_keys = (
+        frozenset(
+            {
+                "backbone",
+                "pool",
+                "neck_bn1",
+                "embedding_proj",
+                "neck_bn2",
+                "bottleneck_ln",
+                "bottleneck_fc",
+                "bottleneck_act_ln",
+            }
+        )
+        if is_hybrid_pfas
+        else frozenset({"backbone"})
+    )
     dr_net = (
         scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
         if scoring_type == "dr_vector"
@@ -695,9 +755,11 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 step_f / float(margin_warmup_steps), 0.0, 1.0
             )
             eff_margin = margin * warmup_frac
+            eff_inter_margin = inter_margin * warmup_frac
             eff_sphere_m = 1.0 + (sphere_m - 1.0) * warmup_frac
         else:
             eff_margin = margin
+            eff_inter_margin = inter_margin
             eff_sphere_m = sphere_m
 
         cur_bs = getattr(state, "batch_stats", None) or {}
@@ -740,7 +802,7 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 score_fn = _dr_score
             elif scoring_type == "pfas":
                 pfas_scale = (
-                    jnp.exp(params["_aux_pfas_log_scale"])
+                    jnp.exp(jnp.squeeze(params["_aux_pfas_log_scale"]))
                     if "_aux_pfas_log_scale" in params
                     else pfas_cfg.scale_factor
                 )
@@ -749,6 +811,42 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     num_keys=pfas_cfg.num_keys,
                     key_dim=pfas_cfg.key_dim,
                     value_dim=pfas_cfg.value_dim,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=bool(
+                        getattr(pfas_cfg, "apply_softmax_per_test_key", False)
+                    ),
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
+            elif scoring_type == "hybrid_pfas":
+                pfas_scale = (
+                    jnp.exp(jnp.squeeze(params["_aux_pfas_log_scale"]))
+                    if "_aux_pfas_log_scale" in params
+                    else pfas_cfg.scale_factor
+                )
+                h_alpha = (
+                    jax.nn.sigmoid(jnp.squeeze(params["_aux_hybrid_logit"]))
+                    if "_aux_hybrid_logit" in params
+                    else float(getattr(pfas_cfg, "hybrid_alpha", 0.25))
+                )
+                score_fn = partial(
+                    scoring.hybrid_pfas_score_matrix,
+                    cosine_dim=cosine_dim,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                    hybrid_alpha=h_alpha,
                     scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
                     apply_softmax_per_test_key=bool(
@@ -783,6 +881,8 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     exact_leave_one_out=exact_loo,
                     score_matrix_fn=score_fn,
                     is_pfas=is_pfas,
+                    is_hybrid_pfas=is_hybrid_pfas,
+                    hybrid_cosine_dim=cosine_dim,
                     pfas_num_keys=pfas_cfg.num_keys,
                     pfas_key_dim=pfas_cfg.key_dim,
                     pfas_value_dim=pfas_cfg.value_dim,
@@ -809,6 +909,8 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     multi_row_window=multi_row_window,
                     score_matrix_fn=score_fn,
                     is_pfas=is_pfas,
+                    is_hybrid_pfas=is_hybrid_pfas,
+                    hybrid_cosine_dim=cosine_dim,
                     pfas_num_keys=pfas_cfg.num_keys,
                     pfas_key_dim=pfas_cfg.key_dim,
                     pfas_value_dim=pfas_cfg.value_dim,
@@ -825,6 +927,8 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     b=params["_aux_b"],
                     score_matrix_fn=score_fn,
                     is_pfas=is_pfas,
+                    is_hybrid_pfas=is_hybrid_pfas,
+                    hybrid_cosine_dim=cosine_dim,
                     pfas_num_keys=pfas_cfg.num_keys,
                     pfas_key_dim=pfas_cfg.key_dim,
                     pfas_value_dim=pfas_cfg.value_dim,
@@ -836,6 +940,8 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     labels=batch_labels,
                     scale=scale,
                     margin=eff_margin,
+                    inter_topk=inter_topk,
+                    inter_margin=eff_inter_margin,
                 )
             elif loss_type == "subcenter_arcface":
                 loss_v = losses.subcenter_arcface_loss(
@@ -845,6 +951,8 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                     scale=scale,
                     margin=eff_margin,
                     subcenter_k=subcenter_k,
+                    inter_topk=inter_topk,
+                    inter_margin=eff_inter_margin,
                 )
             elif loss_type == "cosface":
                 loss_v = losses.cosface_loss(
@@ -874,22 +982,28 @@ def make_modern_train_step(exp_cfg: configs.ExperimentConfig):
                 raise ValueError(f"Unsupported loss_type: {loss_type}")
             return loss_v, next_bs
 
-        if freeze_trunk and "backbone" in state.params:
-            frozen_bb = jax.lax.stop_gradient(state.params["backbone"])
+        present_frozen = [k for k in frozen_trunk_keys if k in state.params]
+        if freeze_trunk and present_frozen:
+            frozen_subtrees = {
+                k: jax.lax.stop_gradient(state.params[k]) for k in present_frozen
+            }
             head_only_params = {
-                k: v for k, v in state.params.items() if k != "backbone"
+                k: v for k, v in state.params.items() if k not in frozen_trunk_keys
             }
 
             def head_loss_fn(
                 h_params: dict[str, Any],
             ) -> tuple[jax.Array, dict[str, Any]]:
-                return loss_fn({"backbone": frozen_bb, **h_params})
+                return loss_fn({**frozen_subtrees, **h_params})
 
             (loss_val, new_bs), head_grads = jax.value_and_grad(
                 head_loss_fn, has_aux=True
             )(head_only_params)
             grads = {
-                "backbone": jax.tree_util.tree_map(jnp.zeros_like, frozen_bb),
+                **{
+                    k: jax.tree_util.tree_map(jnp.zeros_like, v)
+                    for k, v in frozen_subtrees.items()
+                },
                 **head_grads,
             }
         else:
@@ -965,6 +1079,8 @@ def make_pmap_train_step(
     scale = float(loss_cfg.scale)
     margin = float(loss_cfg.margin)
     subcenter_k = max(1, int(getattr(loss_cfg, "subcenter_k", 3)))
+    inter_topk = int(getattr(loss_cfg, "inter_topk", 0))
+    inter_margin = float(getattr(loss_cfg, "inter_margin", 0.0))
     sphere_m = float(loss_cfg.sphereface_m)
     sf_l_min = float(getattr(loss_cfg, "sphereface_lambda_min", 5.0))
     sf_l_base = float(getattr(loss_cfg, "sphereface_lambda_base", 1000.0))
@@ -977,6 +1093,24 @@ def make_pmap_train_step(
 
     pfas_cfg = exp_cfg.model.pfas
     is_pfas = scoring_type == "pfas"
+    is_hybrid_pfas = scoring_type == "hybrid_pfas"
+    cosine_dim = int(exp_cfg.model.embedding_dim)
+    frozen_trunk_keys = (
+        frozenset(
+            {
+                "backbone",
+                "pool",
+                "neck_bn1",
+                "embedding_proj",
+                "neck_bn2",
+                "bottleneck_ln",
+                "bottleneck_fc",
+                "bottleneck_act_ln",
+            }
+        )
+        if is_hybrid_pfas
+        else frozenset({"backbone"})
+    )
     dr_net = (
         scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
         if scoring_type == "dr_vector"
@@ -1006,9 +1140,11 @@ def make_pmap_train_step(
                 step_f / float(margin_warmup_steps), 0.0, 1.0
             )
             eff_margin = margin * warmup_frac
+            eff_inter_margin = inter_margin * warmup_frac
             eff_sphere_m = 1.0 + (sphere_m - 1.0) * warmup_frac
         else:
             eff_margin = margin
+            eff_inter_margin = inter_margin
             eff_sphere_m = sphere_m
 
         cur_bs = getattr(state, "batch_stats", None) or {}
@@ -1059,7 +1195,7 @@ def make_pmap_train_step(
                 score_fn = _dr_score
             elif scoring_type == "pfas":
                 pfas_scale = (
-                    jnp.exp(params["_aux_pfas_log_scale"])
+                    jnp.exp(jnp.squeeze(params["_aux_pfas_log_scale"]))
                     if "_aux_pfas_log_scale" in params
                     else pfas_cfg.scale_factor
                 )
@@ -1068,6 +1204,42 @@ def make_pmap_train_step(
                     num_keys=pfas_cfg.num_keys,
                     key_dim=pfas_cfg.key_dim,
                     value_dim=pfas_cfg.value_dim,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=bool(
+                        getattr(pfas_cfg, "apply_softmax_per_test_key", False)
+                    ),
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
+            elif scoring_type == "hybrid_pfas":
+                pfas_scale = (
+                    jnp.exp(jnp.squeeze(params["_aux_pfas_log_scale"]))
+                    if "_aux_pfas_log_scale" in params
+                    else pfas_cfg.scale_factor
+                )
+                h_alpha = (
+                    jax.nn.sigmoid(jnp.squeeze(params["_aux_hybrid_logit"]))
+                    if "_aux_hybrid_logit" in params
+                    else float(getattr(pfas_cfg, "hybrid_alpha", 0.25))
+                )
+                score_fn = partial(
+                    scoring.hybrid_pfas_score_matrix,
+                    cosine_dim=cosine_dim,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                    hybrid_alpha=h_alpha,
                     scale_factor=pfas_scale,
                     per_trial_softmax=pfas_cfg.per_trial_softmax,
                     apply_softmax_per_test_key=bool(
@@ -1102,6 +1274,8 @@ def make_pmap_train_step(
                     exact_leave_one_out=exact_loo,
                     score_matrix_fn=score_fn,
                     is_pfas=is_pfas,
+                    is_hybrid_pfas=is_hybrid_pfas,
+                    hybrid_cosine_dim=cosine_dim,
                     pfas_num_keys=pfas_cfg.num_keys,
                     pfas_key_dim=pfas_cfg.key_dim,
                     pfas_value_dim=pfas_cfg.value_dim,
@@ -1128,6 +1302,8 @@ def make_pmap_train_step(
                     multi_row_window=multi_row_window,
                     score_matrix_fn=score_fn,
                     is_pfas=is_pfas,
+                    is_hybrid_pfas=is_hybrid_pfas,
+                    hybrid_cosine_dim=cosine_dim,
                     pfas_num_keys=pfas_cfg.num_keys,
                     pfas_key_dim=pfas_cfg.key_dim,
                     pfas_value_dim=pfas_cfg.value_dim,
@@ -1144,6 +1320,8 @@ def make_pmap_train_step(
                     b=params["_aux_b"],
                     score_matrix_fn=score_fn,
                     is_pfas=is_pfas,
+                    is_hybrid_pfas=is_hybrid_pfas,
+                    hybrid_cosine_dim=cosine_dim,
                     pfas_num_keys=pfas_cfg.num_keys,
                     pfas_key_dim=pfas_cfg.key_dim,
                     pfas_value_dim=pfas_cfg.value_dim,
@@ -1155,6 +1333,8 @@ def make_pmap_train_step(
                     labels=batch_labels,
                     scale=scale,
                     margin=eff_margin,
+                    inter_topk=inter_topk,
+                    inter_margin=eff_inter_margin,
                 )
             elif loss_type == "subcenter_arcface":
                 loss_v = losses.subcenter_arcface_loss(
@@ -1164,6 +1344,8 @@ def make_pmap_train_step(
                     scale=scale,
                     margin=eff_margin,
                     subcenter_k=subcenter_k,
+                    inter_topk=inter_topk,
+                    inter_margin=eff_inter_margin,
                 )
             elif loss_type == "cosface":
                 loss_v = losses.cosface_loss(
@@ -1197,22 +1379,28 @@ def make_pmap_train_step(
             loss_val, _ = loss_fn(state.params)
             return state, jax.lax.pmean(loss_val, axis_name=axis_name)
 
-        if freeze_trunk and "backbone" in state.params:
-            frozen_bb = jax.lax.stop_gradient(state.params["backbone"])
+        present_frozen = [k for k in frozen_trunk_keys if k in state.params]
+        if freeze_trunk and present_frozen:
+            frozen_subtrees = {
+                k: jax.lax.stop_gradient(state.params[k]) for k in present_frozen
+            }
             head_only_params = {
-                k: v for k, v in state.params.items() if k != "backbone"
+                k: v for k, v in state.params.items() if k not in frozen_trunk_keys
             }
 
             def head_loss_fn(
                 h_params: dict[str, Any],
             ) -> tuple[jax.Array, dict[str, Any]]:
-                return loss_fn({"backbone": frozen_bb, **h_params})
+                return loss_fn({**frozen_subtrees, **h_params})
 
             (loss_val, new_bs), head_grads = jax.value_and_grad(
                 head_loss_fn, has_aux=True
             )(head_only_params)
             grads = {
-                "backbone": jax.tree_util.tree_map(jnp.zeros_like, frozen_bb),
+                **{
+                    k: jax.tree_util.tree_map(jnp.zeros_like, v)
+                    for k, v in frozen_subtrees.items()
+                },
                 **head_grads,
             }
         else:
@@ -1471,6 +1659,201 @@ def train_network(
             batch_stats=state.batch_stats,
         )
     return losses_history
+
+
+def prune_class_weights_for_clean_lmft(
+    class_weights: jax.Array,
+    clean_class_indices: Any,
+    subcenter_k: int = 3,
+    dominant_subcenters: Optional[Any] = None,
+    collapse_subcenters: bool = False,
+    eps: float = 1e-6,
+) -> jax.Array:
+    """Slices Stage-1 `_aux_class_weights` to clean `1.0x` classes (`collapse_subcenters=False` keeps `K`).
+
+    During Stage-1 training with `0.9x`/`1.1x` speed perturbation (`3x` virtual classes),
+    `_aux_class_weights` holds `C_total * K` prototypes. Keeping `@sp0.9`/`@sp1.1` columns
+    during clean Stage-2 LMFT turns each speaker's own speed-perturbed prototypes into
+    negative impostors at high angular margin (`m = 0.45-0.50`). Pruning strictly to
+    `clean_class_indices` while preserving all `K` sub-centers (`collapse_subcenters=False`)
+    eliminates self-impostor repulsion without losing the trained dominant sub-center
+    (uncalibrated geometric medoids over `K=3` sub-centers can pick unused repelled slots
+    unless empirical `dominant_subcenters` from clean speaker embeddings are supplied).
+    """
+    w = jnp.asarray(class_weights, dtype=jnp.float32)
+    k = max(1, int(subcenter_k))
+    if w.ndim != 2 or w.shape[1] % k != 0:
+        raise ValueError(
+            f"class_weights shape {w.shape} incompatible with subcenter_k={k}."
+        )
+    c_total = w.shape[1] // k
+    clean_idx = jnp.asarray(clean_class_indices, dtype=jnp.int32)
+    w_reshaped = w.reshape(w.shape[0], c_total, k)  # (D, C_total, K)
+    w_clean = jnp.take(w_reshaped, clean_idx, axis=1)  # (D, C_clean, K)
+    w_clean = w_clean / (jnp.linalg.norm(w_clean, axis=0, keepdims=True) + eps)
+
+    if not collapse_subcenters or k == 1:
+        return w_clean.reshape(w.shape[0], clean_idx.shape[0] * k)
+
+    if dominant_subcenters is not None:
+        dom = jnp.asarray(dominant_subcenters, dtype=jnp.int32)
+        if dom.shape[0] != clean_idx.shape[0]:
+            raise ValueError(
+                f"dominant_subcenters length ({dom.shape[0]}) != clean_class_indices ({clean_idx.shape[0]})."
+            )
+    else:
+        # Geometric medoid sub-center: highest average cosine similarity to the K sub-centers
+        gram = jnp.einsum("dck,dcj->ckj", w_clean, w_clean)  # (C_clean, K, K)
+        dom = jnp.argmax(jnp.mean(gram, axis=-1), axis=-1)  # (C_clean,)
+
+    c_arange = jnp.arange(clean_idx.shape[0], dtype=jnp.int32)
+    pruned = w_clean[:, c_arange, dom]  # (D, C_clean)
+    return pruned / (jnp.linalg.norm(pruned, axis=0, keepdims=True) + eps)
+
+
+def soup_checkpoints(
+    param_trees: Any,
+    weights: Optional[Any] = None,
+    eps: float = 1e-6,
+) -> dict[str, Any]:
+    """Computes weighted parameter-space average (Model Soup / SWA) across checkpoints."""
+    trees = list(param_trees)
+    if not trees:
+        raise ValueError("soup_checkpoints requires at least one parameter dict.")
+    if len(trees) == 1:
+        return dict(trees[0])
+    if weights is None:
+        w = np.full((len(trees),), 1.0 / len(trees), dtype=np.float64)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+        if w.shape != (len(trees),) or np.sum(w) <= 0.0:
+            raise ValueError(f"Invalid soup weights {w} for {len(trees)} trees.")
+        w = w / np.sum(w)
+
+    flat_list = [flax.traverse_util.flatten_dict(t, sep=".") for t in trees]
+    souped_flat: dict[str, Any] = {}
+    for k, v0 in flat_list[0].items():
+        acc = jnp.zeros_like(jnp.asarray(v0), dtype=jnp.float32)
+        for wi, fl in zip(w, flat_list):
+            acc = acc + float(wi) * jnp.asarray(fl[k], dtype=jnp.float32)
+        souped_flat[k] = acc.astype(jnp.asarray(v0).dtype)
+
+    souped = flax.traverse_util.unflatten_dict(souped_flat, sep=".")
+    if "_aux_class_weights" in souped:
+        cw = jnp.asarray(souped["_aux_class_weights"], dtype=jnp.float32)
+        souped["_aux_class_weights"] = cw / (
+            jnp.linalg.norm(cw, axis=0, keepdims=True) + eps
+        )
+    return souped
+
+
+def recompute_clean_batch_stats(
+    apply_fn: Any,
+    params: dict[str, Any],
+    batch_stats: dict[str, Any],
+    batch_iter: Any,
+) -> dict[str, Any]:
+    """Recomputes exact unbiased population `batch_stats` over clean masked batches.
+
+    Applies the law of total variance `Var(X) = E[Var(X|B)] + Var(E[X|B])` across all
+    batches in `batch_iter` (each yielding `(batch_input, batch_mask)` or `batch_input`),
+    supporting both `MaskedBatchNorm1D`/`2D` (`running_mean`/`running_var`) and standard
+    `nn.BatchNorm` (`mean`/`var`).
+    """
+    if not batch_stats:
+        return {}
+
+    zero_bs = jax.tree_util.tree_map(
+        lambda x: jnp.zeros_like(jnp.asarray(x), dtype=jnp.float32), batch_stats
+    )
+    ones_bs = jax.tree_util.tree_map(
+        lambda x: jnp.ones_like(jnp.asarray(x), dtype=jnp.float32), batch_stats
+    )
+
+    @jax.jit
+    def _probe_batch(
+        bs_in: dict[str, Any], x_b: jax.Array, m_b: Optional[jax.Array]
+    ) -> dict[str, Any]:
+        _, upd = apply_fn(
+            {"params": params, "batch_stats": bs_in},
+            x_b,
+            deterministic=False,
+            mask=m_b,
+            mutable=["batch_stats"],
+        )
+        return upd["batch_stats"]
+
+    one_minus_mom_flat: Optional[dict[str, jax.Array]] = None
+    sum_stat: dict[str, jax.Array] = {}
+    sum_sq_mean: dict[str, jax.Array] = {}
+    n_batches = 0
+
+    for item in batch_iter:
+        if isinstance(item, (tuple, list)):
+            x_b = jnp.asarray(item[0], dtype=jnp.float32)
+            m_b = (
+                jnp.asarray(item[1], dtype=jnp.float32)
+                if len(item) >= 2 and item[1] is not None
+                else None
+            )
+        else:
+            x_b = jnp.asarray(item, dtype=jnp.float32)
+            m_b = None
+
+        u_zero = flax.traverse_util.flatten_dict(
+            _probe_batch(zero_bs, x_b, m_b), sep="."
+        )
+        if one_minus_mom_flat is None:
+            u_ones = flax.traverse_util.flatten_dict(
+                _probe_batch(ones_bs, x_b, m_b), sep="."
+            )
+            one_minus_mom_flat = {
+                k: jnp.maximum(1.0 - (u_ones[k] - u_zero[k]), 1e-6)
+                for k in u_zero
+            }
+            for k, v in u_zero.items():
+                sum_stat[k] = jnp.zeros_like(v, dtype=jnp.float32)
+                if k.endswith(".mean") or k.endswith(".running_mean"):
+                    sum_sq_mean[k] = jnp.zeros_like(v, dtype=jnp.float32)
+
+        assert one_minus_mom_flat is not None
+        for k, v in u_zero.items():
+            stat_k = v.astype(jnp.float32) / one_minus_mom_flat[k]
+            sum_stat[k] = sum_stat[k] + stat_k
+            if k in sum_sq_mean:
+                sum_sq_mean[k] = sum_sq_mean[k] + jnp.square(stat_k)
+        n_batches += 1
+
+    if n_batches == 0:
+        return batch_stats
+
+    inv_n = 1.0 / float(n_batches)
+    orig_flat = flax.traverse_util.flatten_dict(batch_stats, sep=".")
+    exact_flat: dict[str, jax.Array] = {}
+    for k in sum_stat:
+        if k.endswith(".mean") or k.endswith(".running_mean"):
+            exact_flat[k] = (sum_stat[k] * inv_n).astype(
+                jnp.asarray(orig_flat[k]).dtype
+            )
+    for k in sum_stat:
+        if k.endswith(".var"):
+            partner = k[:-4] + ".mean"
+        elif k.endswith(".running_var"):
+            partner = k[:-12] + ".running_mean"
+        else:
+            partner = ""
+        if partner and partner in sum_sq_mean:
+            mu_k = sum_stat[partner] * inv_n
+            between_var = jnp.maximum(
+                0.0, sum_sq_mean[partner] * inv_n - jnp.square(mu_k)
+            )
+            var_k = sum_stat[k] * inv_n + between_var
+            exact_flat[k] = var_k.astype(jnp.asarray(orig_flat[k]).dtype)
+        elif k not in exact_flat:
+            exact_flat[k] = (sum_stat[k] * inv_n).astype(
+                jnp.asarray(orig_flat[k]).dtype
+            )
+    return flax.traverse_util.unflatten_dict(exact_flat, sep=".")
 
 
 def run_lmft_stage(

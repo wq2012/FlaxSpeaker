@@ -83,9 +83,7 @@ def main() -> None:
         sample_feat = rng.standard_normal(
             (export_window, model.exp_config.frontend.feature_dim)
         ).astype(np.float32)
-        flax_emb = np.asarray(
-            model.state.apply_fn({"params": model.state.params}, sample_feat[None, :, :])[0]
-        )
+        flax_emb = np.asarray(model(sample_feat[None, :, :])[0])
 
         for q in quant_modes:
             suffix = "int8" if q else "fp32"

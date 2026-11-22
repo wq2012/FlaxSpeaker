@@ -8,10 +8,10 @@ sdk_version: 5.50.0
 app_file: app.py
 pinned: false
 license: apache-2.0
-short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS, SimAM-ERes2Conformer) — 50 converged v0.6.0 models
+short_description: Speaker verification in JAX/Flax (SimAM-ERes2Conformer-XL, Hybrid-PFAS, GE2E, Dr-Vectors) — 55 v0.7.0 models
 ---
 
-# FlaxSpeaker (`v0.6.0`) — Interactive Speaker Verification Demo
+# FlaxSpeaker (`v0.7.0`) — Interactive Speaker Verification Demo
 
 ## Disclaimer & Reproduction Notice
 
@@ -23,31 +23,31 @@ short_description: Speaker verification in JAX/Flax (GE2E, Dr-Vectors, ATP, PFAS
 > - **ATP** (pooling head repurposed from a *language identification* paper): *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
 > - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642](https://arxiv.org/abs/2203.05642))
 >
-> together with `SimAM-ERes2Conformer` + `Context-ATP` (`catp`), `Sub-Center ArcFace` (`K = 3`), `SE-ResNet-34`, `ECAPA-TDNN`, `Conformer`, and `Mamba` encoders. The original papers were evaluated on Google-internal infrastructure and data, not with this library.
+> together with `SimAM-ERes2Conformer` (`XL`, `V2-Large`, `Large`) + `Context-ATP` (`catp`), `Hybrid-PFAS`, `Sub-Center ArcFace` (`K = 3`) + `Inter-TopK`, `SE-ResNet-34`, `ECAPA-TDNN`, `Conformer`, and `Mamba` encoders. The original papers were evaluated on Google-internal infrastructure and data, not with this library.
 
-## Two-Tier `v0.6.0` Model Zoo (read first)
+## Two-Tier `v0.7.0` Model Zoo (read first)
 
-All **50 selectable checkpoints** (`v0.6.0`) are organized into two tiers:
-1. **Tier-2 Full-Data Universal Flagships (`6` `univ_full_*` models, `14.86M–31.83M` parameters):** Trained across **12,193 base speakers** (`36,579` speed-perturbed classes across `VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech-960h`, up to `972,254` clean utterances / `2,872,190` MUSAN + RIR + speed-augmented items) with zero speaker overlap against any evaluation split (`VoxCeleb1-O`, `CN-Celeb-E`, `LibriSpeech test-clean`, and the 80-speaker controlled suite). Covers four complementary from-scratch encoder backbones (`SimAM-ERes2Conformer-Large`, `SE-ResNet-34`, `Conformer-Large`, `ECAPA-TDNN c=1024`) plus warm-started `PFAS-SN` and `Dr-Vectors` scoring heads.
+All **55 selectable checkpoints** (`v0.7.0`) are organized into two tiers:
+1. **Tier-2 Full-Data Universal Flagships (`11` `univ_full_*` models, `14.86M–77.05M` parameters):** Trained across **12,193 base speakers** (`36,579` speed-perturbed classes across `VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech-960h`, up to `1,708,852` clean utterances / `4,345,181` MUSAN + RIR + speed-augmented items) with zero speaker overlap against any evaluation split (`VoxCeleb1-O`, `CN-Celeb-E`, `LibriSpeech test-clean`, and the 80-speaker controlled suite). Covers six cosine-scored backbones (`SimAM-ERes2Conformer-XL` `0.40%` VoxCeleb1-O QMF, `SimAM-ERes2Conformer-V2-Large` `0.58%` VoxCeleb1-O, `SimAM-ERes2Conformer-Large`, `SE-ResNet-34`, `Conformer-Large`, `ECAPA-TDNN c=1024`) plus three `Hybrid-PFAS` cross-attention flagships (`V2-PFAS` `5.82%` CN-Celeb-E Multi-Enroll, `XL-PFAS` `0.57%` VoxCeleb1-O / `6.04%` CN-Celeb-E, `Large-PFAS`), `PFAS-SN`, and `Dr-Vectors`.
 2. **Tier-1 Controlled Benchmark Zoo (`44` `univ_*`, `ls_*`, `cn_*`, `vox_*` models, `0.63M–4.55M` parameters):** Trained to calibrated `S_safe = X + 2` epoch step budgets (`4,600` steps / `15.58` epochs on Universal `381` spk / `9,447` utts; `2,400–2,600` steps on LibriSpeech; `1,600–1,800` steps on CN-Celeb2; `1,000` steps on VoxCeleb1) with uniform variable-length masked crops `T ~ U(90, 180)` frames for controlled architectural, pooling, objective, and scorer comparisons.
 
 ## What the demo does
 
-- **Real inference only.** Every verdict runs the selected checkpoint on the uploaded/recorded audio (energy VAD → 80-D log-Mel → JAX encoder → cosine / Dr-Vector / PFAS scoring). Nothing is precomputed; curated examples are *not* cached.
-- **Calibrated default threshold.** When you pick a model, the decision threshold resets to that model's **own EER operating point** read from its `eval_results.json` (both 1-utt and 3-utt operating points); the slider range adapts to the scoring back-end (cosine vs. Dr-Vector vs. PFAS scales).
-- **Multi-utterance enrollment** (centroid for cosine / Dr-Vector, key stacking for PFAS), a VAD on/off toggle with SNR-margin and dynamic-range sliders, and a diagnostic plot (waveform + VAD gate, post-VAD log-Mel spectrograms, embedding profile).
+- **Real inference only.** Every verdict runs the selected checkpoint on the uploaded/recorded audio (energy VAD → 80-D log-Mel → JAX encoder → cosine / Dr-Vector / PFAS / Hybrid-PFAS scoring). Nothing is precomputed; curated examples are *not* cached.
+- **Calibrated default threshold.** When you pick a model, the decision threshold resets to that model's **own EER operating point** read from its `eval_results.json` (both 1-utt and 3-utt operating points); the slider range adapts to the scoring back-end (cosine vs. Dr-Vector vs. PFAS / Hybrid-PFAS scales).
+- **Multi-utterance enrollment** (centroid for cosine / Dr-Vector, key stacking for PFAS / Hybrid-PFAS), a VAD on/off toggle with SNR-margin and dynamic-range sliders, and a diagnostic plot (waveform + VAD gate, post-VAD log-Mel spectrograms, embedding profile).
 - **Latency** is reported as steady-state model inference time separately from end-to-end time: embeddings go through the masked power-of-two bucketed full-utterance evaluation path (`flaxspeaker.evaluation.encode_features`), pre-warmed at model load.
 - AS-Norm is intentionally **not** offered in the demo: a meaningful AS-Norm needs an impostor cohort disjoint from the trial audio, which a stateless web demo does not have. The library's `evaluate_verification_trials(..., cohort_embeddings=...)` enforces this requirement.
 
 ## Links & Pretrained Models
 
-- **Hugging Face Collection (50 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)
+- **Hugging Face Collection (55 Pretrained Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker)
 - **GitHub Repository**: [`wq2012/FlaxSpeaker`](https://github.com/wq2012/FlaxSpeaker)
 - **PyPI Package**: [`flaxspeaker`](https://pypi.org/project/flaxspeaker/)
 
 ### Model selection
 
-The dropdown lists all **50 checkpoints**: **6 full-data universal flagships** (`univ_full_eres2conformer_large`, `univ_full_resnet34_arcface`, `univ_full_conformer_large_arcface`, `univ_full_ecapa_c1024_arcface`, `univ_full_conformer_large_pfas`, `univ_full_conformer_large_dr_vectors`), **19 controlled universal multi-domain models** (`univ_*`), and **25 controlled single-domain specialists** (`ls_*`, `cn_*`, `vox_*`). Per-model metrics, 95% bootstrap confidence intervals, and paper-deviation notes are included in each model card.
+The dropdown lists all **55 checkpoints**: **11 full-data universal flagships** (`univ_full_eres2conformer_xl`, `univ_full_eres2conformer_xl_pfas`, `univ_full_eres2conformer_v2_large`, `univ_full_eres2conformer_v2_pfas`, `univ_full_eres2conformer_large`, `univ_full_eres2conformer_large_pfas`, `univ_full_resnet34_arcface`, `univ_full_conformer_large_arcface`, `univ_full_ecapa_c1024_arcface`, `univ_full_conformer_large_pfas`, `univ_full_conformer_large_dr_vectors`), **19 controlled universal multi-domain models** (`univ_*`), and **25 controlled single-domain specialists** (`ls_*`, `cn_*`, `vox_*`). Per-model metrics, 95% bootstrap confidence intervals, and paper-deviation notes are included in each model card.
 
 ## Hosting status
 
@@ -56,7 +56,7 @@ This folder is a complete Gradio Space; `scripts/deploy_hf_space.py` deploys it 
 ## Running locally
 
 ```bash
-pip install -r requirements.txt   # installs flaxspeaker>=0.6.0 + gradio
+pip install -r requirements.txt   # installs flaxspeaker>=0.7.0 + gradio
 python app.py
 ```
 

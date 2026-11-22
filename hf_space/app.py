@@ -44,8 +44,8 @@ PRETRAINED_ROOT = os.environ.get(
     os.path.join(REPO_ROOT, "pretrained_models"),
 )
 EXAMPLES_DIR = os.path.join(THIS_DIR, "examples")
-DEFAULT_MODEL = "univ_full_eres2conformer_large"
-FALLBACK_MODEL = "univ_full_resnet34_arcface"
+DEFAULT_MODEL = "univ_full_eres2conformer_xl"
+FALLBACK_MODEL = "univ_full_eres2conformer_v2_large"
 _MODEL_CACHE: dict[str, hf_compat.FlaxSpeakerModel] = {}
 _THRESHOLD_CACHE: dict[str, dict[str, float]] = {}
 _EVAL_SUMMARY_CACHE: dict[str, dict[str, float]] = {}
@@ -57,6 +57,7 @@ _SLIDER_RANGE = {
     "cosine": (-0.2, 1.0),
     "dr_vector": (-0.5, 1.5),
     "pfas": (-0.5, 1.5),
+    "hybrid_pfas": (-0.3, 1.3),
 }
 
 
@@ -276,7 +277,9 @@ def build_diagnostic_plot(
 
     dims = min(64, enroll_emb.shape[0], test_emb.shape[0])
     x = np.arange(dims)
-    is_pfas = scoring_type.lower() == "pfas"
+    st_low = scoring_type.lower()
+    is_pfas = st_low == "pfas"
+    is_hybrid = st_low == "hybrid_pfas"
     enroll_lbl = f"Enroll Keys (1..{dims})" if is_pfas else "Enrollment Emb"
     test_lbl = f"Test Keys (1..{dims})" if is_pfas else "Test Emb"
     axes[3].plot(
@@ -290,16 +293,27 @@ def build_diagnostic_plot(
         lw=1.3,
         alpha=0.85,
     )
-    panel4_title = (
-        f"PFAS Key-Value Rep (first {dims}/{enroll_emb.shape[0]} dims, score={score:.4f})"
-        if is_pfas
-        else f"{model_name} (first {dims}/{enroll_emb.shape[0]} dims, score={score:.4f})"
-    )
+    if is_pfas:
+        panel4_title = (
+            f"PFAS Key-Value Rep (first {dims}/{enroll_emb.shape[0]} dims, score={score:.4f})"
+        )
+    elif is_hybrid:
+        panel4_title = (
+            f"Hybrid Cos+PFAS (first {dims} cos dims of {enroll_emb.shape[0]}, score={score:.4f})"
+        )
+    else:
+        panel4_title = (
+            f"{model_name} (first {dims}/{enroll_emb.shape[0]} dims, score={score:.4f})"
+        )
     axes[3].set_title(panel4_title, fontsize=9.2)
     axes[3].set_xlabel(
         f"PFAS Key-Value Slice ({enroll_emb.shape[0]} total dims)"
         if is_pfas
-        else "Embedding Dimension"
+        else (
+            f"Cosine Slice (256 cos + {enroll_emb.shape[0] - 256} PFAS dims)"
+            if is_hybrid
+            else "Embedding Dimension"
+        )
     )
     axes[3].set_ylabel("Activation")
     axes[3].legend(loc="upper right", fontsize=7.5)
@@ -482,7 +496,7 @@ def build_demo() -> Any:
 
     with gr.Blocks(title="FlaxSpeaker — Universal Speaker Recognition") as demo:
         gr.Markdown(
-            "# FlaxSpeaker (`v0.6.0`) — Universal Multi-Domain Speaker Verification\n"
+            "# FlaxSpeaker (`v0.7.0`) — Universal Multi-Domain Speaker Verification\n"
             "> **Disclaimer**: **This is not an officially supported Google product.** "
             "FlaxSpeaker is a from-scratch JAX/Flax re-implementation (using only the published "
             "papers, no proprietary code) of "
@@ -490,18 +504,19 @@ def build_demo() -> Any:
             "[Dr-Vectors (`arXiv:2104.01989`)](https://arxiv.org/abs/2104.01989), "
             "[ATP pooling (`arXiv:2202.12163`)](https://arxiv.org/abs/2202.12163), and "
             "[PFAS (`arXiv:2203.05642`)](https://arxiv.org/abs/2203.05642), together with "
-            "`SimAM-ERes2Conformer` + `Context-ATP` (`catp`), Sub-Center ArcFace (`K=3`), "
+            "`SimAM-ERes2Conformer` (`XL`, `V2-Large`, `Large`) + `Context-ATP` (`catp`), "
+            "`Hybrid-PFAS`, Sub-Center ArcFace (`K=3`) + `Inter-TopK`, "
             "SE-ResNet-34, ECAPA-TDNN, Conformer, and Mamba encoders.\n\n"
-            "> **Two-Tier Model Zoo (`50` Pretrained Models)**:\n"
-            "> 1. **Tier 2 — Full-Data Universal Flagships (`univ_full_*`, 6 models)**: "
+            "> **Two-Tier Model Zoo (`55` Pretrained Models)**:\n"
+            "> 1. **Tier 2 — Full-Data Universal Flagships (`univ_full_*`, 11 models)**: "
+            "`SimAM-ERes2Conformer-XL` (`64.38M`, `0.40%` VoxCeleb1-O QMF / `0.44%` raw), "
+            "`SimAM-ERes2Conformer-V2-Large` (`36.32M`, `0.58%` VoxCeleb1-O / `6.68%` CN-Celeb-E), "
             "`SimAM-ERes2Conformer-Large` (`31.83M`), `SE-ResNet-34` (`24.55M`), "
             "`Conformer-Large` (`22.01M`), and `ECAPA-TDNN-c1024` (`14.86M`) "
-            "trained from scratch on the full speaker-disjoint multi-corpus mixture "
-            "(`VoxCeleb1/2-dev` + `CN-Celeb 1/2` + `LibriSpeech 960h`: `12,193` base speakers / "
-            "`36,579` speed-perturbed classes across up to `972,254` clean utterances / "
-            "`2,872,190` augmented items with `MUSAN` + `RIRS_NOISES` + `3x` speed perturbation "
-            "and Large-Margin Fine-Tuning), plus warm-started `PFAS-SN` (`22.58M`) and "
-            "`Dr-Vectors` (`22.17M`) heads.\n"
+            "trained from scratch across `12,193` base speakers (`36,579` speed-perturbed classes, "
+            "up to `1,708,852` clean utterances / `4,345,181` MUSAN + RIR + speed-augmented items "
+            "with Clean-K3 Large-Margin Fine-Tuning), plus `Hybrid-PFAS` (`V2-PFAS` `5.82%` CN-Celeb-E, "
+            "`XL-PFAS` `0.57%` VoxCeleb1-O / `6.04%` CN-Celeb-E, `Large-PFAS`), `PFAS-SN`, and `Dr-Vectors`.\n"
             "> 2. **Tier 1 — Controlled Multi-Domain Benchmark (`univ_*`, `ls_*`, `cn_*`, `vox_*`, "
             "44 models)**: trained on fixed bounded subsets (`<= 381` speakers, `<= 9,447` clean "
             "utterances) for controlled architectural, pooling, and loss ablations.\n\n"
@@ -510,7 +525,7 @@ def build_demo() -> Any:
             "`eval_results.json` operating point (`1-utt` for single enrollment, `3-utt` for "
             "multi-utterance enrollment).\n\n"
             "**Links**: "
-            "[Hugging Face Collection (50 Pretrained Models)]"
+            "[Hugging Face Collection (55 Pretrained Models)]"
             "(https://huggingface.co/collections/wq2012/flaxspeaker) | "
             "[GitHub Repository (`wq2012/FlaxSpeaker`)](https://github.com/wq2012/FlaxSpeaker) | "
             "[PyPI (`flaxspeaker`)](https://pypi.org/project/flaxspeaker/)"

@@ -295,6 +295,142 @@ def stack_multi_enroll_pfas(
     return jnp.concatenate([all_keys.reshape(-1), all_vals.reshape(-1)], axis=-1)
 
 
+def unpack_hybrid_pfas_representation(
+    packed: jax.Array,
+    cosine_dim: int = 256,
+    num_keys: int = 8,
+    key_dim: int = 32,
+    value_dim: int = 96,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Unpack `[e_cos (cosine_dim), pfas_keys, pfas_values]` into `(e_cos, keys, values)`."""
+    if packed.shape[-1] <= cosine_dim:
+        raise ValueError(
+            f"Hybrid PFAS vector dim ({packed.shape[-1]}) must exceed cosine_dim ({cosine_dim})."
+        )
+    e_cos = packed[..., :cosine_dim]
+    pfas_tail = packed[..., cosine_dim:]
+    kv_unit = key_dim + value_dim
+    if pfas_tail.shape[-1] % kv_unit != 0:
+        raise ValueError(
+            f"Hybrid PFAS tail dim ({pfas_tail.shape[-1]}) not divisible by key_dim+value_dim ({kv_unit})."
+        )
+    eff_keys = pfas_tail.shape[-1] // kv_unit
+    keys, vals = unpack_pfas_representation(pfas_tail, eff_keys, key_dim, value_dim)
+    return e_cos, keys, vals
+
+
+def hybrid_pfas_score_pair(
+    test_packed: jax.Array,
+    enroll_packed: jax.Array,
+    cosine_dim: int = 256,
+    num_keys: int = 8,
+    key_dim: int = 32,
+    value_dim: int = 96,
+    hybrid_alpha: Union[jax.Array, float] = 0.25,
+    scale_factor: Union[jax.Array, float] = 16.0,
+    per_trial_softmax: bool = True,
+    apply_softmax_per_test_key: bool = False,
+    apply_l2_norm_to_keys: bool = True,
+    apply_l2_norm_to_values: bool = False,
+    apply_global_l2_norm_to_concat_form: bool = True,
+    attention_weight_mode: str = "exp",
+    eps: float = 1e-6,
+) -> jax.Array:
+    """Scores `(test_packed, enroll_packed)` via `(1 - alpha)*cosine + alpha*PFAS`."""
+    t_cos, t_k, t_v = unpack_hybrid_pfas_representation(
+        test_packed, cosine_dim, num_keys, key_dim, value_dim
+    )
+    e_cos, e_k, e_v = unpack_hybrid_pfas_representation(
+        enroll_packed, cosine_dim, num_keys, key_dim, value_dim
+    )
+    cos_s = cosine_similarity(t_cos, e_cos, eps=eps)
+    pfas_s = pfas_score_pair(
+        t_k,
+        t_v,
+        e_k,
+        e_v,
+        scale_factor=scale_factor,
+        per_trial_softmax=per_trial_softmax,
+        apply_softmax_per_test_key=apply_softmax_per_test_key,
+        apply_l2_norm_to_keys=apply_l2_norm_to_keys,
+        apply_l2_norm_to_values=apply_l2_norm_to_values,
+        apply_global_l2_norm_to_concat_form=apply_global_l2_norm_to_concat_form,
+        attention_weight_mode=attention_weight_mode,
+        eps=eps,
+    )
+    return (1.0 - hybrid_alpha) * cos_s + hybrid_alpha * pfas_s
+
+
+def hybrid_pfas_score_matrix(
+    test_packed: jax.Array,
+    enroll_packed: jax.Array,
+    cosine_dim: int = 256,
+    num_keys: int = 8,
+    key_dim: int = 32,
+    value_dim: int = 96,
+    hybrid_alpha: Union[jax.Array, float] = 0.25,
+    scale_factor: Union[jax.Array, float] = 16.0,
+    per_trial_softmax: bool = True,
+    apply_softmax_per_test_key: bool = False,
+    apply_l2_norm_to_keys: bool = True,
+    apply_l2_norm_to_values: bool = False,
+    apply_global_l2_norm_to_concat_form: bool = True,
+    attention_weight_mode: str = "exp",
+    eps: float = 1e-6,
+) -> jax.Array:
+    """Computes `(N_test, N_enroll)` Hybrid Cosine + PFAS similarity matrix."""
+    t_cos = test_packed[..., :cosine_dim]
+    e_cos = enroll_packed[..., :cosine_dim]
+    cos_mat = cosine_similarity_matrix(t_cos, e_cos, eps=eps)
+    pfas_mat = pfas_score_matrix(
+        test_packed[..., cosine_dim:],
+        enroll_packed[..., cosine_dim:],
+        num_keys=num_keys,
+        key_dim=key_dim,
+        value_dim=value_dim,
+        scale_factor=scale_factor,
+        per_trial_softmax=per_trial_softmax,
+        apply_softmax_per_test_key=apply_softmax_per_test_key,
+        apply_l2_norm_to_keys=apply_l2_norm_to_keys,
+        apply_l2_norm_to_values=apply_l2_norm_to_values,
+        apply_global_l2_norm_to_concat_form=apply_global_l2_norm_to_concat_form,
+        attention_weight_mode=attention_weight_mode,
+        eps=eps,
+    )
+    return (1.0 - hybrid_alpha) * cos_mat + hybrid_alpha * pfas_mat
+
+
+def stack_multi_enroll_hybrid_pfas(
+    enroll_embeddings: Sequence[jax.Array],
+    cosine_dim: int = 256,
+    num_keys: int = 8,
+    key_dim: int = 32,
+    value_dim: int = 96,
+    weights: Optional[Sequence[float]] = None,
+    eps: float = 1e-6,
+) -> jax.Array:
+    """Combines L2-normalized global cosine centroid with stacked multi-utterance PFAS keys & values."""
+    cos_list = []
+    pfas_tails = []
+    for emb in enroll_embeddings:
+        arr = jnp.asarray(emb)
+        c = arr[:cosine_dim]
+        cos_list.append(c / (jnp.linalg.norm(c) + eps))
+        pfas_tails.append(arr[cosine_dim:])
+    cos_mat = jnp.stack(cos_list, axis=0)
+    if weights is not None and len(weights) == len(cos_list):
+        w = jnp.maximum(jnp.asarray(weights, dtype=jnp.float32), eps)
+        w = w / jnp.sum(w)
+        c_mean = jnp.sum(cos_mat * w[:, None], axis=0)
+    else:
+        c_mean = jnp.mean(cos_mat, axis=0)
+    c_centroid = c_mean / (jnp.linalg.norm(c_mean) + eps)
+    stacked_tail = stack_multi_enroll_pfas(
+        pfas_tails, num_keys=num_keys, key_dim=key_dim, value_dim=value_dim
+    )
+    return jnp.concatenate([c_centroid, stacked_tail], axis=-1)
+
+
 class DecisionResidualNetwork(nn.Module):
     """Decision Residual Network (Dr-Vectors) scoring module.
 
@@ -580,6 +716,71 @@ def compute_pfas_cohort_topk_stats(
     return mu, std
 
 
+def compute_hybrid_pfas_cohort_topk_stats(
+    embs: np.ndarray,
+    cohort_embs: np.ndarray,
+    cosine_dim: int,
+    pfas_cfg: Any,
+    hybrid_alpha: float = 0.25,
+    scale_factor: float = 16.0,
+    top_k: int = 100,
+    chunk_size: int = 256,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute top-`top_k` Hybrid Cosine + PFAS cohort mean and std for `(N, D)` packed embeddings."""
+    import functools
+
+    x = np.asarray(embs, dtype=np.float32)
+    c_j = jnp.asarray(cohort_embs, dtype=np.float32)
+    score_mat_fn = jax.jit(
+        functools.partial(
+            hybrid_pfas_score_matrix,
+            cosine_dim=int(cosine_dim),
+            num_keys=int(pfas_cfg.num_keys),
+            key_dim=int(pfas_cfg.key_dim),
+            value_dim=int(pfas_cfg.value_dim),
+            hybrid_alpha=float(hybrid_alpha),
+            scale_factor=float(scale_factor),
+            per_trial_softmax=bool(pfas_cfg.per_trial_softmax),
+            apply_softmax_per_test_key=bool(
+                getattr(pfas_cfg, "apply_softmax_per_test_key", False)
+            ),
+            apply_l2_norm_to_keys=bool(
+                getattr(pfas_cfg, "apply_l2_norm_to_keys", True)
+            ),
+            apply_l2_norm_to_values=bool(
+                getattr(pfas_cfg, "apply_l2_norm_to_values", False)
+            ),
+            apply_global_l2_norm_to_concat_form=bool(
+                getattr(pfas_cfg, "apply_global_l2_norm_to_concat_form", True)
+            ),
+            attention_weight_mode=str(
+                getattr(pfas_cfg, "attention_weight_mode", "exp")
+            ),
+            eps=eps,
+        )
+    )
+    n = x.shape[0]
+    k = max(1, min(int(top_k), cohort_embs.shape[0]))
+    mu = np.empty((n,), dtype=np.float64)
+    std = np.empty((n,), dtype=np.float64)
+    step = max(1, int(chunk_size))
+    for start in range(0, n, step):
+        end = min(n, start + step)
+        sims = np.asarray(
+            score_mat_fn(jnp.asarray(x[start:end]), c_j), dtype=np.float64
+        )
+        if k < sims.shape[1]:
+            topk = np.partition(sims, sims.shape[1] - k, axis=-1)[:, -k:]
+        else:
+            topk = sims
+        mu[start:end] = np.mean(topk, axis=-1, dtype=np.float64)
+        std[start:end] = np.maximum(
+            np.std(topk, axis=-1, dtype=np.float64), eps
+        )
+    return mu, std
+
+
 def apply_as_norm(
     raw_scores: np.ndarray,
     enroll_embs: np.ndarray,
@@ -609,9 +810,11 @@ class QualityMeasureCalibrator:
     """Logistic Quality Measure Function (QMF) score calibrator (Thienpondt et al., 2021).
 
     Fits an L2-regularized logistic regression model on a speaker-disjoint validation
-    trial set combining the verification score (raw or AS-Norm) with symmetric duration
-    and pre-norm embedding magnitude quality features:
-    `[score, log(1 + T_min), log(1 + T_max), |log(1 + T_e) - log(1 + T_t)|, min(norm_e, norm_t), |norm_e - norm_t|]`.
+    trial set combining the verification score (raw or AS-Norm) with symmetric duration,
+    pre-norm embedding magnitude, and optional impostor cohort statistics:
+    `[score, log(1 + T_min), log(1 + T_max), |log(1 + T_e) - log(1 + T_t)|,
+      min(norm_e, norm_t), |norm_e - norm_t|, max(c_mu_e, c_mu_t), 0.5*(c_mu_e + c_mu_t),
+      0.5*(c_sd_e + c_sd_t)]`.
     """
 
     def __init__(self, c_reg: float = 1.0):
@@ -625,6 +828,10 @@ class QualityMeasureCalibrator:
         test_frames: Optional[np.ndarray] = None,
         enroll_norms: Optional[np.ndarray] = None,
         test_norms: Optional[np.ndarray] = None,
+        enroll_cohort_mean: Optional[np.ndarray] = None,
+        test_cohort_mean: Optional[np.ndarray] = None,
+        enroll_cohort_std: Optional[np.ndarray] = None,
+        test_cohort_std: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         s = np.asarray(scores, dtype=np.float64).reshape(-1, 1)
         cols = [s]
@@ -643,6 +850,14 @@ class QualityMeasureCalibrator:
             ne = np.asarray(enroll_norms, dtype=np.float64).reshape(n, 1)
             nt = np.asarray(test_norms, dtype=np.float64).reshape(n, 1)
             cols.extend([np.minimum(ne, nt), np.abs(ne - nt)])
+        if enroll_cohort_mean is not None and test_cohort_mean is not None:
+            me = np.asarray(enroll_cohort_mean, dtype=np.float64).reshape(n, 1)
+            mt = np.asarray(test_cohort_mean, dtype=np.float64).reshape(n, 1)
+            cols.extend([np.maximum(me, mt), 0.5 * (me + mt)])
+        if enroll_cohort_std is not None and test_cohort_std is not None:
+            se = np.asarray(enroll_cohort_std, dtype=np.float64).reshape(n, 1)
+            st = np.asarray(test_cohort_std, dtype=np.float64).reshape(n, 1)
+            cols.append(0.5 * (se + st))
         return np.concatenate(cols, axis=1)
 
     def fit(
@@ -653,11 +868,23 @@ class QualityMeasureCalibrator:
         test_frames: Optional[np.ndarray] = None,
         enroll_norms: Optional[np.ndarray] = None,
         test_norms: Optional[np.ndarray] = None,
+        enroll_cohort_mean: Optional[np.ndarray] = None,
+        test_cohort_mean: Optional[np.ndarray] = None,
+        enroll_cohort_std: Optional[np.ndarray] = None,
+        test_cohort_std: Optional[np.ndarray] = None,
     ) -> "QualityMeasureCalibrator":
         from sklearn.linear_model import LogisticRegression
 
         feats = self.build_features(
-            scores, enroll_frames, test_frames, enroll_norms, test_norms
+            scores,
+            enroll_frames,
+            test_frames,
+            enroll_norms,
+            test_norms,
+            enroll_cohort_mean,
+            test_cohort_mean,
+            enroll_cohort_std,
+            test_cohort_std,
         )
         y = np.asarray(labels, dtype=np.int32)
         self._clf = LogisticRegression(
@@ -673,12 +900,24 @@ class QualityMeasureCalibrator:
         test_frames: Optional[np.ndarray] = None,
         enroll_norms: Optional[np.ndarray] = None,
         test_norms: Optional[np.ndarray] = None,
+        enroll_cohort_mean: Optional[np.ndarray] = None,
+        test_cohort_mean: Optional[np.ndarray] = None,
+        enroll_cohort_std: Optional[np.ndarray] = None,
+        test_cohort_std: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Returns calibrated log-likelihood-ratio scores."""
         if self._clf is None:
             raise RuntimeError("QualityMeasureCalibrator must be fit before predict().")
         feats = self.build_features(
-            scores, enroll_frames, test_frames, enroll_norms, test_norms
+            scores,
+            enroll_frames,
+            test_frames,
+            enroll_norms,
+            test_norms,
+            enroll_cohort_mean,
+            test_cohort_mean,
+            enroll_cohort_std,
+            test_cohort_std,
         )
         return np.asarray(self._clf.decision_function(feats), dtype=np.float64)
 

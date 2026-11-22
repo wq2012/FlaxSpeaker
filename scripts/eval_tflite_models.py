@@ -53,6 +53,8 @@ TFLITE_TIER2_MODEL_IDS = (
     "univ_full_ecapa_c1024_arcface",
     "univ_full_resnet34_arcface",
     "univ_full_eres2conformer_large",
+    "univ_full_eres2conformer_v2_large",
+    "univ_full_eres2conformer_xl",
 )
 
 TFLITE_MODEL_IDS = TFLITE_TIER1_MODEL_IDS + TFLITE_TIER2_MODEL_IDS

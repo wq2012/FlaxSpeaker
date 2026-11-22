@@ -43,8 +43,8 @@ def main() -> None:
         folder_path=SPACE_DIR,
         ignore_patterns=["__pycache__/*", "*.pyc"],
         commit_message=(
-            "Deploy FlaxSpeaker v0.5.0 Gradio demo "
-            "(real inference, 49 models, per-model calibrated thresholds)"
+            "Deploy FlaxSpeaker v0.7.0 Gradio demo "
+            "(real inference, 55 models, per-model calibrated thresholds)"
         ),
     )
     print(f"Uploaded {SPACE_DIR} to https://huggingface.co/spaces/{args.repo_id}")

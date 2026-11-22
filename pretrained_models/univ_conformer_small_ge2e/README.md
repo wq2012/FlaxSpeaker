@@ -77,7 +77,7 @@ For orientation only: published ECAPA-TDNN systems trained on VoxCeleb2-dev reac
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).
+Requires `flaxspeaker >= 0.7.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained

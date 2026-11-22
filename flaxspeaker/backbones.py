@@ -1368,7 +1368,7 @@ def _apply_simam_2d(
 
 
 class SimAMSERes2Block2D(nn.Module):
-    """Multi-scale 2D ERes2Net bottleneck block with SimAM, SE, and Attentional Feature Fusion."""
+    """Multi-scale 2D ERes2Net bottleneck block with SimAM, SE / fwSE, and AFF."""
 
     channels: int
     stride: tuple[int, int] = (1, 1)
@@ -1376,6 +1376,7 @@ class SimAMSERes2Block2D(nn.Module):
     width_mult: float = 2.0
     use_simam: bool = True
     use_se: bool = True
+    use_fwse: bool = False
     use_aff: bool = True
     use_batch_norm: bool = True
 
@@ -1524,7 +1525,29 @@ class SimAMSERes2Block2D(nn.Module):
 
         if self.use_simam:
             h = _apply_simam_2d(h, mask_f=mask_f)
-        if self.use_se:
+        if self.use_fwse:
+            # 2D Frequency-Channel Coordinate Squeeze-and-Excitation (fwSE):
+            # Pools strictly across valid time frames T -> (B, F', C), preserving
+            # harmonic/formant frequency position alongside channel specificity.
+            freq_bins = h.shape[2]
+            if mask_f is not None:
+                denom_t = jnp.maximum(jnp.sum(mask_f, axis=1), 1.0)
+                h_fc = jnp.sum(h * mask_f, axis=1) / denom_t  # (B, F', C)
+            else:
+                h_fc = jnp.mean(h, axis=1)  # (B, F', C)
+            f_desc = jnp.mean(h_fc, axis=-1)  # (B, F')
+            c_desc = jnp.mean(h_fc, axis=-2)  # (B, C)
+            fc_cat = jnp.concatenate([f_desc, c_desc], axis=-1)
+            fc_bot = max(16, (freq_bins + self.channels) // 4)
+            fc_hid = nn.relu(nn.Dense(fc_bot, name="fwse_fc1")(fc_cat))
+            gate_f = jax.nn.sigmoid(
+                nn.Dense(freq_bins, name="fwse_f_out")(fc_hid)
+            )[:, None, :, None]
+            gate_c = jax.nn.sigmoid(
+                nn.Dense(self.channels, name="fwse_c_out")(fc_hid)
+            )[:, None, None, :]
+            h = h * gate_f * gate_c
+        elif self.use_se:
             if mask_f is not None:
                 denom = jnp.maximum(
                     jnp.sum(mask_f, axis=(1, 2)) * float(h.shape[2]),
@@ -1705,10 +1728,10 @@ class ERes2ConformerBackbone(nn.Module):
     """Unified Spectro-Temporal Hybrid Backbone (`SimAM-ERes2Conformer`).
 
     Synthesizes:
-    1. 2D Multi-Scale `SimAM-SERes2Net` stages (`ERes2NetV2` + `SimAM` + `SE` + `AFF`)
+    1. 2D Multi-Scale `SimAM-SERes2Net` stages (`ERes2NetV2` + `SimAM` + `SE`/`fwSE` + `AFF`)
        with mask-aware `BatchNorm2D` preserving 2D formant/harmonic shift equivariance.
     2. Multi-stage spectro-temporal feature aggregation (`MFA`, fusing Stage-3 & Stage-4
-       2D representations without premature dimensionality compression, `ReDimNet` style).
+       or Stage-2, Stage-3 & Stage-4 2D representations without premature compression).
     3. Global-local `RoPE + QK-Norm + LayerScale + BatchNorm` Conformer blocks concatenated
        alongside the wide 2D spectro-temporal highway (`[z_local, h_conf]`).
     """
@@ -1719,8 +1742,10 @@ class ERes2ConformerBackbone(nn.Module):
     width_mult: float = 2.0
     use_simam: bool = True
     use_se: bool = True
+    use_fwse: bool = False
     use_aff: bool = True
     use_mfa_stage23: bool = True
+    use_mfa_stage123: bool = False
     conformer_dim: int = 512
     num_conformer_layers: int = 2
     num_heads: int = 8
@@ -1728,6 +1753,19 @@ class ERes2ConformerBackbone(nn.Module):
     layer_scale_init: float = 0.2
     use_batch_norm: bool = True
     temporal_strides: Sequence[int] = (1, 1, 2, 2)
+
+    def _norm2d(
+        self,
+        h: jax.Array,
+        name: str,
+        use_running_average: bool,
+        mask: Optional[jax.Array],
+    ) -> jax.Array:
+        if self.use_batch_norm:
+            return MaskedBatchNorm2D(name=name)(
+                h, use_running_average=use_running_average, mask=mask
+            )
+        return nn.LayerNorm(reduction_axes=(-2, -1), name=name)(h)
 
     @nn.compact
     def __call__(
@@ -1761,22 +1799,12 @@ class ERes2ConformerBackbone(nn.Module):
             use_bias=False,
             name="stem_conv",
         )(h)
-        if self.use_batch_norm:
-            h = nn.relu(
-                MaskedBatchNorm2D(name=f"stem_{norm_tag}")(
-                    h, use_running_average=use_ra, mask=cur_mask
-                )
-            )
-        else:
-            h = nn.relu(
-                nn.LayerNorm(reduction_axes=(-2, -1), name=f"stem_{norm_tag}")(
-                    h
-                )
-            )
+        h = nn.relu(self._norm2d(h, f"stem_{norm_tag}", use_ra, cur_mask))
         if mask_f is not None:
             h = h * mask_f[..., None]
 
         stage_outs = []
+        stage_masks = []
         n_stages = len(self.num_blocks)
         for stage_idx, n_blk in enumerate(self.num_blocks):
             ch = self.base_channels * (2 ** stage_idx)
@@ -1796,6 +1824,7 @@ class ERes2ConformerBackbone(nn.Module):
                     width_mult=self.width_mult,
                     use_simam=self.use_simam,
                     use_se=self.use_se,
+                    use_fwse=self.use_fwse,
                     use_aff=self.use_aff,
                     use_batch_norm=self.use_batch_norm,
                     name=f"stage{stage_idx}_block{b_idx}",
@@ -1803,40 +1832,64 @@ class ERes2ConformerBackbone(nn.Module):
                 if stride[0] > 1 and cur_mask is not None:
                     cur_mask = subsample_mask(cur_mask, stride[0])
             stage_outs.append(h)
+            stage_masks.append(cur_mask)
 
-        if self.use_mfa_stage23 and n_stages >= 2:
+        if self.use_mfa_stage123 and n_stages >= 3:
+            s_t2 = (
+                max(1, int(self.temporal_strides[n_stages - 2]))
+                if (n_stages - 2) < len(self.temporal_strides)
+                else 1
+            )
+            s_f2 = 2 if (n_stages - 2) > 0 else 1
+            pad2: Any = ((1, 1), (1, 1)) if (s_t2 > 1 or s_f2 > 1) else "SAME"
+            s1_h = stage_outs[-3]
+            s1_to_s2 = nn.Conv(
+                features=s1_h.shape[-1],
+                kernel_size=(3, 3),
+                strides=(s_t2, s_f2),
+                padding=pad2,
+                use_bias=False,
+                name="mfa_stage12_align",
+            )(s1_h)
+            s1_to_s2 = nn.relu(
+                self._norm2d(
+                    s1_to_s2, f"mfa_align12_{norm_tag}", use_ra, stage_masks[-2]
+                )
+            )
+            if stage_masks[-2] is not None:
+                s1_to_s2 = (
+                    s1_to_s2
+                    * (stage_masks[-2] > 0).astype(x.dtype)[:, :, None, None]
+                )
+            prev_h = jnp.concatenate([s1_to_s2, stage_outs[-2]], axis=-1)
+        elif self.use_mfa_stage23 and n_stages >= 2:
+            prev_h = stage_outs[-2]
+        else:
+            prev_h = None
+
+        if prev_h is not None:
             last_s_t = (
                 max(1, int(self.temporal_strides[n_stages - 1]))
                 if (n_stages - 1) < len(self.temporal_strides)
                 else 1
             )
             last_s_f = 2 if (n_stages - 1) > 0 else 1
-            prev_h = stage_outs[-2]
             align_pad: Any = (
                 ((1, 1), (1, 1))
                 if (last_s_t > 1 or last_s_f > 1)
                 else "SAME"
             )
             prev_aligned = nn.Conv(
-                features=prev_h.shape[-1],
+                features=stage_outs[-2].shape[-1],
                 kernel_size=(3, 3),
                 strides=(last_s_t, last_s_f),
                 padding=align_pad,
                 use_bias=False,
                 name="mfa_stage_align",
             )(prev_h)
-            if self.use_batch_norm:
-                prev_aligned = nn.relu(
-                    MaskedBatchNorm2D(name=f"mfa_align_{norm_tag}")(
-                        prev_aligned, use_running_average=use_ra, mask=cur_mask
-                    )
-                )
-            else:
-                prev_aligned = nn.relu(
-                    nn.LayerNorm(
-                        reduction_axes=(-2, -1), name=f"mfa_align_{norm_tag}"
-                    )(prev_aligned)
-                )
+            prev_aligned = nn.relu(
+                self._norm2d(prev_aligned, f"mfa_align_{norm_tag}", use_ra, cur_mask)
+            )
             cat_2d = jnp.concatenate([prev_aligned, h], axis=-1)
             h = nn.Conv(
                 features=h.shape[-1],
@@ -1846,18 +1899,9 @@ class ERes2ConformerBackbone(nn.Module):
                 use_bias=False,
                 name="mfa_2d_fuse",
             )(cat_2d)
-            if self.use_batch_norm:
-                h = nn.relu(
-                    MaskedBatchNorm2D(name=f"mfa_fuse_{norm_tag}")(
-                        h, use_running_average=use_ra, mask=cur_mask
-                    )
-                )
-            else:
-                h = nn.relu(
-                    nn.LayerNorm(
-                        reduction_axes=(-2, -1), name=f"mfa_fuse_{norm_tag}"
-                    )(h)
-                )
+            h = nn.relu(
+                self._norm2d(h, f"mfa_fuse_{norm_tag}", use_ra, cur_mask)
+            )
 
         out_mask_f = (
             (cur_mask > 0).astype(x.dtype)[..., None]
@@ -1907,8 +1951,8 @@ class ModernSpeakerEncoder(nn.Module):
 
     Architecture flow (backbone -> pooling -> bottleneck -> embedding, cf. arXiv:2203.05642 Sec. 3):
     `Input (B, T, F) -> Backbone -> Temporal Pooling -> Bottleneck FFN (ReLU) -> Linear Proj -> Output (B, D)`
-    (When `pooling_type == "pfas"`, the output is the packed Key-Value representation
-    of shape `(B, num_keys * (key_dim + value_dim))` directly from `PfasRepresentationHead`.)
+    (When `pooling_type == "pfas"`, the output is the packed Key-Value representation;
+    when `pooling_type == "hybrid_pfas"`, the output is `[e_cos (D), keys, values]`.)
     """
 
     backbone_type: str = "conformer"
@@ -1997,6 +2041,7 @@ class ModernSpeakerEncoder(nn.Module):
             )
 
         p_type = self.pooling_type.lower()
+        pfas_sub_kwargs = p_kwargs.pop("pfas_kwargs", None)
         if p_type == "pfas":
             return pooling.PfasRepresentationHead(
                 **p_kwargs, name="pfas_head"
@@ -2010,7 +2055,7 @@ class ModernSpeakerEncoder(nn.Module):
                 eps=float(p_kwargs.get("eps", 1e-4)),
                 name="pool",
             )(frames, mask=mask)
-        elif p_type == "catp":
+        elif p_type in ("catp", "hybrid_pfas"):
             pooled = pooling.ContextAttentiveTemporalPooling(
                 num_heads=int(p_kwargs.get("num_heads", 16)),
                 attention_dim=int(p_kwargs.get("attention_dim", 128)),
@@ -2071,4 +2116,9 @@ class ModernSpeakerEncoder(nn.Module):
             emb = nn.Dense(self.embedding_dim, name="embedding_proj")(emb)
         if self.normalize_embedding:
             emb = emb / (jnp.linalg.norm(emb, axis=-1, keepdims=True) + 1e-6)
+        if p_type == "hybrid_pfas":
+            pfas_out = pooling.PfasRepresentationHead(
+                **(pfas_sub_kwargs or {}), name="pfas_head"
+            )(frames, mask=mask)
+            return jnp.concatenate([emb, pfas_out], axis=-1)
         return emb

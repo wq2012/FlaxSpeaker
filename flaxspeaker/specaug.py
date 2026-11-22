@@ -400,34 +400,69 @@ def apply_masked_specaug_batch_jax(
     apply_prob: float = 0.6,
     freq_width: int = 8,
     time_width: int = 12,
+    narrowband_prob: float = 0.0,
+    spectral_tilt_prob: float = 0.0,
 ) -> jax.Array:
-    """Vectorized mask-aware on-device SpecAugment over `(B, T, F)` zero-mean CMVN features."""
-    if apply_prob <= 0.0:
-        return x
+    """Vectorized mask-aware SpecAugment + narrowband/tilt channel augmentation over `(B, T, F)`."""
+    valid_m = (mask > 0).astype(x.dtype)[..., None]
+    out = x
     bsz, seq_len, feat_dim = x.shape
-    r_apply, r_f1, r_fw1, r_f2, r_fw2, r_t1, r_tw1, r_t2, r_tw2 = jax.random.split(
-        rng, 9
-    )
-    do_aug = jax.random.uniform(r_apply, (bsz, 1, 1)) < apply_prob
-    f_idx = jnp.arange(feat_dim)[None, None, :]
-    t_idx = jnp.arange(seq_len)[None, :, None]
 
-    fw1 = jax.random.randint(r_fw1, (bsz, 1, 1), 0, freq_width + 1)
-    f0_1 = jax.random.randint(r_f1, (bsz, 1, 1), 0, max(1, feat_dim - freq_width))
-    fw2 = jax.random.randint(r_fw2, (bsz, 1, 1), 0, freq_width + 1)
-    f0_2 = jax.random.randint(r_f2, (bsz, 1, 1), 0, max(1, feat_dim - freq_width))
-    f_keep = ((f_idx < f0_1) | (f_idx >= f0_1 + fw1)) & (
-        (f_idx < f0_2) | (f_idx >= f0_2 + fw2)
-    )
+    if apply_prob > 0.0:
+        r_apply, r_f1, r_fw1, r_f2, r_fw2, r_t1, r_tw1, r_t2, r_tw2, rng = (
+            jax.random.split(rng, 10)
+        )
+        do_aug = jax.random.uniform(r_apply, (bsz, 1, 1)) < apply_prob
+        f_idx = jnp.arange(feat_dim)[None, None, :]
+        t_idx = jnp.arange(seq_len)[None, :, None]
 
-    tw1 = jax.random.randint(r_tw1, (bsz, 1, 1), 0, time_width + 1)
-    t0_1 = jax.random.randint(r_t1, (bsz, 1, 1), 0, max(1, seq_len - time_width))
-    tw2 = jax.random.randint(r_tw2, (bsz, 1, 1), 0, time_width + 1)
-    t0_2 = jax.random.randint(r_t2, (bsz, 1, 1), 0, max(1, seq_len - time_width))
-    t_keep = ((t_idx < t0_1) | (t_idx >= t0_1 + tw1)) & (
-        (t_idx < t0_2) | (t_idx >= t0_2 + tw2)
-    )
+        fw1 = jax.random.randint(r_fw1, (bsz, 1, 1), 0, freq_width + 1)
+        f0_1 = jax.random.randint(
+            r_f1, (bsz, 1, 1), 0, max(1, feat_dim - freq_width)
+        )
+        fw2 = jax.random.randint(r_fw2, (bsz, 1, 1), 0, freq_width + 1)
+        f0_2 = jax.random.randint(
+            r_f2, (bsz, 1, 1), 0, max(1, feat_dim - freq_width)
+        )
+        f_keep = ((f_idx < f0_1) | (f_idx >= f0_1 + fw1)) & (
+            (f_idx < f0_2) | (f_idx >= f0_2 + fw2)
+        )
 
-    aug_x = x * f_keep.astype(x.dtype) * t_keep.astype(x.dtype)
-    out = jnp.where(do_aug, aug_x, x)
-    return out * (mask > 0).astype(x.dtype)[..., None]
+        tw1 = jax.random.randint(r_tw1, (bsz, 1, 1), 0, time_width + 1)
+        t0_1 = jax.random.randint(
+            r_t1, (bsz, 1, 1), 0, max(1, seq_len - time_width)
+        )
+        tw2 = jax.random.randint(r_tw2, (bsz, 1, 1), 0, time_width + 1)
+        t0_2 = jax.random.randint(
+            r_t2, (bsz, 1, 1), 0, max(1, seq_len - time_width)
+        )
+        t_keep = ((t_idx < t0_1) | (t_idx >= t0_1 + tw1)) & (
+            (t_idx < t0_2) | (t_idx >= t0_2 + tw2)
+        )
+
+        aug_x = out * f_keep.astype(x.dtype) * t_keep.astype(x.dtype)
+        out = jnp.where(do_aug, aug_x, out)
+
+    if spectral_tilt_prob > 0.0:
+        r_tp, r_ts, rng = jax.random.split(rng, 3)
+        do_tilt = jax.random.uniform(r_tp, (bsz, 1, 1)) < spectral_tilt_prob
+        slope = jax.random.uniform(
+            r_ts, (bsz, 1, 1), minval=-0.35, maxval=0.35, dtype=x.dtype
+        )
+        f_axis = jnp.linspace(-1.0, 1.0, feat_dim, dtype=x.dtype)[None, None, :]
+        tilted = out + slope * f_axis
+        denom_t = jnp.maximum(jnp.sum(valid_m, axis=1, keepdims=True), 1.0)
+        tilted = tilted - jnp.sum(tilted * valid_m, axis=1, keepdims=True) / denom_t
+        out = jnp.where(do_tilt, tilted, out)
+
+    if narrowband_prob > 0.0 and feat_dim >= 32:
+        r_np, r_nc = jax.random.split(rng, 2)
+        do_nb = jax.random.uniform(r_np, (bsz, 1, 1)) < narrowband_prob
+        low_cut = max(16, int(round(feat_dim * 0.70)))
+        high_cut = max(low_cut + 1, int(round(feat_dim * 0.92)))
+        f_cut = jax.random.randint(r_nc, (bsz, 1, 1), low_cut, high_cut)
+        f_idx = jnp.arange(feat_dim)[None, None, :]
+        nb_keep = (f_idx < f_cut).astype(x.dtype)
+        out = jnp.where(do_nb, out * nb_keep, out)
+
+    return out * valid_m

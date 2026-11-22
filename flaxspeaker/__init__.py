@@ -21,8 +21,8 @@ Features:
 - Model Export & Ecosystem: TFLite (with int8 quantization), TensorFlow
   SavedModel, SafeTensors, and HuggingFace `PretrainedConfig` / `save_pretrained` /
   `from_pretrained` (`flaxspeaker.export`, `flaxspeaker.hf_compat`)
-- 50 Pretrained Models on Hugging Face Hub (`wq2012/<model_id>` — 44 controlled
-  ablation models + 6 full-data SOTA flagship models):
+- 55 Pretrained Models on Hugging Face Hub (`wq2012/<model_id>` — 44 controlled
+  ablation models + 11 full-data SOTA flagship models):
   https://huggingface.co/collections/wq2012/flaxspeaker
 """
 
@@ -44,7 +44,7 @@ from flaxspeaker import specaug
 from flaxspeaker import vad
 from flaxspeaker import waveform_aug
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 HF_DEFAULT_NAMESPACE = hf_compat.HF_DEFAULT_NAMESPACE
 HF_COLLECTION_URL = hf_compat.HF_COLLECTION_URL

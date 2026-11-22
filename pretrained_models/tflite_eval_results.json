@@ -1,7 +1,7 @@
 {
-  "timestamp_utc": "2026-11-21T03:33:01.229608+00:00",
+  "timestamp_utc": "2026-11-22T11:44:30.528642+00:00",
   "window_frames": 180,
-  "num_models": 10,
+  "num_models": 12,
   "models": {
     "univ_ecapa_tdnn_small_ge2e": {
       "window_frames": 180,
@@ -740,6 +740,60 @@
       "num_unique_utterances": 4708,
       "latency_ms_fp32_mean_50runs": 495.29,
       "latency_ms_int8_mean_50runs": 475.38
+    },
+    "univ_full_eres2conformer_v2_large": {
+      "window_frames": 180,
+      "primary_domain": "voxceleb1_o",
+      "protocol": "VoxCeleb1-O official (37,611 trials, 180-frame center crop)",
+      "eer_percent": 2.1084,
+      "eer_ci95_fp32": [
+        1.96,
+        2.25
+      ],
+      "eer_percent_int8": 2.143,
+      "eer_ci95_int8": [
+        1.99,
+        2.28
+      ],
+      "jax_full_seq_eer_percent": 0.6567,
+      "cos_fp32_int8_mean": 0.999355,
+      "cos_fp32_int8_min": 0.997561,
+      "cos_flax_fp32_mean": 1.0,
+      "cos_flax_int8_mean": 0.999362,
+      "fp32_size_kb": 142411.36,
+      "int8_size_kb": 36936.68,
+      "fp32_size_bytes": 145829228,
+      "int8_size_bytes": 37823160,
+      "num_unique_utterances": 4708,
+      "latency_ms_fp32_mean_50runs": 497.5,
+      "latency_ms_int8_mean_50runs": 483.57
+    },
+    "univ_full_eres2conformer_xl": {
+      "window_frames": 180,
+      "primary_domain": "voxceleb1_o",
+      "protocol": "VoxCeleb1-O official (37,611 trials, 180-frame center crop)",
+      "eer_percent": 1.6671,
+      "eer_ci95_fp32": [
+        1.54,
+        1.83
+      ],
+      "eer_percent_int8": 1.7043,
+      "eer_ci95_int8": [
+        1.55,
+        1.83
+      ],
+      "jax_full_seq_eer_percent": 0.436,
+      "cos_fp32_int8_mean": 0.999556,
+      "cos_fp32_int8_min": 0.996425,
+      "cos_flax_fp32_mean": 1.0,
+      "cos_flax_int8_mean": 0.999571,
+      "fp32_size_kb": 252058.33,
+      "int8_size_kb": 64864.94,
+      "fp32_size_bytes": 258107732,
+      "int8_size_bytes": 66421696,
+      "num_unique_utterances": 4708,
+      "latency_ms_fp32_mean_50runs": 860.11,
+      "latency_ms_int8_mean_50runs": 803.73
     }
   }
 }

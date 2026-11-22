@@ -73,7 +73,7 @@ This flagship model was trained for **24,000 gradient steps** (warmup `1000` ste
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.6.0` (`pip install -U flaxspeaker`).
+Requires `flaxspeaker >= 0.7.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained

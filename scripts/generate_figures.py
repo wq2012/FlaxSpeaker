@@ -180,8 +180,8 @@ def draw_architecture_diagram(
             "75% Within / 25% Cross-Domain",
             "Domain temp: $p_d \\propto |\\mathcal{S}_d|^{0.35}$",
             "MUSAN + RIR + 3x speed perturb,",
-            "  SpecAug + crop $T \\sim \\mathcal{U}(90, 200)$",
-            "Tier-1 $S_{\\mathrm{safe}}$ + Tier-2 5.0–5.2s LMFT",
+            "  SpecAug + NB/Tilt + $T \\sim \\mathcal{U}(90, 240)$",
+            "Tier-1 $S_{\\mathrm{safe}}$ + Tier-2 5.0–5.8s LMFT",
         ],
         "#F0FDF4",
         "#22C55E",
@@ -191,7 +191,7 @@ def draw_architecture_diagram(
     bench_path_arch = os.path.join(
         repo_root, "pretrained_models", "benchmark_results.json"
     )
-    n_total_m, n_flag_m, n_tfl_b = 50, 6, 20
+    n_total_m, n_flag_m, n_tfl_b = 55, 11, 24
     if os.path.isfile(bench_path_arch):
         with open(bench_path_arch, "r", encoding="utf-8") as fb:
             b_arch = json.load(fb)
@@ -209,7 +209,7 @@ def draw_architecture_diagram(
         "3. Masked Backbones (x7)",
         "Frame states $\\mathbf{H} \\in \\mathbb{R}^{B \\times T \\times D}$",
         [
-            "SimAM-ERes2Conformer (AFF + 2D/1D)",
+            "SimAM-ERes2Conformer (Large / V2 / XL)",
             "Conformer (Small–Large) | Mamba SSM",
             "ECAPA-TDNN (BN) | SE-ResNet-18/34",
             "Transformer (pre-LN + MFA) | LSTM",
@@ -225,14 +225,14 @@ def draw_architecture_diagram(
         y_top,
         2.75,
         h_top,
-        "4. Pooling Heads (x9) & Neck",
+        "4. Pooling Heads (x10) & Neck",
         "Embedding $\\mathbf{e} \\in \\mathbb{R}^{B \\times d_e}$ (PFAS: 640–1536-D)",
         [
-            "8 emb heads: Context-ATP, ATP, ASP,",
+            "Context-ATP, Hybrid-PFAS, ATP, ASP,",
             "  SAP, Stats, Mean, Last, CumStats",
             "  → LN/BN-Neck → FC(256) → $L_2$",
-            "9th (PFAS): $K{=}4/8/16$ PFAS-SN / ATP-FFN",
-            "  ($d_k{=}32, d_v{=}64..128$)",
+            "PFAS / Hybrid-PFAS: $K{=}4..32$ keys",
+            "  ($d_k{=}16..32, d_v{=}48..128$)",
         ],
         "#FAF5FF",
         "#A855F7",
@@ -251,14 +251,14 @@ def draw_architecture_diagram(
         y_bot,
         6.60,
         h_bot,
-        "5. Nine Losses (7 Benchmarked + 2 Reference) & Three Scorers",
-        "Batch ($N{=}8..64$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
+        "5. Nine Losses & Four Scorers (+ Clean-K3 LMFT & Inter-TopK)",
+        "Batch ($N{=}8..128$, $M{=}4$) → loss $\\mathcal{L}$;  trial ($\\mathbf{e}_t$, $\\mathbf{e}_e$) → score $s$",
         [
-            "Losses: GE2E softmax / contrast (+ hybrid surrogate) | extended-set softmax (pure Eq. 2 or blended)",
-            "  + Sub-Center (K=3) / 36.6k-Class ArcFace, CosFace, SphereFace, Triplet + Softmax",
+            "Losses: Sub-Center (K=3) ArcFace (+ Inter-TopK) | CosFace, SphereFace, Softmax",
+            "  | GE2E softmax / contrast | Extended-Set Softmax (pure Eq. 2 or BXS) | Triplet",
             (
-                "Scoring: cosine (+ Top-300 AS-Norm & 4-feat QMF) | Dr-Vector "
-                "| PFAS (frame-level attention)"
+                "Scoring: cosine (+ AS-Norm & QMF-v2) | Hybrid-PFAS "
+                "| PFAS | Dr-Vector"
             ),
         ],
         "#FFF1F2",
@@ -788,17 +788,23 @@ def draw_flagship_and_ablation_chart(
     fig, axes = plt.subplots(1, 2, figsize=(11.6, 3.65), dpi=300)
     fig.patch.set_facecolor("#FFFFFF")
 
-    # Panel (a): Tier-2 Flagships + Fusion on Official VoxCeleb1-O & CN-Celeb-E (QMF EER %)
+    # Panel (a): Tier-2 Flagships + Fusion on Official VoxCeleb1-O & CN-Celeb-E
     ax = axes[0]
     model_rows = [
-        ("Conf-L\nPFAS", "univ_full_conformer_large_pfas"),
         ("Conf-L\nArcFace", "univ_full_conformer_large_arcface"),
-        ("Conf-L\nDr-Vec", "univ_full_conformer_large_dr_vectors"),
         ("ECAPA\nc1024", "univ_full_ecapa_c1024_arcface"),
         ("SE-ResNet\n34", "univ_full_resnet34_arcface"),
+        ("ERes2Conf\nLarge", "univ_full_eres2conformer_large"),
     ]
-    if "univ_full_eres2conformer_large" in fm:
-        model_rows.append(("ERes2Conf\nCATP", "univ_full_eres2conformer_large"))
+    for lbl_opt, k_opt in (
+        ("Large\nHybPFAS", "univ_full_eres2conformer_large_pfas"),
+        ("V2-Large\nCosine", "univ_full_eres2conformer_v2_large"),
+        ("V2-Large\nHybPFAS", "univ_full_eres2conformer_v2_pfas"),
+        ("XL-64M\nHybPFAS", "univ_full_eres2conformer_xl_pfas"),
+        ("XL-64M\nCosine", "univ_full_eres2conformer_xl"),
+    ):
+        if k_opt in fm:
+            model_rows.append((lbl_opt, k_opt))
 
     labels_a = [r[0] for r in model_rows]
     vx_vals = [
@@ -806,7 +812,9 @@ def draw_flagship_and_ablation_chart(
         for _, k in model_rows
     ]
     cn_vals = [
-        fm[k]["official_benchmarks"]["cnceleb_e"]["qmf"]["eer_percent"]
+        fm[k]["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"].get(
+            "as_norm", fm[k]["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"]
+        )["eer_percent"]
         for _, k in model_rows
     ]
     ls_vals = [
@@ -815,16 +823,17 @@ def draw_flagship_and_ablation_chart(
         ]
         for _, k in model_rows
     ]
-    if "official_benchmarks" in fus:
+    if "official_benchmarks" in fus and "multi_enroll_3way_fusion" in fus:
         f_ob = fus["official_benchmarks"]
+        f_me = fus["multi_enroll_3way_fusion"]
         n_way = len(fus.get("models", []))
         labels_a.append(f"{n_way}-Way\nFusion")
         vx_vals.append(f_ob["voxceleb1_o"]["qmf"]["eer_percent"])
-        cn_vals.append(f_ob["cnceleb_e"]["qmf"]["eer_percent"])
+        cn_vals.append(f_me["cnceleb_e_multi_enroll_map"]["eer_percent"])
         ls_vals.append(f_ob["librispeech_test_clean"]["qmf"]["eer_percent"])
 
     xa = np.arange(len(labels_a))
-    wa = 0.26
+    wa = 0.25
     b_vx = ax.bar(
         xa - wa, vx_vals, wa, label="VoxCeleb1-O QMF (%)", color="#2563EB"
     )
@@ -832,7 +841,7 @@ def draw_flagship_and_ablation_chart(
         xa, ls_vals, wa, label="LibriSpeech test-clean QMF (%)", color="#10B981"
     )
     b_cn = ax.bar(
-        xa + wa, cn_vals, wa, label="CN-Celeb-E Single QMF (%)", color="#F59E0B"
+        xa + wa, cn_vals, wa, label="CN-Celeb-E Multi-Enroll (%)", color="#F59E0B"
     )
     for bars, col in (
         (b_vx, "#1E3A8A"),
@@ -842,30 +851,100 @@ def draw_flagship_and_ablation_chart(
         for b in bars:
             ax.text(
                 b.get_x() + b.get_width() / 2,
-                b.get_height() + 0.20,
+                b.get_height() + 0.18,
                 f"{b.get_height():.2f}",
                 ha="center",
                 va="bottom",
                 rotation=90,
-                fontsize=6.6,
+                fontsize=6.1,
                 fontweight="bold",
                 color=col,
             )
     ax.set_xticks(xa)
-    ax.set_xticklabels(labels_a, fontsize=7.6)
+    ax.set_xticklabels(labels_a, fontsize=6.6)
     ax.set_ylabel("Official Zero-Shot EER (%)", fontsize=9.0)
     ax.set_title(
         "(a) Tier-2 full-data universal flagships & fusion (12,193 spk)",
-        fontsize=9.6,
+        fontsize=9.5,
         fontweight="bold",
     )
-    ax.set_ylim(0, max(cn_vals) + 4.4)
-    ax.legend(fontsize=7.6, loc="upper right", framealpha=0.92)
+    ax.set_ylim(0, max(cn_vals) + 3.8)
+    ax.legend(fontsize=7.3, loc="upper right", framealpha=0.92)
     ax.grid(axis="y", alpha=0.25)
 
-    # Panel (b): 3-Arm SimAM-ERes2Conformer Controlled 27,500-Step TPU v6p Ablation
+    # Panel (b): Horizon-Regularization Crossover & v0.7.0 Ablations
     ax2 = axes[1]
-    if os.path.isfile(abl_path):
+    v070_path = os.path.join(
+        repo_root, "pretrained_models", "v070_ablation_results.json"
+    )
+    v070_d = None
+    if os.path.isfile(v070_path):
+        with open(v070_path, "r", encoding="utf-8") as f:
+            v070_d = json.load(f)
+    if v070_d is not None and "long_horizon_recipe_comparison" in v070_d:
+        va = v070_d["arms"]
+        lh = v070_d["long_horizon_recipe_comparison"]["runs"]
+        b_rows = [
+            ("33k\nUnpruned", va["ctrl_base_noprune"]),
+            ("33k\nClean-K3\n+SWA", va["clean_lmft_keep_k3_swa_bn"]),
+            ("33k\nInterAug\n(Short)", va["inter_topk_chan_aug_k3"]),
+            ("162k\nV2 Clean", lh["v2_large_clean_162k"]),
+            ("162k\nV2 InterAug", lh["v2_large_interaug_162k"]),
+            ("145k\nXL Clean", lh["xl_64m_clean_145k"]),
+            ("145k\nXL InterAug", lh["xl_64m_interaug_145k"]),
+        ]
+        xb = np.arange(len(b_rows))
+        wb = 0.25
+        bvx_r = [
+            r["official_benchmarks"]["voxceleb1_o"]["eer_percent"]
+            for _, r in b_rows
+        ]
+        bvx_q = [
+            r["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+            for _, r in b_rows
+        ]
+        bval = [
+            (r.get("validation_trajectory") or r.get("validation_history"))[-1]["val_1utt_eer_percent"]
+            for _, r in b_rows
+        ]
+        bb1 = ax2.bar(
+            xb - wb, bval, wb, label="Held-Out Val 1-Utt EER (%)", color="#7C3AED"
+        )
+        bb2 = ax2.bar(
+            xb, bvx_r, wb, label="VoxCeleb1-O Raw EER (%)", color="#0EA5E9"
+        )
+        bb3 = ax2.bar(
+            xb + wb, bvx_q, wb, label="VoxCeleb1-O QMF EER (%)", color="#2563EB"
+        )
+        for bars, col in (
+            (bb1, "#5B21B6"),
+            (bb2, "#0369A1"),
+            (bb3, "#1E3A8A"),
+        ):
+            for b in bars:
+                ax2.text(
+                    b.get_x() + b.get_width() / 2,
+                    b.get_height() + 0.08,
+                    f"{b.get_height():.2f}",
+                    ha="center",
+                    va="bottom",
+                    rotation=90,
+                    fontsize=6.3,
+                    fontweight="bold",
+                    color=col,
+                )
+        ax2.set_xticks(xb)
+        ax2.set_xticklabels([r[0] for r in b_rows], fontsize=6.8)
+        ax2.set_ylabel("EER (%) [Lower is Better]", fontsize=9.0)
+        ax2.set_title(
+            "(b) Clean-K3 LMFT + SWA & InterAug horizon crossover (TPU v6p)",
+            fontsize=9.5,
+            fontweight="bold",
+        )
+        ax2.set_ylim(0, max(bval) + 2.15)
+        ax2.legend(fontsize=7.3, loc="upper right", framealpha=0.92)
+        ax2.grid(axis="y", alpha=0.25)
+    elif os.path.isfile(abl_path):
         with open(abl_path, "r", encoding="utf-8") as f:
             abl_data = json.load(f)
         arms = abl_data["arms"]

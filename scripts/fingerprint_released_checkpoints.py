@@ -176,14 +176,21 @@ def first_step_loss(
         valid = [int(v) for v in mb.sum(axis=1)[:4]]
         xb_d = jnp.asarray(xb.reshape(num_devices, per_dev_b, seq_len, -1))
         mb_d = jnp.asarray(mb.reshape(num_devices, per_dev_b, seq_len))
-        if specaug_prob > 0.0:
+        nb_prob = float(getattr(cfg.train.specaug, "narrowband_prob", 0.0))
+        st_prob = float(getattr(cfg.train.specaug, "spectral_tilt_prob", 0.0))
+        if specaug_prob > 0.0 or nb_prob > 0.0 or st_prob > 0.0:
             rk = jax.random.split(
                 jax.random.fold_in(jax.random.PRNGKey(int(cfg.train.seed) + 7919), 1),
                 num_devices,
             )
             xb_d = jax.vmap(
                 lambda x, m, r: specaug.apply_masked_specaug_batch_jax(
-                    x, m, r, apply_prob=specaug_prob
+                    x,
+                    m,
+                    r,
+                    apply_prob=specaug_prob,
+                    narrowband_prob=nb_prob,
+                    spectral_tilt_prob=st_prob,
                 )
             )(xb_d, mb_d, rk)
         _, l_rep = vstep(state0, xb_d, lb_d, mb_d)
@@ -295,6 +302,8 @@ def classify(released: float, fixed: float, variable: float, tol: float = TOLERA
         return "fixed_approx"
     if d_var <= APPROX_TOLERANCE and d_fixed >= APPROX_RATIO * max(d_var, tol):
         return "variable_approx"
+    if d_fixed <= APPROX_TOLERANCE and d_var <= APPROX_TOLERANCE:
+        return "both_approx"
     return "neither"
 
 
@@ -387,6 +396,8 @@ def main(
                     setattr(cfg.train.loss, ov_k, ov_v)
                 elif hasattr(cfg.model, ov_k):
                     setattr(cfg.model, ov_k, ov_v)
+                elif hasattr(cfg.model.pfas, ov_k):
+                    setattr(cfg.model.pfas, ov_k, ov_v)
             cfg.loss = cfg.train.loss
         dname = rec["train_dataset"]
         if frontend is None:

@@ -200,7 +200,15 @@ def _score_single_trials_array(
         pfas_cfg = exp_cfg.model.pfas
         pfas_cfg_opt = pfas_cfg
         pfas_scale = (
-            float(np.exp(float(state.params["_aux_pfas_log_scale"])))
+            float(
+                np.exp(
+                    float(
+                        np.asarray(state.params["_aux_pfas_log_scale"]).reshape(
+                            -1
+                        )[0]
+                    )
+                )
+            )
             if "_aux_pfas_log_scale" in state.params
             else float(pfas_cfg.scale_factor)
         )

@@ -1,6 +1,6 @@
-"""HuggingFace `transformers` and `safetensors` integration for FlaxSpeaker v0.6.0.
+"""HuggingFace `transformers` and `safetensors` integration for FlaxSpeaker v0.7.0.
 
-All 50 pretrained models (44 controlled ablation models + 6 full-data SOTA flagship
+All 55 pretrained models (44 controlled ablation models + 11 full-data SOTA flagship
 models) are hosted on the Hugging Face Hub at `https://huggingface.co/wq2012/<model_id>`
 and grouped in the FlaxSpeaker collection:
 https://huggingface.co/collections/wq2012/flaxspeaker
@@ -94,6 +94,11 @@ CONTROLLED_ABLATION_MODEL_IDS: tuple[str, ...] = (
 )
 
 FULL_DATA_FLAGSHIP_IDS: tuple[str, ...] = (
+    "univ_full_eres2conformer_xl",
+    "univ_full_eres2conformer_xl_pfas",
+    "univ_full_eres2conformer_v2_large",
+    "univ_full_eres2conformer_v2_pfas",
+    "univ_full_eres2conformer_large_pfas",
     "univ_full_eres2conformer_large",
     "univ_full_resnet34_arcface",
     "univ_full_conformer_large_arcface",
@@ -140,6 +145,8 @@ class FlaxSpeakerConfig(PretrainedConfig):
             "small": 192,
             "base": 256,
             "large": 256,
+            "xl": 256,
+            "xlarge": 256,
             "c1024": 256,
         }
         self._explicit_embedding_dim = embedding_dim is not None
@@ -386,6 +393,74 @@ class FlaxSpeakerModel:
 
         scoring_type = self.config.scoring_type.lower()
         if (
+            scoring_type == "hybrid_pfas"
+            or self.config.pooling_type.lower() == "hybrid_pfas"
+            or self.exp_config.model.pooling.pooling_type
+            == configs.PoolingType.HYBRID_PFAS
+        ):
+            pfas_cfg = self.exp_config.model.pfas
+            pfas_scale = (
+                float(
+                    np.exp(
+                        float(
+                            np.asarray(
+                                self.state.params["_aux_pfas_log_scale"]
+                            ).reshape(-1)[0]
+                        )
+                    )
+                )
+                if "_aux_pfas_log_scale" in self.state.params
+                else float(pfas_cfg.scale_factor)
+            )
+            if "_aux_hybrid_logit" in self.state.params:
+                logit_v = float(
+                    np.asarray(
+                        self.state.params["_aux_hybrid_logit"]
+                    ).reshape(-1)[0]
+                )
+                h_alpha = float(1.0 / (1.0 + np.exp(-logit_v)))
+            else:
+                h_alpha = float(getattr(pfas_cfg, "hybrid_alpha", 0.25))
+            cos_dim = int(self.exp_config.model.embedding_dim)
+            if len(enroll_list) == 1:
+                e_packed = enroll_list[0]
+            else:
+                e_packed = scoring.stack_multi_enroll_hybrid_pfas(
+                    enroll_list,
+                    cosine_dim=cos_dim,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                )
+            return float(
+                scoring.hybrid_pfas_score_pair(
+                    t_emb,
+                    e_packed,
+                    cosine_dim=cos_dim,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                    hybrid_alpha=h_alpha,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=getattr(
+                        pfas_cfg, "apply_softmax_per_test_key", False
+                    ),
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
+            )
+        if (
             scoring_type == "pfas"
             or self.config.pooling_type.lower() == "pfas"
             or self.exp_config.model.pooling.pooling_type
@@ -393,7 +468,15 @@ class FlaxSpeakerModel:
         ):
             pfas_cfg = self.exp_config.model.pfas
             pfas_scale = (
-                float(np.exp(float(self.state.params["_aux_pfas_log_scale"])))
+                float(
+                    np.exp(
+                        float(
+                            np.asarray(
+                                self.state.params["_aux_pfas_log_scale"]
+                            ).reshape(-1)[0]
+                        )
+                    )
+                )
                 if "_aux_pfas_log_scale" in self.state.params
                 else float(pfas_cfg.scale_factor)
             )

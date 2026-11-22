@@ -136,11 +136,32 @@ def _score_one_split_direction(
     pfas_key_dim: int,
     pfas_value_dim: int,
     eps: float,
+    is_hybrid_pfas: bool = False,
+    hybrid_cosine_dim: int = 256,
 ) -> jax.Array:
     """Scores one direction `(test_utts vs enroll_utts)` -> `(M_test * N, N)`."""
     m_enroll = enroll_utts.shape[1]
     m_test = test_utts.shape[1]
-    if is_pfas:
+    if is_hybrid_pfas:
+        e_cos = jnp.mean(enroll_utts[:, :, :hybrid_cosine_dim], axis=1)
+        e_cos = e_cos / (jnp.linalg.norm(e_cos, axis=-1, keepdims=True) + eps)
+        tail = enroll_utts[:, :, hybrid_cosine_dim:]
+        key_total = pfas_num_keys * pfas_key_dim
+        e_keys = tail[:, :, :key_total].reshape(
+            num_speakers, m_enroll * pfas_num_keys, pfas_key_dim
+        )
+        e_vals = tail[:, :, key_total:].reshape(
+            num_speakers, m_enroll * pfas_num_keys, pfas_value_dim
+        )
+        enroll_repr = jnp.concatenate(
+            [
+                e_cos,
+                e_keys.reshape(num_speakers, -1),
+                e_vals.reshape(num_speakers, -1),
+            ],
+            axis=-1,
+        )
+    elif is_pfas:
         key_total = pfas_num_keys * pfas_key_dim
         e_keys = enroll_utts[:, :, :key_total].reshape(
             num_speakers, m_enroll * pfas_num_keys, pfas_key_dim
@@ -183,23 +204,12 @@ def compute_split_batch_similarity_matrix(
     pfas_num_keys: int = 4,
     pfas_key_dim: int = 32,
     pfas_value_dim: int = 128,
+    is_hybrid_pfas: bool = False,
+    hybrid_cosine_dim: int = 256,
     two_way_split: bool = True,
     eps: float = 1e-6,
 ) -> tuple[jax.Array, jax.Array, int]:
-    """Compute Split-Batch Test-vs-Enrollment similarity matrix.
-
-    Follows the split-batch test-vs-enrollment formulation from Pelecanos et al.
-    (Interspeech 2021, `arXiv:2104.01989`; Odyssey 2022, `arXiv:2203.05642v3`):
-    Splits the `M` utterances per speaker into even (`0::2`) and odd (`1::2`) subsets.
-    When `two_way_split=True` (default), evaluates BOTH even-as-test vs odd-as-enroll
-    AND odd-as-test vs even-as-enroll, producing `M` blocks of `N x N` scores
-    (`(M * N, N)` total) so every utterance in the batch serves as both a test
-    utterance and an enrollment utterance in every training step.
-
-    Returns:
-        `(sim_matrix, labels, num_test_blocks)` where `sim_matrix` has shape
-        `(num_test_blocks * N, N)` (each block of `N` rows has diagonal targets `0..N-1`).
-    """
+    """Compute Split-Batch Test-vs-Enrollment similarity matrix."""
     dim = embeddings.shape[-1]
     emb_grid = embeddings.reshape(num_speakers, num_utts_per_speaker, dim)
 
@@ -217,6 +227,8 @@ def compute_split_batch_similarity_matrix(
             pfas_key_dim=pfas_key_dim,
             pfas_value_dim=pfas_value_dim,
             eps=eps,
+            is_hybrid_pfas=is_hybrid_pfas,
+            hybrid_cosine_dim=hybrid_cosine_dim,
         )
         raw_sim_1 = _score_one_split_direction(
             enroll_utts=even_utts,
@@ -229,6 +241,8 @@ def compute_split_batch_similarity_matrix(
             pfas_key_dim=pfas_key_dim,
             pfas_value_dim=pfas_value_dim,
             eps=eps,
+            is_hybrid_pfas=is_hybrid_pfas,
+            hybrid_cosine_dim=hybrid_cosine_dim,
         )
         raw_sim = jnp.concatenate([raw_sim_0, raw_sim_1], axis=0)
         total_test_blocks = even_utts.shape[1] + odd_utts.shape[1]
@@ -248,6 +262,8 @@ def compute_split_batch_similarity_matrix(
             pfas_key_dim=pfas_key_dim,
             pfas_value_dim=pfas_value_dim,
             eps=eps,
+            is_hybrid_pfas=is_hybrid_pfas,
+            hybrid_cosine_dim=hybrid_cosine_dim,
         )
         total_test_blocks = m_test
 
@@ -272,9 +288,11 @@ def ge2e_softmax_loss(
     pfas_num_keys: int = 4,
     pfas_key_dim: int = 32,
     pfas_value_dim: int = 128,
+    is_hybrid_pfas: bool = False,
+    hybrid_cosine_dim: int = 256,
 ) -> jax.Array:
     """Generalized End-to-End (GE2E) Softmax Loss (Wan et al., ICASSP 2018, Eq. 6)."""
-    if split_batch or score_matrix_fn is not None or is_pfas:
+    if split_batch or score_matrix_fn is not None or is_pfas or is_hybrid_pfas:
         sim_matrix, labels, _ = compute_split_batch_similarity_matrix(
             embeddings,
             num_speakers,
@@ -286,6 +304,8 @@ def ge2e_softmax_loss(
             pfas_num_keys=pfas_num_keys,
             pfas_key_dim=pfas_key_dim,
             pfas_value_dim=pfas_value_dim,
+            is_hybrid_pfas=is_hybrid_pfas,
+            hybrid_cosine_dim=hybrid_cosine_dim,
         )
     else:
         sim_matrix, labels = compute_ge2e_similarity_matrix_leave_one_out(
@@ -378,26 +398,13 @@ def extended_set_softmax_loss(
     pfas_num_keys: int = 4,
     pfas_key_dim: int = 32,
     pfas_value_dim: int = 128,
+    is_hybrid_pfas: bool = False,
+    hybrid_cosine_dim: int = 256,
     pure_extended_set: bool = False,
     normalize_by_num_speakers: bool = True,
     row_softmax_weight: float = 0.5,
 ) -> jax.Array:
-    """Extended-Set (Multi-Row) Softmax Loss from Dr-Vectors (Pelecanos et al., 2021).
-
-    Reference:
-    "Dr-Vectors: Decision Residual Networks and an Improved Loss for Speaker
-    Recognition" (Interspeech 2021, https://arxiv.org/pdf/2104.01989).
-
-    Supports both:
-    1. Exact unnormalized, unblended Pelecanos et al. (2021) Eq. 2 when
-       `pure_extended_set=True` (`normalize_by_num_speakers=False, row_softmax_weight=0.0`):
-       `L(j) = -log( exp(S_{j,j}) / (exp(S_{j,j}) + sum_{p in W, q != p} exp(S_{p,q})) )`
-    2. Row-count normalized and row-softmax blended stabilization (default:
-       `pure_extended_set=False, normalize_by_num_speakers=True, row_softmax_weight=0.5`),
-       which subtracts `log(|W|)` from the off-diagonal logsumexp so the effective
-       impostor temperature matches single-row softmax and blends `row_softmax_weight`
-       of standard row-wise softmax with `(1 - row_softmax_weight)` of extended-set softmax.
-    """
+    """Extended-Set (Multi-Row) Softmax Loss from Dr-Vectors (Pelecanos et al., 2021)."""
     sim_matrix, _, m_test = compute_split_batch_similarity_matrix(
         embeddings,
         num_speakers,
@@ -409,6 +416,8 @@ def extended_set_softmax_loss(
         pfas_num_keys=pfas_num_keys,
         pfas_key_dim=pfas_key_dim,
         pfas_value_dim=pfas_value_dim,
+        is_hybrid_pfas=is_hybrid_pfas,
+        hybrid_cosine_dim=hybrid_cosine_dim,
     )
     # Reshape into M_test blocks of (N, N)
     blocks = sim_matrix.reshape(m_test, num_speakers, num_speakers)
@@ -469,6 +478,8 @@ def pairwise_loss(
     pfas_num_keys: int = 4,
     pfas_key_dim: int = 32,
     pfas_value_dim: int = 128,
+    is_hybrid_pfas: bool = False,
+    hybrid_cosine_dim: int = 256,
 ) -> jax.Array:
     """Balanced pairwise binary cross-entropy loss over test-vs-enrollment score matrix."""
     sim_matrix, labels, _ = compute_split_batch_similarity_matrix(
@@ -482,6 +493,8 @@ def pairwise_loss(
         pfas_num_keys=pfas_num_keys,
         pfas_key_dim=pfas_key_dim,
         pfas_value_dim=pfas_value_dim,
+        is_hybrid_pfas=is_hybrid_pfas,
+        hybrid_cosine_dim=hybrid_cosine_dim,
     )
     target_mask = jax.nn.one_hot(labels, num_speakers, dtype=sim_matrix.dtype)
     # Binary cross-entropy with logits: max(x, 0) - x*y + log(1 + exp(-|x|))
@@ -496,18 +509,57 @@ def pairwise_loss(
     return jnp.sum(bce * weights)
 
 
+def _apply_inter_topk_negative_margin(
+    cosine: jax.Array,
+    sine: jax.Array,
+    one_hot: jax.Array,
+    inter_topk: int,
+    inter_margin: float,
+) -> jax.Array:
+    """Applies negative angular margin `cos(theta_j - m_neg)` to top-K hardest impostors.
+
+    Implements Inter-TopK hard-negative angular penalty (Zhao et al., ICASSP 2022)
+    without materializing a `(B, K, C)` one-hot tensor (`O(B * C)` memory).
+    """
+    num_classes = cosine.shape[1]
+    k_neg = min(int(inter_topk), max(0, num_classes - 1))
+    if k_neg <= 0:
+        return cosine
+
+    neg_cos = jnp.where(one_hot > 0.5, -2.0, cosine)
+    top_vals, _ = jax.lax.top_k(neg_cos, k_neg)
+    kth_val = top_vals[:, -1:]
+    hard_mask = jax.lax.stop_gradient(
+        (neg_cos >= kth_val - 1e-7).astype(cosine.dtype) * (1.0 - one_hot)
+    )
+
+    cos_mn = jnp.cos(inter_margin)
+    sin_mn = jnp.sin(inter_margin)
+    psi_neg = jnp.where(
+        cosine < cos_mn,
+        cosine * cos_mn + sine * sin_mn,
+        jnp.ones_like(cosine),
+    )
+    active = jnp.asarray(inter_margin > 0.0, dtype=cosine.dtype)
+    eff_mask = hard_mask * active
+    return eff_mask * psi_neg + (1.0 - eff_mask) * cosine
+
+
 def arcface_loss(
     embeddings: jax.Array,
     class_weights: jax.Array,
     labels: jax.Array,
     scale: float = 30.0,
     margin: float = 0.2,
+    inter_topk: int = 0,
+    inter_margin: float = 0.0,
     eps: float = 1e-6,
 ) -> jax.Array:
     """ArcFace / Additive Angular Margin Softmax (AAM-Softmax) Loss.
 
     Reference: Deng et al., "ArcFace: Additive Angular Margin Loss for Deep Face
-    Recognition", CVPR 2019.
+    Recognition", CVPR 2019; optional Inter-TopK hard-negative penalty from
+    Zhao et al., ICASSP 2022.
 
     `L = -log( exp(s * cos(theta_y + m)) / (exp(s * cos(theta_y + m)) + sum_{c != y} exp(s * cos(theta_c))) )`
     """
@@ -528,7 +580,14 @@ def arcface_loss(
     phi = jnp.where(cosine > threshold, phi, cosine - mm)
 
     one_hot = jax.nn.one_hot(labels, class_weights.shape[1], dtype=embeddings.dtype)
-    logits = scale * (one_hot * phi + (1.0 - one_hot) * cosine)
+    neg_logits = (
+        _apply_inter_topk_negative_margin(
+            cosine, sine, one_hot, inter_topk=inter_topk, inter_margin=inter_margin
+        )
+        if inter_topk > 0
+        else cosine
+    )
+    logits = scale * (one_hot * phi + (1.0 - one_hot) * neg_logits)
     log_probs = jax.nn.log_softmax(logits, axis=-1)
     return -jnp.mean(jnp.sum(one_hot * log_probs, axis=-1))
 
@@ -540,16 +599,18 @@ def subcenter_arcface_loss(
     scale: float = 30.0,
     margin: float = 0.2,
     subcenter_k: int = 3,
+    inter_topk: int = 0,
+    inter_margin: float = 0.0,
     eps: float = 1e-6,
 ) -> jax.Array:
-    """Sub-Center ArcFace Loss (Deng et al., ECCV 2020; Zhao et al., ICASSP 2021).
+    """Sub-Center ArcFace Loss (Deng et al., ECCV 2020; Zhao et al., ICASSP 2021/2022).
 
     Maintains `subcenter_k` prototype vectors per speaker (`class_weights` of shape
     `(D, num_classes * subcenter_k)`), selects the maximum cosine similarity across the
-    `subcenter_k` sub-centers for each speaker class (`max_k cos(theta_{c,k})`), and
-    applies the additive angular margin `margin` to the ground-truth speaker class.
-    Absorbs noisy/corrupted recordings in multi-genre corpora (`VoxCeleb2`, `CN-Celeb2`)
-    into non-dominant sub-centers without distorting the clean dominant prototype.
+    `subcenter_k` sub-centers for each speaker class (`max_k cos(theta_{c,k})`),
+    applies the additive angular margin `margin` to the ground-truth speaker class,
+    and optionally applies negative angular margin `inter_margin` to the `inter_topk`
+    hardest impostor classes per sample.
     """
     k = max(1, int(subcenter_k))
     total_cols = class_weights.shape[1]
@@ -578,7 +639,14 @@ def subcenter_arcface_loss(
     phi = jnp.where(cosine > threshold, phi, cosine - mm)
 
     one_hot = jax.nn.one_hot(labels, num_classes, dtype=embeddings.dtype)
-    logits = scale * (one_hot * phi + (1.0 - one_hot) * cosine)
+    neg_logits = (
+        _apply_inter_topk_negative_margin(
+            cosine, sine, one_hot, inter_topk=inter_topk, inter_margin=inter_margin
+        )
+        if inter_topk > 0
+        else cosine
+    )
+    logits = scale * (one_hot * phi + (1.0 - one_hot) * neg_logits)
     log_probs = jax.nn.log_softmax(logits, axis=-1)
     return -jnp.mean(jnp.sum(one_hot * log_probs, axis=-1))
 

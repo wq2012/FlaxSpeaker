@@ -57,12 +57,19 @@ ALL_FLAGSHIP_ORDER = [
     "univ_full_conformer_large_arcface",
     "univ_full_resnet34_arcface",
     "univ_full_eres2conformer_large",
+    "univ_full_eres2conformer_large_pfas",
+    "univ_full_eres2conformer_v2_large",
+    "univ_full_eres2conformer_v2_pfas",
+    "univ_full_eres2conformer_xl_pfas",
+    "univ_full_eres2conformer_xl",
 ]
 TFLITE_REPOS = {
     "univ_full_conformer_large_arcface",
     "univ_full_ecapa_c1024_arcface",
     "univ_full_resnet34_arcface",
     "univ_full_eres2conformer_large",
+    "univ_full_eres2conformer_v2_large",
+    "univ_full_eres2conformer_xl",
     "univ_conformer_small_ge2e",
     "univ_lstm_small_ge2e",
     "univ_ecapa_tdnn_small_ge2e",
@@ -80,7 +87,12 @@ LOSS_SHORT = {
     "sphereface": "SphereFace",
     "triplet": "Triplet",
 }
-SCORE_SHORT = {"cosine": "cos", "dr_vector": "DrV$^{*}$", "pfas": "PFAS$^{*}$"}
+SCORE_SHORT = {
+    "cosine": "cos",
+    "dr_vector": "DrV$^{*}$",
+    "pfas": "PFAS$^{*}$",
+    "hybrid_pfas": "HybPFAS$^{*}$",
+}
 
 
 def tex_escape(s: str) -> str:
@@ -166,7 +178,7 @@ def main(paper_dir: str) -> None:
     pfas_sweep = load("pfas_hparam_sweep.json")
 
     ex = bench["experiments"]
-    assert len(ex) in (44, 48, 49, 50), len(ex)
+    assert len(ex) in (44, 48, 49, 50, 55), len(ex)
     controlled_ex = {k: v for k, v in ex.items() if not k.startswith("univ_full_")}
     assert len(controlled_ex) == 44, len(controlled_ex)
     FLAGSHIP_ORDER = [m for m in ALL_FLAGSHIP_ORDER if m in ex]
@@ -286,6 +298,11 @@ def main(paper_dir: str) -> None:
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
         ("flagResnet", "univ_full_resnet34_arcface"),
         ("flagEres", "univ_full_eres2conformer_large"),
+        ("flagEresPfas", "univ_full_eres2conformer_large_pfas"),
+        ("flagVtwo", "univ_full_eres2conformer_v2_large"),
+        ("flagVtwoPfas", "univ_full_eres2conformer_v2_pfas"),
+        ("flagXl", "univ_full_eres2conformer_xl"),
+        ("flagXlPfas", "univ_full_eres2conformer_xl_pfas"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ]:
@@ -306,6 +323,11 @@ def main(paper_dir: str) -> None:
         ("flagEcapa", "univ_full_ecapa_c1024_arcface"),
         ("flagResnet", "univ_full_resnet34_arcface"),
         ("flagEres", "univ_full_eres2conformer_large"),
+        ("flagEresPfas", "univ_full_eres2conformer_large_pfas"),
+        ("flagVtwo", "univ_full_eres2conformer_v2_large"),
+        ("flagVtwoPfas", "univ_full_eres2conformer_v2_pfas"),
+        ("flagXl", "univ_full_eres2conformer_xl"),
+        ("flagXlPfas", "univ_full_eres2conformer_xl_pfas"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ):
@@ -315,6 +337,8 @@ def main(paper_dir: str) -> None:
         vx, cn, ls = ob["voxceleb1_o"], ob["cnceleb_e"], ob["librispeech_test_clean"]
         nums.append(macro_def(ftag + "VoxRaw", f2(vx["eer_percent"])))
         nums.append(macro_def(ftag + "VoxQmf", f2(vx["qmf"]["eer_percent"])))
+        nums.append(macro_def(ftag + "VoxDcf", f4(vx["min_dcf_001"])))
+        nums.append(macro_def(ftag + "VoxAuc", f4(vx["roc_auc"])))
         nums.append(macro_def(ftag + "CnRaw", f2(cn["eer_percent"])))
         nums.append(macro_def(ftag + "CnQmf", f2(cn["qmf"]["eer_percent"])))
         cn_me = cn["multi_enroll_map"].get("as_norm", cn["multi_enroll_map"])["eer_percent"]
@@ -376,6 +400,56 @@ def main(paper_dir: str) -> None:
         nums.append(macro_def("fusionFourBbVoxQmf", f2(fus_4bb_m["voxceleb1_o"]["qmf"]["eer_percent"])))
         nums.append(macro_def("fusionFourBbCnQmf", f2(fus_4bb_m["cnceleb_e"]["qmf"]["eer_percent"])))
         nums.append(macro_def("fusionFourBbLsQmf", f2(fus_4bb_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    if "six_way_cosine_official_benchmarks" in fus:
+        fus_6c_m = fus["six_way_cosine_official_benchmarks"]
+        nums.append(macro_def("fusionSixCosVoxAsn", f2(fus_6c_m["voxceleb1_o"]["eer_percent"])))
+        nums.append(macro_def("fusionSixCosVoxQmf", f2(fus_6c_m["voxceleb1_o"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionSixCosCnQmf", f2(fus_6c_m["cnceleb_e"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionSixCosLsQmf", f2(fus_6c_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    nums.append(macro_def("fusionSixHybVoxAsn", f2(fus2["voxceleb1_o"]["eer_percent"])))
+    nums.append(macro_def("fusionSixHybVoxQmf", f2(fus2["voxceleb1_o"]["qmf"]["eer_percent"])))
+    nums.append(macro_def("fusionSixHybCnQmf", f2(fus2["cnceleb_e"]["qmf"]["eer_percent"])))
+    nums.append(macro_def("fusionSixHybLsQmf", f2(fus2["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    nums.append(macro_def("fusionSixMeCnMulti", f2(fus3["cnceleb_e_multi_enroll_map"]["eer_percent"])))
+    nums.append(macro_def("fusionSixMeLsMulti", f2(fus3["librispeech_test_clean_3utt"]["eer_percent"])))
+
+    v070_abl_path = os.path.join(PM, "v070_ablation_results.json")
+    v070_abl = None
+    if os.path.isfile(v070_abl_path):
+        with open(v070_abl_path, "r", encoding="utf-8") as f:
+            v070_abl = json.load(f)
+        for vtag, vaid in (
+            ("vZeroBase", "ctrl_base_noprune"),
+            ("vZeroMedoid", "clean_lmft_medoid_k1"),
+            ("vZeroKeepSwa", "clean_lmft_keep_k3_swa_bn"),
+            ("vZeroInterShort", "inter_topk_chan_aug_k3"),
+            ("vZeroVtwoShort", "v2_large_fwse_mfa123"),
+            ("vZeroXlShort", "xl_64m_clean_k3"),
+            ("vZeroHybShort", "hybrid_pfas_attentive_scoring"),
+        ):
+            if vaid in v070_abl.get("arms", {}):
+                va_d = v070_abl["arms"][vaid]
+                v_ob = va_d["official_benchmarks"]
+                nums.append(macro_def(vtag + "VoxRaw", f2(v_ob["voxceleb1_o"]["eer_percent"])))
+                nums.append(macro_def(vtag + "VoxQmf", f2(v_ob["voxceleb1_o"]["qmf"]["eer_percent"])))
+                nums.append(macro_def(vtag + "CnMulti", f2(v_ob["cnceleb_e"]["multi_enroll_map"]["as_norm"]["eer_percent"])))
+        lh_runs = v070_abl.get("long_horizon_recipe_comparison", {}).get("runs", {})
+        for ltag, lkey in (
+            ("lhVtwoClean", "v2_large_clean_162k"),
+            ("lhVtwoInter", "v2_large_interaug_162k"),
+            ("lhXlClean", "xl_64m_clean_145k"),
+            ("lhXlInter", "xl_64m_interaug_145k"),
+        ):
+            if lkey in lh_runs:
+                lr_d = lh_runs[lkey]
+                lob = lr_d["official_benchmarks"]
+                vt_l = lr_d["validation_trajectory"][-1]
+                nums.append(macro_def(ltag + "Val", f2(vt_l["val_1utt_eer_percent"])))
+                nums.append(macro_def(ltag + "ValComp", f2(vt_l["val_composite_eer_percent"])))
+                nums.append(macro_def(ltag + "Loss", f"{lr_d['final_loss']:.2f}"))
+                nums.append(macro_def(ltag + "VoxRaw", f2(lob["voxceleb1_o"]["eer_percent"])))
+                nums.append(macro_def(ltag + "VoxQmf", f2(lob["voxceleb1_o"]["qmf"]["eer_percent"])))
+                nums.append(macro_def(ltag + "CnMulti", f2(lob["cnceleb_e"]["multi_enroll_map"]["as_norm"]["eer_percent"])))
 
     eres_abl_path = os.path.join(PM, "eres2conformer_ablation_results.json")
     eres_abl = None
@@ -597,9 +671,19 @@ def main(paper_dir: str) -> None:
     fp_ck = fps.get("checkpoints", {})
     hist = fps.get("histogram", {})
     nums.append(macro_def("fpTotal", str(len(fp_ck))))
-    nums.append(macro_def("fpNumVariable", str(hist.get("variable", 0) + hist.get("variable_approx", 0))))
+    nums.append(
+        macro_def(
+            "fpNumVariable",
+            str(
+                hist.get("variable", 0)
+                + hist.get("variable_approx", 0)
+                + hist.get("both_approx", 0)
+            ),
+        )
+    )
     nums.append(macro_def("fpNumVariableExact", str(hist.get("variable", 0))))
     nums.append(macro_def("fpNumVariableApprox", str(hist.get("variable_approx", 0))))
+    nums.append(macro_def("fpNumBothApprox", str(hist.get("both_approx", 0))))
     nums.append(macro_def("fpNumBoth", str(hist.get("both", 0))))
     nums.append(macro_def("fpNumFixedAll", str(hist.get("fixed", 0) + hist.get("fixed_approx", 0))))
     nums.append(macro_def("fpNumNeither", str(hist.get("neither", 0))))
@@ -649,14 +733,31 @@ def main(paper_dir: str) -> None:
         ("tfliteLsLstm", "ls_lstm_small_ge2e"),
     ]
     tfl_cos_means, tfl_cos_mins, tfl_eer_deltas, tfl_trunc = [], [], [], []
-    for fmid in (
-        "univ_full_conformer_large_arcface",
-        "univ_full_ecapa_c1024_arcface",
-        "univ_full_resnet34_arcface",
-        "univ_full_eres2conformer_large",
+    for ftag_tfl, fmid in (
+        ("tfliteConfL", "univ_full_conformer_large_arcface"),
+        ("tfliteEcapaL", "univ_full_ecapa_c1024_arcface"),
+        ("tfliteResnetL", "univ_full_resnet34_arcface"),
+        ("tfliteEres", "univ_full_eres2conformer_large"),
+        ("tfliteVtwo", "univ_full_eres2conformer_v2_large"),
+        ("tfliteXl", "univ_full_eres2conformer_xl"),
     ):
         fte = ex.get(fmid, {}).get("tflite_eval", {})
         if fte:
+            nums.append(macro_def(ftag_tfl + "FpEer", f2(fte["eer_percent"])))
+            nums.append(macro_def(ftag_tfl + "IntEer", f2(fte["eer_percent_int8"])))
+            nums.append(macro_def(ftag_tfl + "CosMean", f"{fte['cos_fp32_int8_mean']:.6f}"))
+            nums.append(
+                macro_def(
+                    ftag_tfl + "FpMB",
+                    f"{tf[fmid + '_fp32']['size_bytes'] / 1e6:.2f}",
+                )
+            )
+            nums.append(
+                macro_def(
+                    ftag_tfl + "IntMB",
+                    f"{tf[fmid + '_int8']['size_bytes'] / 1e6:.2f}",
+                )
+            )
             tfl_cos_means.append(fte["cos_fp32_int8_mean"])
             if "cos_fp32_int8_min" in fte:
                 tfl_cos_mins.append(fte["cos_fp32_int8_min"])
@@ -853,6 +954,8 @@ def main(paper_dir: str) -> None:
             fus_cands.append(fus["three_way_backbone_official_benchmarks"])
         if "four_way_backbone_official_benchmarks" in fus and "univ_full_eres2conformer_large" in fm:
             fus_cands.append(fus["four_way_backbone_official_benchmarks"])
+        if "six_way_cosine_official_benchmarks" in fus and "univ_full_eres2conformer_xl" in fm:
+            fus_cands.append(fus["six_way_cosine_official_benchmarks"])
         min_f_vx_as = min(round(fc["voxceleb1_o"]["eer_percent"], 2) for fc in fus_cands)
         min_f_vx_qmf = min(round(fc["voxceleb1_o"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
         min_f_cn_qmf = min(round(fc["cnceleb_e"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
@@ -894,7 +997,18 @@ def main(paper_dir: str) -> None:
                 f"4-Way Backbone Fusion (+ ERes2Conformer) & {p4bb_m:.2f} & --- & "
                 f"{t4_vx} & {t4_cn} & {t4_ls} & --- & --- \\\\"
             )
-        if len(act_mids) == 6:
+        if "six_way_cosine_official_benchmarks" in fus and "univ_full_eres2conformer_xl" in fm:
+            fus_6c = fus["six_way_cosine_official_benchmarks"]
+            cos_mids = fus.get("six_way_cosine_models", [])
+            p6c_m = sum(int(fm[m]["num_parameters"]) for m in cos_mids if m in fm) / 1e6
+            t6c_vx, t6c_cn, t6c_ls = fmt_tex_fus(fus_6c)
+            flines.append(
+                f"6-Way Cosine Backbone Fusion (+ V2-Large + XL) & {p6c_m:.2f} & --- & "
+                f"{t6c_vx} & {t6c_cn} & {t6c_ls} & --- & --- \\\\"
+            )
+        if "univ_full_eres2conformer_xl_pfas" in act_mids:
+            f_lbl = "6-Way Flagship Fusion (ERes2Conf L/V2/XL Cosine + L/V2/XL Hybrid-PFAS)"
+        elif len(act_mids) == 6:
             f_lbl = "6-Way Flagship Fusion (Conf-L + ECAPA + ResNet-34 + ERes2Conf + PFAS + DrV)"
         elif len(act_mids) == 5:
             f_lbl = "5-Way Flagship Fusion (Conf-L + ECAPA + ResNet-34 + PFAS + DrV)"
@@ -973,6 +1087,84 @@ def main(paper_dir: str) -> None:
             + "\n".join(elines) + "\n\\bottomrule\n\\end{tabular}\n"
         )
         emit(os.path.join(out_dir, "table_eres2conf_ablation.tex"), etbl)
+
+    if v070_abl is not None:
+        vlines = []
+        v_arms_d = v070_abl["arms"]
+        for aid, albl in (
+            ("ctrl_base_noprune", "1.\\ Base ERes2Conf-L (33k, unpruned LMFT)"),
+            ("clean_lmft_medoid_k1", "2.\\ + Medoid $K{=}1$ collapse (33k)"),
+            ("clean_lmft_keep_k3_swa_bn", "3.\\ + Clean-$K{=}3$ LMFT + SWA + Exact BN + QMF-v2"),
+            ("inter_topk_chan_aug_k3", "4.\\ + Inter-TopK ($K{=}5, 0.06$) + NB/Tilt (short 33k)"),
+            ("v2_large_fwse_mfa123", "5.\\ V2-Large (2D-fwSE + 3-Stage MFA + $3{\\times}$Conf, 33k)"),
+            ("xl_64m_clean_k3", "6.\\ XL-64M ($C_0{=}80, (3,4,8,3), 4{\\times}640$D Conf, 28k)"),
+            ("hybrid_pfas_attentive_scoring", "7.\\ + Hybrid-PFAS ($20$k ep.\\ on frozen Large)"),
+        ):
+            if aid not in v_arms_d:
+                continue
+            ad = v_arms_d[aid]
+            aob = ad["official_benchmarks"]
+            avx, acn, als = aob["voxceleb1_o"], aob["cnceleb_e"], aob["librispeech_test_clean"]
+            acn_me = acn["multi_enroll_map"]["as_norm"]["eer_percent"]
+            als_3 = als["multi_enroll_3utt"]["as_norm"]["eer_percent"]
+            ap1 = d1(ad, "universal_pooled")["eer_percent"]
+            ap3 = min(
+                d3(ad, "universal_pooled")["eer_percent"],
+                d3(ad, "universal_pooled").get("as_norm", {}).get(
+                    "eer_percent", d3(ad, "universal_pooled")["eer_percent"]
+                ),
+            )
+            vlines.append(
+                f"{albl} & {int(ad['num_parameters'])/1e6:.2f} & {int(ad['num_steps']):,} & "
+                f"{f2(avx['eer_percent'])} / {f2(avx['as_norm']['eer_percent'])} / {f2(avx['qmf']['eer_percent'])} & "
+                f"{f2(acn['eer_percent'])} / {f2(acn['qmf']['eer_percent'])} / {f2(acn_me)} & "
+                f"{f2(als['eer_percent'])} / {f2(als['qmf']['eer_percent'])} / {f2(als_3)} & "
+                f"{f2(ap1)} / {f2(ap3)} \\\\"
+            )
+        lh_runs_t = v070_abl.get("long_horizon_recipe_comparison", {}).get("runs", {})
+        if lh_runs_t:
+            vlines.append("\\midrule")
+            v2_c_val = f2(lh_runs_t["v2_large_clean_162k"]["validation_trajectory"][-1]["val_composite_eer_percent"])
+            v2_i_val = f2(lh_runs_t["v2_large_interaug_162k"]["validation_trajectory"][-1]["val_composite_eer_percent"])
+            xl_c_val = f2(lh_runs_t["xl_64m_clean_145k"]["validation_trajectory"][-1]["val_composite_eer_percent"])
+            xl_i_val = f2(lh_runs_t["xl_64m_interaug_145k"]["validation_trajectory"][-1]["val_composite_eer_percent"])
+            for lkey, llbl, lwin in (
+                ("v2_large_clean_162k", f"V2-Large (145 shards, Clean $0/0/0$; val ${v2_c_val}\\%$)", False),
+                ("v2_large_interaug_162k", f"V2-Large (145 shards, InterAug; val ${v2_i_val}\\% < {v2_c_val}\\%$)", True),
+                ("xl_64m_clean_145k", f"XL-64M (145 shards, Clean $0/0/0$; val ${xl_c_val}\\%$)", False),
+                ("xl_64m_interaug_145k", f"XL-64M (145 shards, InterAug; val ${xl_i_val}\\% < {xl_c_val}\\%$)", True),
+            ):
+                if lkey not in lh_runs_t:
+                    continue
+                ld = lh_runs_t[lkey]
+                lob = ld["official_benchmarks"]
+                lvx, lcn, lls = lob["voxceleb1_o"], lob["cnceleb_e"], lob["librispeech_test_clean"]
+                lcn_me = lcn["multi_enroll_map"]["as_norm"]["eer_percent"]
+                lls_3 = lls["multi_enroll_3utt"]["as_norm"]["eer_percent"]
+                lp1 = d1(ld, "universal_pooled")["eer_percent"]
+                lp3 = min(
+                    d3(ld, "universal_pooled")["eer_percent"],
+                    d3(ld, "universal_pooled").get("as_norm", {}).get(
+                        "eer_percent", d3(ld, "universal_pooled")["eer_percent"]
+                    ),
+                )
+                vq_s = f"\\textbf{{{f2(lvx['qmf']['eer_percent'])}}}" if lwin else f2(lvx["qmf"]["eer_percent"])
+                vr_s = f"\\textbf{{{f2(lvx['eer_percent'])}}}" if lwin else f2(lvx["eer_percent"])
+                vlines.append(
+                    f"{llbl} & {int(ld['num_parameters'])/1e6:.2f} & {int(ld['num_steps']):,} & "
+                    f"{vr_s} / {f2(lvx['as_norm']['eer_percent'])} / {vq_s} & "
+                    f"{f2(lcn['eer_percent'])} / {f2(lcn['qmf']['eer_percent'])} / {f2(lcn_me)} & "
+                    f"{f2(lls['eer_percent'])} / {f2(lls['qmf']['eer_percent'])} / {f2(lls_3)} & "
+                    f"{f2(lp1)} / {f2(lp3)} \\\\"
+                )
+        vtbl = (
+            "\\begin{tabular}{@{}lrrcccc@{}}\n\\toprule\n"
+            "\\textbf{Controlled \\texttt{v0.7.0} Arm / Full-Corpus Horizon Run} & \\textbf{M par.} & \\textbf{Steps} & "
+            "\\textbf{Vox1-O (Raw/ASN/QMF)} & \\textbf{CN-E (Raw/QMF/Multi)} & "
+            "\\textbf{LS-clean (Raw/QMF/3u)} & \\textbf{Pooled 1/3} \\\\\n\\midrule\n"
+            + "\n".join(vlines) + "\n\\bottomrule\n\\end{tabular}\n"
+        )
+        emit(os.path.join(out_dir, "table_v070_ablation.tex"), vtbl)
 
     # ------------------------------------------------ Table: 16-config PFAS sweep
     plines = []
@@ -1210,6 +1402,8 @@ def main(paper_dir: str) -> None:
         "univ_full_ecapa_c1024_arcface",
         "univ_full_resnet34_arcface",
         "univ_full_eres2conformer_large",
+        "univ_full_eres2conformer_v2_large",
+        "univ_full_eres2conformer_xl",
     ):
         te = ex.get(fmid, {}).get("tflite_eval", {})
         if te:

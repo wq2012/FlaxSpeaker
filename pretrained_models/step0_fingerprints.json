@@ -1,6 +1,6 @@
 {
-  "timestamp_utc": "2026-11-21T03:33:06.597293+00:00",
-  "code_commit": "0765631+dirty",
+  "timestamp_utc": "2026-11-22T10:49:24.378107+00:00",
+  "code_commit": "8ddb265+dirty",
   "tolerance": 5e-05,
   "description": "Step-0 training loss at the released seed from the released YAML, under fixed seq_len crops (head_fixed) and U(min_seq_len, seq_len) crops (head_variable), compared with eval_results.json initial_loss.",
   "checkpoints": {
@@ -1589,11 +1589,167 @@
       "abs_diff_fixed": 0.0245,
       "abs_diff_variable": 0.0039,
       "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_large_pfas": {
+      "train_dataset": "universal_full",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 240,
+      "min_seq_len": 168,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 0.4037,
+      "head_fixed": 0.4142,
+      "head_fixed_raw": 0.414184,
+      "head_fixed_valid_frames_first4": [
+        105,
+        91,
+        240,
+        240
+      ],
+      "head_fixed_probe_sec": 126.1,
+      "head_variable": 0.4045,
+      "head_variable_raw": 0.404464,
+      "head_variable_valid_frames_first4": [
+        105,
+        91,
+        181,
+        215
+      ],
+      "head_variable_probe_sec": 94.0,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0105,
+      "abs_diff_variable": 0.0008,
+      "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_v2_large": {
+      "train_dataset": "universal_full",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 200,
+      "min_seq_len": 140,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 11.7756,
+      "head_fixed": 11.7063,
+      "head_fixed_raw": 11.706291,
+      "head_fixed_valid_frames_first4": [
+        69,
+        200,
+        200,
+        200
+      ],
+      "head_fixed_probe_sec": 116.3,
+      "head_variable": 11.7803,
+      "head_variable_raw": 11.780278,
+      "head_variable_valid_frames_first4": [
+        69,
+        162,
+        173,
+        162
+      ],
+      "head_variable_probe_sec": 91.5,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0693,
+      "abs_diff_variable": 0.0047,
+      "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_v2_pfas": {
+      "train_dataset": "universal_full",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 240,
+      "min_seq_len": 168,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 0.2956,
+      "head_fixed": 0.2974,
+      "head_fixed_raw": 0.29737,
+      "head_fixed_valid_frames_first4": [
+        105,
+        91,
+        240,
+        240
+      ],
+      "head_fixed_probe_sec": 92.6,
+      "head_variable": 0.2946,
+      "head_variable_raw": 0.294612,
+      "head_variable_valid_frames_first4": [
+        105,
+        91,
+        181,
+        215
+      ],
+      "head_variable_probe_sec": 88.0,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0018,
+      "abs_diff_variable": 0.001,
+      "match": "both_approx"
+    },
+    "univ_full_eres2conformer_xl": {
+      "train_dataset": "universal_full",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 200,
+      "min_seq_len": 140,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 11.7048,
+      "head_fixed": 11.6712,
+      "head_fixed_raw": 11.671242,
+      "head_fixed_valid_frames_first4": [
+        69,
+        200,
+        200,
+        200
+      ],
+      "head_fixed_probe_sec": 172.7,
+      "head_variable": 11.7055,
+      "head_variable_raw": 11.705475,
+      "head_variable_valid_frames_first4": [
+        69,
+        162,
+        173,
+        162
+      ],
+      "head_variable_probe_sec": 142.7,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0336,
+      "abs_diff_variable": 0.0007,
+      "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_xl_pfas": {
+      "train_dataset": "universal_full",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 240,
+      "min_seq_len": 168,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 0.1884,
+      "head_fixed": 0.1609,
+      "head_fixed_raw": 0.160925,
+      "head_fixed_valid_frames_first4": [
+        105,
+        91,
+        240,
+        240
+      ],
+      "head_fixed_probe_sec": 148.6,
+      "head_variable": 0.1888,
+      "head_variable_raw": 0.188847,
+      "head_variable_valid_frames_first4": [
+        105,
+        91,
+        181,
+        215
+      ],
+      "head_variable_probe_sec": 140.6,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0275,
+      "abs_diff_variable": 0.0004,
+      "match": "variable_approx"
     }
   },
   "histogram": {
+    "both_approx": 1,
     "variable": 44,
-    "variable_approx": 6
+    "variable_approx": 10
   },
-  "num_checkpoints": 50
+  "num_checkpoints": 55
 }

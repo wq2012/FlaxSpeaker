@@ -59,6 +59,7 @@ class ModelSize(_StrEnum):
     SMALL = "small"
     BASE = "base"
     LARGE = "large"
+    XL = "xl"
 
 
 # Alias for convenience
@@ -77,6 +78,7 @@ class PoolingType(_StrEnum):
     CATP = "catp"
     CUMULATIVE_STATS = "cumulative_stats"
     PFAS = "pfas"
+    HYBRID_PFAS = "hybrid_pfas"
 
 
 class ScoringType(_StrEnum):
@@ -85,6 +87,7 @@ class ScoringType(_StrEnum):
     COSINE = "cosine"
     PFAS = "pfas"
     DR_VECTOR = "dr_vector"
+    HYBRID_PFAS = "hybrid_pfas"
 
 
 class LossType(_StrEnum):
@@ -160,7 +163,7 @@ class FrontendConfig:
 
 @dataclasses.dataclass
 class SpecAugConfig:
-    """Configuration for SpecAugment data augmentation."""
+    """Configuration for SpecAugment and acoustic channel data augmentation."""
 
     use_specaug: bool = True
     apply_prob: float = 0.5
@@ -171,6 +174,8 @@ class SpecAugConfig:
     num_freq_masks: int = 2
     num_time_masks: int = 2
     gaussian_noise_std: float = 0.0
+    narrowband_prob: float = 0.0
+    spectral_tilt_prob: float = 0.0
 
 
 @dataclasses.dataclass
@@ -296,8 +301,10 @@ class ERes2ConformerConfig:
     width_mult: float = 2.0
     use_simam: bool = True
     use_se: bool = True
+    use_fwse: bool = False
     use_aff: bool = True
     use_mfa_stage23: bool = True
+    use_mfa_stage123: bool = False
     conformer_dim: int = 512
     num_conformer_layers: int = 2
     num_heads: int = 8
@@ -353,6 +360,9 @@ class PfasConfig:
     apply_softmax_per_test_key: bool = False
     use_global_anchor: bool = True
     local_value_scale: float = 0.25
+    hybrid_alpha: float = 0.25
+    use_trainable_hybrid_alpha: bool = True
+    multi_enroll_max_weight: float = 0.20
 
     @property
     def representation_dim(self) -> int:
@@ -416,6 +426,8 @@ class LossConfig:
     scale: float = 30.0
     margin: float = 0.2
     subcenter_k: int = 3
+    inter_topk: int = 0
+    inter_margin: float = 0.0
     sphereface_m: float = 1.35
     sphereface_lambda_min: float = 5.0
     sphereface_lambda_base: float = 1000.0
@@ -465,6 +477,8 @@ class ModelConfig:
         s_type = str(
             getattr(self.scoring_type, "value", self.scoring_type)
         ).lower()
+        if p_type == "hybrid_pfas" or s_type == "hybrid_pfas":
+            return self.embedding_dim + self.pfas.representation_dim
         if p_type == "pfas" or s_type == "pfas":
             return self.pfas.representation_dim
         return self.embedding_dim
@@ -474,6 +488,8 @@ class ModelConfig:
         size_val = size.value if isinstance(size, ModelSize) else str(size).lower()
         if size_val == "c1024":
             size_val = ModelSize.LARGE.value
+        elif size_val == "xlarge":
+            size_val = ModelSize.XL.value
         self.size_variant = size_val
         if size_val == ModelSize.TINY.value:
             self.embedding_dim = 128
@@ -584,6 +600,42 @@ class ModelConfig:
             self.eres2conformer.conformer_dim = 512
             self.eres2conformer.num_conformer_layers = 2
             self.eres2conformer.num_heads = 8
+        elif size_val == ModelSize.XL.value:
+            self.embedding_dim = 256
+            self.lstm.hidden_size = 640
+            self.lstm.num_layers = 6
+            self.transformer.dim = 512
+            self.transformer.num_encoder_layers = 8
+            self.transformer.num_heads = 8
+            self.transformer.mlp_dim = 2048
+            self.conformer.dim = 512
+            self.conformer.num_layers = 6
+            self.conformer.num_heads = 8
+            self.conformer.ffn_dim = 2048
+            self.conformer.conv_kernel_size = 15
+            self.conformer.subsample_factor = 2
+            self.conformer.subsample_after_layer = 1
+            self.mamba.dim = 512
+            self.mamba.num_layers = 8
+            self.ecapa_tdnn.channels = 1536
+            self.ecapa_tdnn.scale = 8
+            self.ecapa_tdnn.kernel_sizes = (5, 3, 3, 3)
+            self.ecapa_tdnn.dilations = (1, 2, 3, 4)
+            self.ecapa_tdnn.mfa_dim = 2048
+            self.ecapa_tdnn.se_bottleneck_dim = 192
+            self.ecapa_tdnn.use_batch_norm = True
+            self.ecapa_tdnn.norm_after_activation = True
+            self.resnet.base_channels = 64
+            self.resnet.num_blocks = (3, 4, 8, 3)
+            self.resnet.out_dim = 0
+            self.eres2conformer.base_channels = 80
+            self.eres2conformer.num_blocks = (3, 4, 8, 3)
+            self.eres2conformer.width_mult = 2.0
+            self.eres2conformer.use_fwse = True
+            self.eres2conformer.use_mfa_stage123 = True
+            self.eres2conformer.conformer_dim = 640
+            self.eres2conformer.num_conformer_layers = 4
+            self.eres2conformer.num_heads = 8
         else:
             raise ValueError(f"Unknown model size variant: {size_val}")
 
@@ -660,6 +712,8 @@ class EvalConfig:
     as_norm_top_k: int = 300
     as_norm_cohort_size: int = 300
     use_qmf: bool = False
+    qmf_use_cohort_stats: bool = False
+    multi_enroll_length_gamma: float = 0.0
     dcf_c_miss: float = 1.0
     dcf_c_fa: float = 1.0
 

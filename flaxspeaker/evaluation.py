@@ -424,6 +424,7 @@ def compute_speaker_centroid_cohort(
     scoring_t = str(
         getattr(exp_cfg.model.scoring_type, "value", exp_cfg.model.scoring_type)
     )
+    cos_dim = int(exp_cfg.model.embedding_dim)
     centroids: list[np.ndarray] = []
     for s in spks:
         if scoring_t == "pfas":
@@ -433,6 +434,22 @@ def compute_speaker_centroid_cohort(
             if not u_embs:
                 continue
             centroids.append(np.mean(u_embs, axis=0).astype(np.float32))
+        elif scoring_t == "hybrid_pfas":
+            u_embs = [
+                utt_to_emb[u] for u in selected_map[s] if u in utt_to_emb
+            ]
+            if not u_embs:
+                continue
+            cos_parts = [
+                e[:cos_dim] / (np.linalg.norm(e[:cos_dim]) + 1e-6)
+                for e in u_embs
+            ]
+            c_cos = np.mean(cos_parts, axis=0)
+            c_cos = (c_cos / (np.linalg.norm(c_cos) + 1e-6)).astype(np.float32)
+            # Keep primary utterance's unblurred PFAS keys/values rather than
+            # slot-averaging distinct phonetic keys across utterances.
+            c_tail = np.asarray(u_embs[0][cos_dim:], dtype=np.float32)
+            centroids.append(np.concatenate([c_cos, c_tail], axis=-1))
         else:
             u_embs = [
                 utt_to_emb[u] / (np.linalg.norm(utt_to_emb[u]) + 1e-6)
@@ -531,6 +548,30 @@ def _compute_metrics_dict(
     }
 
 
+def _scalar_param(val: Any) -> float:
+    """Extract a Python float from a 0D or shape-`(1,)` JAX/NumPy parameter."""
+    return float(np.asarray(val).reshape(-1)[0])
+
+
+def _resolve_pfas_eval_params(
+    state: train_state.TrainState, exp_cfg: configs.ExperimentConfig
+) -> tuple[Any, float, float, int]:
+    """Returns `(pfas_cfg, pfas_scale, hybrid_alpha, cosine_dim)` for PFAS/Hybrid-PFAS eval."""
+    pfas_cfg = exp_cfg.model.pfas
+    pfas_scale = (
+        float(np.exp(_scalar_param(state.params["_aux_pfas_log_scale"])))
+        if "_aux_pfas_log_scale" in state.params
+        else float(pfas_cfg.scale_factor)
+    )
+    if "_aux_hybrid_logit" in state.params:
+        logit_v = _scalar_param(state.params["_aux_hybrid_logit"])
+        hybrid_alpha = float(1.0 / (1.0 + np.exp(-logit_v)))
+    else:
+        hybrid_alpha = float(getattr(pfas_cfg, "hybrid_alpha", 0.25))
+    cosine_dim = int(exp_cfg.model.embedding_dim)
+    return pfas_cfg, pfas_scale, hybrid_alpha, cosine_dim
+
+
 def _apply_unique_utt_as_norm(
     raw_scores: np.ndarray,
     trials: Sequence[dataset.TrialPair],
@@ -540,6 +581,8 @@ def _apply_unique_utt_as_norm(
     scoring_type: str = "cosine",
     pfas_cfg: Any = None,
     pfas_scale: float = 16.0,
+    cosine_dim: int = 256,
+    hybrid_alpha: float = 0.25,
 ) -> np.ndarray:
     """Computes exact AS-Norm in `O(U * C + N_trials)` via unique-utterance cohort stats."""
     u_keys = list(utt_to_emb.keys())
@@ -550,6 +593,16 @@ def _apply_unique_utt_as_norm(
             u_mat,
             cohort,
             pfas_cfg=pfas_cfg,
+            scale_factor=pfas_scale,
+            top_k=top_k,
+        )
+    elif scoring_type == "hybrid_pfas" and pfas_cfg is not None:
+        mu_u, std_u = scoring.compute_hybrid_pfas_cohort_topk_stats(
+            u_mat,
+            cohort,
+            cosine_dim=cosine_dim,
+            pfas_cfg=pfas_cfg,
+            hybrid_alpha=hybrid_alpha,
             scale_factor=pfas_scale,
             top_k=top_k,
         )
@@ -608,7 +661,7 @@ def evaluate_verification_trials(
     if scoring_type == "pfas":
         pfas_cfg = exp_cfg.model.pfas
         pfas_scale = (
-            float(np.exp(float(state.params["_aux_pfas_log_scale"])))
+            float(np.exp(_scalar_param(state.params["_aux_pfas_log_scale"])))
             if "_aux_pfas_log_scale" in state.params
             else float(pfas_cfg.scale_factor)
         )
@@ -657,6 +710,51 @@ def evaluate_verification_trials(
             scores_arr[s_i:e_i] = np.asarray(
                 pair_fn(t_keys, t_vals, e_keys, e_vals)
             )
+    elif scoring_type == "hybrid_pfas":
+        pfas_cfg, pfas_scale, h_alpha, cos_dim = _resolve_pfas_eval_params(
+            state, exp_cfg
+        )
+        pair_fn = jax.jit(
+            jax.vmap(
+                functools.partial(
+                    scoring.hybrid_pfas_score_pair,
+                    cosine_dim=cos_dim,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                    hybrid_alpha=h_alpha,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=getattr(
+                        pfas_cfg, "apply_softmax_per_test_key", False
+                    ),
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
+            )
+        )
+        n_tr = len(trials)
+        scores_arr = np.empty((n_tr,), dtype=np.float64)
+        for s_i in range(0, n_tr, 65536):
+            e_i = min(n_tr, s_i + 65536)
+            sub_tr = trials[s_i:e_i]
+            sub_e = jnp.asarray(
+                np.stack([utt_to_emb[u1] for _, u1, _ in sub_tr], axis=0)
+            )
+            sub_t = jnp.asarray(
+                np.stack([utt_to_emb[u2] for _, _, u2 in sub_tr], axis=0)
+            )
+            scores_arr[s_i:e_i] = np.asarray(pair_fn(sub_t, sub_e))
     elif scoring_type == "dr_vector" and "_aux_dr_net" in state.params:
         dr_net = scoring.build_decision_residual_network(exp_cfg.model.dr_vector)
         n_tr = len(trials)
@@ -715,13 +813,18 @@ def evaluate_verification_trials(
     c_fa = float(getattr(exp_cfg.eval, "dcf_c_fa", 1.0))
 
     as_norm_subdict: Optional[dict[str, Any]] = None
-    pfas_cfg_opt = exp_cfg.model.pfas if scoring_type == "pfas" else None
-    pfas_scale_opt = (
-        float(np.exp(float(state.params["_aux_pfas_log_scale"])))
-        if (scoring_type == "pfas" and "_aux_pfas_log_scale" in state.params)
-        else float(exp_cfg.model.pfas.scale_factor)
+    pfas_cfg_r, pfas_scale_opt, h_alpha_opt, cos_dim_opt = (
+        _resolve_pfas_eval_params(state, exp_cfg)
     )
-    if use_as_norm and scoring_type in ("cosine", "dr_vector", "pfas"):
+    pfas_cfg_opt = (
+        pfas_cfg_r if scoring_type in ("pfas", "hybrid_pfas") else None
+    )
+    if use_as_norm and scoring_type in (
+        "cosine",
+        "dr_vector",
+        "pfas",
+        "hybrid_pfas",
+    ):
         cohort = require_disjoint_cohort(
             cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
         )
@@ -734,11 +837,13 @@ def evaluate_verification_trials(
             scoring_type=scoring_type,
             pfas_cfg=pfas_cfg_opt,
             pfas_scale=pfas_scale_opt,
+            cosine_dim=cos_dim_opt,
+            hybrid_alpha=h_alpha_opt,
         )
     elif (
         include_as_norm_breakdown
         and cohort_embeddings is not None
-        and scoring_type in ("cosine", "dr_vector", "pfas")
+        and scoring_type in ("cosine", "dr_vector", "pfas", "hybrid_pfas")
     ):
         cohort = require_disjoint_cohort(
             cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
@@ -752,6 +857,8 @@ def evaluate_verification_trials(
             scoring_type=scoring_type,
             pfas_cfg=pfas_cfg_opt,
             pfas_scale=pfas_scale_opt,
+            cosine_dim=cos_dim_opt,
+            hybrid_alpha=h_alpha_opt,
         )
         as_norm_subdict = _compute_metrics_dict(
             labels, asn_scores, c_miss=c_miss, c_fa=c_fa, compute_ci=len(trials) <= 50000
@@ -816,7 +923,7 @@ def evaluate_multi_enroll_trials(
     if scoring_type == "pfas":
         pfas_cfg = exp_cfg.model.pfas
         pfas_scale = (
-            float(np.exp(float(state.params["_aux_pfas_log_scale"])))
+            float(np.exp(_scalar_param(state.params["_aux_pfas_log_scale"])))
             if "_aux_pfas_log_scale" in state.params
             else float(pfas_cfg.scale_factor)
         )
@@ -887,6 +994,79 @@ def evaluate_multi_enroll_trials(
                 )
                 sub_scores = np.asarray(
                     pair_fn(t_keys, t_vals, e_keys, e_vals), dtype=np.float64
+                )
+                scores_arr[np.asarray(sub_idxs, dtype=np.int64)] = sub_scores
+    elif scoring_type == "hybrid_pfas":
+        pfas_cfg, pfas_scale, h_alpha, cos_dim = _resolve_pfas_eval_params(
+            state, exp_cfg
+        )
+        enroll_key_to_stacked = {}
+        by_count = {}
+        for idx_t, (_, e_utts, _) in enumerate(trials):
+            e_key_tup = tuple(e_utts)
+            if e_key_tup not in enroll_key_to_stacked:
+                enroll_key_to_stacked[e_key_tup] = np.asarray(
+                    scoring.stack_multi_enroll_hybrid_pfas(
+                        [utt_to_emb[u] for u in e_key_tup],
+                        cosine_dim=cos_dim,
+                        num_keys=pfas_cfg.num_keys,
+                        key_dim=pfas_cfg.key_dim,
+                        value_dim=pfas_cfg.value_dim,
+                    ),
+                    dtype=np.float32,
+                )
+            by_count.setdefault(len(e_key_tup), []).append(idx_t)
+
+        pair_fn = jax.jit(
+            jax.vmap(
+                functools.partial(
+                    scoring.hybrid_pfas_score_pair,
+                    cosine_dim=cos_dim,
+                    num_keys=pfas_cfg.num_keys,
+                    key_dim=pfas_cfg.key_dim,
+                    value_dim=pfas_cfg.value_dim,
+                    hybrid_alpha=h_alpha,
+                    scale_factor=pfas_scale,
+                    per_trial_softmax=pfas_cfg.per_trial_softmax,
+                    apply_softmax_per_test_key=getattr(
+                        pfas_cfg, "apply_softmax_per_test_key", False
+                    ),
+                    apply_l2_norm_to_keys=getattr(
+                        pfas_cfg, "apply_l2_norm_to_keys", True
+                    ),
+                    apply_l2_norm_to_values=getattr(
+                        pfas_cfg, "apply_l2_norm_to_values", False
+                    ),
+                    apply_global_l2_norm_to_concat_form=getattr(
+                        pfas_cfg, "apply_global_l2_norm_to_concat_form", True
+                    ),
+                    attention_weight_mode=getattr(
+                        pfas_cfg, "attention_weight_mode", "exp"
+                    ),
+                )
+            )
+        )
+        scores_arr = np.empty((len(trials),), dtype=np.float64)
+        for k_cnt, idxs in by_count.items():
+            stacked_dim = cos_dim + k_cnt * pfas_cfg.num_keys * (
+                pfas_cfg.key_dim + pfas_cfg.value_dim
+            )
+            chunk_sz = max(
+                256, min(8192, (64 * 1024 * 1024) // max(1, stacked_dim * 4))
+            )
+            for s_i in range(0, len(idxs), chunk_sz):
+                sub_idxs = idxs[s_i:s_i + chunk_sz]
+                e_sub = jnp.asarray(
+                    np.stack(
+                        [enroll_key_to_stacked[tuple(trials[j][1])] for j in sub_idxs],
+                        axis=0,
+                    )
+                )
+                t_sub = jnp.asarray(
+                    np.stack([utt_to_emb[trials[j][2]] for j in sub_idxs], axis=0)
+                )
+                sub_scores = np.asarray(
+                    pair_fn(t_sub, e_sub), dtype=np.float64
                 )
                 scores_arr[np.asarray(sub_idxs, dtype=np.int64)] = sub_scores
     else:
@@ -1021,21 +1201,35 @@ def evaluate_multi_enroll_trials(
             as_norm_subdict["top_k"] = top_k
     elif (
         (use_as_norm or (include_as_norm_breakdown and cohort_embeddings is not None))
-        and scoring_type == "pfas"
+        and scoring_type in ("pfas", "hybrid_pfas")
     ):
         cohort = require_disjoint_cohort(
             cohort_embeddings, {u: utt_to_emb[u] for u in unique_utts}
         )
+        pfas_cfg, pfas_scale, h_alpha, cos_dim = _resolve_pfas_eval_params(
+            state, exp_cfg
+        )
         u_mat_pf = np.stack([utt_to_emb[u] for u in unique_utts], axis=0).astype(
             np.float32
         )
-        mu_u, std_u = scoring.compute_pfas_cohort_topk_stats(
-            u_mat_pf,
-            cohort,
-            pfas_cfg=pfas_cfg,
-            scale_factor=pfas_scale,
-            top_k=top_k,
-        )
+        if scoring_type == "hybrid_pfas":
+            mu_u, std_u = scoring.compute_hybrid_pfas_cohort_topk_stats(
+                u_mat_pf,
+                cohort,
+                cosine_dim=cos_dim,
+                pfas_cfg=pfas_cfg,
+                hybrid_alpha=h_alpha,
+                scale_factor=pfas_scale,
+                top_k=top_k,
+            )
+        else:
+            mu_u, std_u = scoring.compute_pfas_cohort_topk_stats(
+                u_mat_pf,
+                cohort,
+                pfas_cfg=pfas_cfg,
+                scale_factor=pfas_scale,
+                top_k=top_k,
+            )
         u_idx = {u: i for i, u in enumerate(unique_utts)}
         c_keys = list(enroll_key_to_stacked.keys())
         c_idx = {k: i for i, k in enumerate(c_keys)}
@@ -1048,13 +1242,24 @@ def evaluate_multi_enroll_trials(
             c_sub = np.stack(
                 [enroll_key_to_stacked[c_keys[i_c]] for i_c in c_idxs], axis=0
             )
-            m_sub, s_sub = scoring.compute_pfas_cohort_topk_stats(
-                c_sub,
-                cohort,
-                pfas_cfg=pfas_cfg,
-                scale_factor=pfas_scale,
-                top_k=top_k,
-            )
+            if scoring_type == "hybrid_pfas":
+                m_sub, s_sub = scoring.compute_hybrid_pfas_cohort_topk_stats(
+                    c_sub,
+                    cohort,
+                    cosine_dim=cos_dim,
+                    pfas_cfg=pfas_cfg,
+                    hybrid_alpha=h_alpha,
+                    scale_factor=pfas_scale,
+                    top_k=top_k,
+                )
+            else:
+                m_sub, s_sub = scoring.compute_pfas_cohort_topk_stats(
+                    c_sub,
+                    cohort,
+                    pfas_cfg=pfas_cfg,
+                    scale_factor=pfas_scale,
+                    top_k=top_k,
+                )
             mu_c[np.asarray(c_idxs, dtype=np.int64)] = m_sub
             std_c[np.asarray(c_idxs, dtype=np.int64)] = s_sub
         ci_all = np.fromiter(
