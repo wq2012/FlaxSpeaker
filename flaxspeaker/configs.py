@@ -17,9 +17,10 @@ class _StrEnum(str, enum.Enum):
         return str(self.value)
 
 
-yaml.SafeDumper.add_multi_representer(
-    _StrEnum, yaml.representer.SafeRepresenter.represent_str
-)
+if hasattr(yaml, "SafeDumper") and hasattr(yaml, "representer"):
+    yaml.SafeDumper.add_multi_representer(
+        _StrEnum, yaml.representer.SafeRepresenter.represent_str
+    )
 
 
 class VadMode(_StrEnum):

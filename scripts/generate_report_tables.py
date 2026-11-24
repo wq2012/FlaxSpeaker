@@ -27,6 +27,10 @@ ALL_FLAGSHIP_ORDER = [
     "univ_full_eres2conformer_v2_pfas",
     "univ_full_eres2conformer_xl_pfas",
     "univ_full_eres2conformer_xl",
+    "univ_full_eres2conformer_v2_diar",
+    "univ_full_eres2conformer_xl_diar",
+    "univ_full_eres2conformer_xl_diar_pfas",
+    "univ_full_eres2conformer_xl_diar_adapt",
 ]
 
 
@@ -160,6 +164,8 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             fus_cands.append(fus["four_way_backbone_official_benchmarks"])
         if "six_way_cosine_official_benchmarks" in fus and "univ_full_eres2conformer_xl" in fm:
             fus_cands.append(fus["six_way_cosine_official_benchmarks"])
+        if "v080_7corpus_official_benchmarks" in fus:
+            fus_cands.append(fus["v080_7corpus_official_benchmarks"])
         min_f_vx_as = min(round(fc["voxceleb1_o"]["eer_percent"], 2) for fc in fus_cands)
         min_f_vx_qmf = min(round(fc["voxceleb1_o"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
         min_f_cn_qmf = min(round(fc["cnceleb_e"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
@@ -233,6 +239,28 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             f"Heterogeneous {n_way}-Way AS-Norm + QMF | `{p_act:,}` | — | "
             f"{r5_vx} | {r5_cn} | {r5_ls} | — | — |"
         )
+        if "v080_7corpus_official_benchmarks" in fus:
+            fus_v8 = fus["v080_7corpus_official_benchmarks"]
+            v8_mids = fus.get("v080_7corpus_models", [])
+            p_v8 = sum(int(fm[m]["num_parameters"]) for m in v8_mids if m in fm)
+            rv8_vx, rv8_cn, rv8_ls = fmt_fus_row(fus_v8)
+            if "v080_7corpus_multi_enroll_fusion" in fus:
+                v8_me = fus["v080_7corpus_multi_enroll_fusion"]
+                v8_cn_me = v8_me["cnceleb_e_multi_enroll_map"]["eer_percent"]
+                v8_ls_me = v8_me["librispeech_test_clean_3utt"]["eer_percent"]
+                v8_cq = fus_v8["cnceleb_e"]["qmf"]["eer_percent"]
+                v8_lq = fus_v8["librispeech_test_clean"]["qmf"]["eer_percent"]
+                v8_cq_s = f"**{f2(v8_cq)}%**" if round(v8_cq, 2) == min_f_cn_qmf else f"{f2(v8_cq)}%"
+                v8_lq_s = f"**{f2(v8_lq)}%**" if round(v8_lq, 2) == min_f_ls_qmf and round(v8_lq, 2) <= min_ls_qmf else f"{f2(v8_lq)}%"
+                v8_cn_me_s = f"**{f2(v8_cn_me)}%**" if round(v8_cn_me, 2) <= min_cn_me else f"{f2(v8_cn_me)}%"
+                v8_ls_me_s = f"**{f2(v8_ls_me)}%**" if round(v8_ls_me, 2) <= min_ls_3 else f"{f2(v8_ls_me)}%"
+                rv8_cn = f"— / {v8_cq_s} / {v8_cn_me_s}"
+                rv8_ls = f"— / {v8_lq_s} / {v8_ls_me_s}"
+            out.append(
+                f"| **{len(v8_mids)}-Way 7-Corpus Diarization Fusion (`V2-Diar + XL-Diar + XL-Diar-Adapt + XL-Diar-PFAS`)** | "
+                f"7-Corpus Cosine + Hybrid-PFAS QMF | `{p_v8:,}` | — | "
+                f"{rv8_vx} | {rv8_cn} | {rv8_ls} | — | — |"
+            )
     else:
         out.append(
             f"| **2-Way Score Fusion (`Conformer-L + ECAPA-c1024`)** | "
@@ -406,6 +434,176 @@ def render_flagship_tables(flagship: dict, pfas_sweep: dict) -> list[str]:
             f"{bold}{f2(c['composite_val_eer_percent'])}%{bold} |"
         )
     out.append("<!-- END PFAS_SWEEP_TABLE -->\n")
+
+    v080_abl_path = os.path.join(PM, "v080_diarization_ablation_results.json")
+    if os.path.isfile(v080_abl_path):
+        with open(v080_abl_path, "r", encoding="utf-8") as f:
+            v080_d = json.load(f)
+        zs_models = v080_d.get("v070_zero_shot_models", {})
+        rel_v080 = v080_d.get("v080_released_flagships", {})
+        fus_v080 = v080_d.get("v080_7corpus_fusion", {})
+        abl_v080 = v080_d.get("v080_controlled_ablations", {})
+
+        out.append("<!-- BEGIN DIARIZATION_SV_TABLE -->")
+        out.append(
+            "| Model / Regime | Train Corpora (`Spks`) | VoxCeleb1-O QMF (%) | "
+            "Fisher (Tel.) WS / Std / Short QMF (%) | "
+            "CallHome (Tel.) WS / Std / Short QMF (%) | "
+            "AMI (Meeting) WS / Std / Short QMF (%) | "
+            "ICSI (Meeting) WS / Std / Short QMF (%) | "
+            "4-Corpus Macro WS / Std / Short QMF (%) |"
+        )
+        out.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+
+        diar_rows: list[tuple[str, str, float, dict, dict]] = []
+        for zmid in (
+            "univ_full_ecapa_c1024_arcface",
+            "univ_full_resnet34_arcface",
+            "univ_full_eres2conformer_large",
+            "univ_full_eres2conformer_v2_large",
+            "univ_full_eres2conformer_v2_pfas",
+            "univ_full_eres2conformer_xl_pfas",
+            "univ_full_eres2conformer_xl",
+        ):
+            if zmid in zs_models and zmid in fm:
+                vx_q = fm[zmid]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+                db_z = zs_models[zmid]["diarization_benchmarks"]
+                diar_rows.append((
+                    f"[`wq2012/{zmid}`](https://huggingface.co/wq2012/{zmid}) (Zero-Shot)",
+                    "3-Corpus (`12,193`)",
+                    vx_q,
+                    db_z["suites"],
+                    db_z["macro_averages"],
+                ))
+        for rmid in (
+            "univ_full_eres2conformer_v2_diar",
+            "univ_full_eres2conformer_xl_diar",
+            "univ_full_eres2conformer_xl_diar_pfas",
+            "univ_full_eres2conformer_xl_diar_adapt",
+        ):
+            if rmid in rel_v080:
+                rm = rel_v080[rmid]
+                vx_q = rm["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+                db_r = rm["diarization_benchmarks"]
+                diar_rows.append((
+                    f"**[`wq2012/{rmid}`](https://huggingface.co/wq2012/{rmid})** (`v0.8.0`)",
+                    "7-Corpus (`24,110`)",
+                    vx_q,
+                    db_r["suites"],
+                    db_r["macro_averages"],
+                ))
+        if fus_v080 and "diarization_benchmarks" in fus_v080:
+            n_vf = len(fus_v080.get("models", []))
+            vx_qf = fus_v080["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+            db_f = fus_v080["diarization_benchmarks"]
+            diar_rows.append((
+                f"**{n_vf}-Way 7-Corpus Score Fusion**",
+                "7-Corpus (`24,110`)",
+                vx_qf,
+                db_f["suites"],
+                db_f["macro_averages"],
+            ))
+
+        if diar_rows:
+            min_dvx = min(round(r[2], 2) for r in diar_rows)
+            min_mws = min(round(r[4]["macro_4corpus_within_session"]["qmf"]["eer_percent"], 2) for r in diar_rows)
+            min_mstd = min(round(r[4]["macro_4corpus_standard"]["qmf"]["eer_percent"], 2) for r in diar_rows)
+            min_msh = min(round(r[4]["macro_4corpus_short_turn"]["qmf"]["eer_percent"], 2) for r in diar_rows)
+            for lbl_d, corp_s, vx_q, suites_d, macros_d in diar_rows:
+                vx_s = f"**{f2(vx_q)}%**" if round(vx_q, 2) == min_dvx else f"{f2(vx_q)}%"
+
+                def _c3(c_name: str, sd: dict = suites_d) -> str:
+                    ws_v = sd[f"{c_name}_test_within_session"]["qmf"]["eer_percent"]
+                    st_v = sd[f"{c_name}_test_standard"]["qmf"]["eer_percent"]
+                    sh_v = sd[f"{c_name}_test_short_turn"]["qmf"]["eer_percent"]
+                    return f"{f2(ws_v)}% / {f2(st_v)}% / {f2(sh_v)}%"
+
+                m_ws = macros_d["macro_4corpus_within_session"]["qmf"]["eer_percent"]
+                m_st = macros_d["macro_4corpus_standard"]["qmf"]["eer_percent"]
+                m_sh = macros_d["macro_4corpus_short_turn"]["qmf"]["eer_percent"]
+                m_ws_s = f"**{f2(m_ws)}%**" if round(m_ws, 2) == min_mws else f"{f2(m_ws)}%"
+                m_st_s = f"**{f2(m_st)}%**" if round(m_st, 2) == min_mstd else f"{f2(m_st)}%"
+                m_sh_s = f"**{f2(m_sh)}%**" if round(m_sh, 2) == min_msh else f"{f2(m_sh)}%"
+                out.append(
+                    f"| {lbl_d} | {corp_s} | {vx_s} | "
+                    f"{_c3('fisher')} | {_c3('callhome')} | {_c3('ami')} | {_c3('icsi')} | "
+                    f"{m_ws_s} / {m_st_s} / {m_sh_s} |"
+                )
+        out.append("<!-- END DIARIZATION_SV_TABLE -->\n")
+
+        if abl_v080:
+            out.append("<!-- BEGIN V080_ABLATION_TABLE -->")
+            out.append(
+                "| `v0.8.0` 7-Corpus Adaptation / Hybrid-PFAS Arm | Steps | Trunk Regime | "
+                "VoxCeleb1-O Raw / QMF (%) | CN-Celeb-E Multi-Enroll (%) | "
+                "Fisher WS Raw / QMF (%) | AMI WS Raw / QMF (%) | "
+                "4-Corpus Macro WS / Std / Short QMF (%) |"
+            )
+            out.append("| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: |")
+            v080_arm_specs: list[tuple[str, str, dict]] = []
+            if "xl_diar_adapt_gentle_41k" in abl_v080:
+                v080_arm_specs.append((
+                    "1. `XL-Diar-Adapt` (Gentle `lr=0.012`, `41k` steps)",
+                    "Unfrozen SGD (`lr=0.012`)",
+                    abl_v080["xl_diar_adapt_gentle_41k"],
+                ))
+            if "univ_full_eres2conformer_xl_diar_adapt" in rel_v080:
+                v080_arm_specs.append((
+                    "**2. `XL-Diar-Adapt` (`lr=0.045`, `78k` = `3k + 65k + 10k` Bimodal LMFT) [Released]**",
+                    "3k Head Align + Unfrozen SGD (`0.045`)",
+                    rel_v080["univ_full_eres2conformer_xl_diar_adapt"],
+                ))
+            if "univ_full_eres2conformer_xl_diar" in rel_v080:
+                v080_arm_specs.append((
+                    "3. `XL-Diar` (`162k` = `150k + 12k` 100% From-Scratch) [Released]",
+                    "100% From-Scratch SGD (`lr=0.10`)",
+                    rel_v080["univ_full_eres2conformer_xl_diar"],
+                ))
+            if "xl_diar_pfas_unfrozen_lr002" in abl_v080:
+                v080_arm_specs.append((
+                    "4. `XL-Diar-PFAS` (`trunk_lr_mult=0.02`, `20k` ep.)",
+                    "Jointly Unfrozen AdamW (`0.02×`)",
+                    abl_v080["xl_diar_pfas_unfrozen_lr002"],
+                ))
+            if "xl_diar_pfas_unfrozen_lr0004" in abl_v080:
+                v080_arm_specs.append((
+                    "5. `XL-Diar-PFAS` (`trunk_lr_mult=0.004`, `15k` ep.)",
+                    "Micro-Unfrozen AdamW (`0.004×`)",
+                    abl_v080["xl_diar_pfas_unfrozen_lr0004"],
+                ))
+            if "xl_diar_pfas_frozen_20k_v1" in abl_v080:
+                v080_arm_specs.append((
+                    "6. `XL-Diar-PFAS` (`100%` Frozen on Gentle `41k` trunk, `20k` ep.)",
+                    "100% Frozen Trunk (`trunk_lr=0`)",
+                    abl_v080["xl_diar_pfas_frozen_20k_v1"],
+                ))
+            if "univ_full_eres2conformer_xl_diar_pfas" in rel_v080:
+                v080_arm_specs.append((
+                    "**7. `XL-Diar-PFAS` (`100%` Frozen on `78k` `XL-Diar-Adapt` trunk) [Released]**",
+                    "100% Frozen Trunk (`trunk_lr=0`)",
+                    rel_v080["univ_full_eres2conformer_xl_diar_pfas"],
+                ))
+            for albl, treg, ad in v080_arm_specs:
+                ob_a = ad["official_benchmarks"]
+                vx_a = ob_a["voxceleb1_o"]
+                cn_me_a = ob_a["cnceleb_e"]["multi_enroll_map"].get(
+                    "as_norm", ob_a["cnceleb_e"]["multi_enroll_map"]
+                )["eer_percent"]
+                db_a = ad["diarization_benchmarks"]
+                fs_a = db_a["suites"]["fisher_test_within_session"]
+                am_a = db_a["suites"]["ami_test_within_session"]
+                mc_a = db_a["macro_averages"]
+                out.append(
+                    f"| {albl} | `{int(ad['num_steps']):,}` | {treg} | "
+                    f"{f2(vx_a['eer_percent'])}% / {f2(vx_a['qmf']['eer_percent'])}% | "
+                    f"{f2(cn_me_a)}% | "
+                    f"{f2(fs_a['eer_percent'])}% / {f2(fs_a['qmf']['eer_percent'])}% | "
+                    f"{f2(am_a['eer_percent'])}% / {f2(am_a['qmf']['eer_percent'])}% | "
+                    f"{f2(mc_a['macro_4corpus_within_session']['qmf']['eer_percent'])}% / "
+                    f"{f2(mc_a['macro_4corpus_standard']['qmf']['eer_percent'])}% / "
+                    f"{f2(mc_a['macro_4corpus_short_turn']['qmf']['eer_percent'])}% |"
+                )
+            out.append("<!-- END V080_ABLATION_TABLE -->\n")
     return out
 
 
@@ -814,6 +1012,9 @@ def render_section10_and_11(bench: dict, abl: dict, vox: dict, r2: dict, fps: di
         "univ_full_eres2conformer_large",
         "univ_full_eres2conformer_v2_large",
         "univ_full_eres2conformer_xl",
+        "univ_full_eres2conformer_v2_diar",
+        "univ_full_eres2conformer_xl_diar",
+        "univ_full_eres2conformer_xl_diar_adapt",
         "univ_conformer_small_ge2e",
         "univ_ecapa_tdnn_small_ge2e",
         "univ_lstm_small_ge2e",

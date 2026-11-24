@@ -354,7 +354,7 @@
     "released_initial_loss": 2.1943,
     "head_fixed_step0_loss": 2.1068,
     "head_variable_step0_loss": 2.1943,
-    "fingerprint_code_commit": "8ddb265+dirty",
+    "fingerprint_code_commit": "3db5915+dirty",
     "fingerprint_source": "pretrained_models/step0_fingerprints.json",
     "note": "How the released weights were actually trained. Evaluating the released weights with the current code reproduces the archived metrics; re-training the shipped recipe reproduces the archived step-0 loss only under 'crop_frames'. See README.md 'Training-crop provenance'."
   },

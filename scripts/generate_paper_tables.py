@@ -63,6 +63,10 @@ ALL_FLAGSHIP_ORDER = [
     "univ_full_eres2conformer_v2_pfas",
     "univ_full_eres2conformer_xl_pfas",
     "univ_full_eres2conformer_xl",
+    "univ_full_eres2conformer_v2_diar",
+    "univ_full_eres2conformer_xl_diar",
+    "univ_full_eres2conformer_xl_diar_pfas",
+    "univ_full_eres2conformer_xl_diar_adapt",
 ]
 TFLITE_REPOS = {
     "univ_full_conformer_large_arcface",
@@ -71,6 +75,9 @@ TFLITE_REPOS = {
     "univ_full_eres2conformer_large",
     "univ_full_eres2conformer_v2_large",
     "univ_full_eres2conformer_xl",
+    "univ_full_eres2conformer_v2_diar",
+    "univ_full_eres2conformer_xl_diar",
+    "univ_full_eres2conformer_xl_diar_adapt",
     "univ_conformer_small_ge2e",
     "univ_lstm_small_ge2e",
     "univ_ecapa_tdnn_small_ge2e",
@@ -129,7 +136,13 @@ def d3(e: dict, dom: str) -> dict:
 
 
 def macro(e: dict, n: int) -> dict:
-    return e["multi_domain_eval"][f"universal_macro_avg_{n}utt"]
+    raw_m = dict(e["multi_domain_eval"][f"universal_macro_avg_{n}utt"])
+    dom_map = e["multi_domain_eval"][f"domains_{n}utt"]
+    dom_keys = ("librispeech", "cnceleb2", "voxceleb1")
+    for k_stat in ("min_dcf_001", "min_dcf_01", "roc_auc"):
+        if k_stat not in raw_m and all(k_stat in dom_map.get(d, {}) for d in dom_keys):
+            raw_m[k_stat] = sum(float(dom_map[d][k_stat]) for d in dom_keys) / 3.0
+    return raw_m
 
 
 def bold_max(values: list[float], fmt=f2) -> list[str]:
@@ -179,7 +192,7 @@ def main(paper_dir: str) -> None:
     pfas_sweep = load("pfas_hparam_sweep.json")
 
     ex = bench["experiments"]
-    assert len(ex) in (44, 48, 49, 50, 55), len(ex)
+    assert len(ex) in (44, 48, 49, 50, 55, 58, 59), len(ex)
     controlled_ex = {k: v for k, v in ex.items() if not k.startswith("univ_full_")}
     assert len(controlled_ex) == 44, len(controlled_ex)
     FLAGSHIP_ORDER = [m for m in ALL_FLAGSHIP_ORDER if m in ex]
@@ -306,6 +319,10 @@ def main(paper_dir: str) -> None:
         ("flagVtwoPfas", "univ_full_eres2conformer_v2_pfas"),
         ("flagXl", "univ_full_eres2conformer_xl"),
         ("flagXlPfas", "univ_full_eres2conformer_xl_pfas"),
+        ("flagVtwoDiar", "univ_full_eres2conformer_v2_diar"),
+        ("flagXlDiar", "univ_full_eres2conformer_xl_diar"),
+        ("flagXlDiarPfas", "univ_full_eres2conformer_xl_diar_pfas"),
+        ("flagXlAdapt", "univ_full_eres2conformer_xl_diar_adapt"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ]:
@@ -320,6 +337,19 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("flagshipItems", f"{sm['num_items']:,}"))
     nums.append(macro_def("flagshipShards", str(sm["num_shards"])))
 
+    sm7 = flagship.get("v080_7corpus_shard_metadata", {})
+    if sm7:
+        nums.append(macro_def("sevenCorpSpks", f"{sm7['num_base_speakers']:,}"))
+        nums.append(macro_def("sevenCorpClasses", f"{sm7['num_speakers']:,}"))
+        nums.append(macro_def("sevenCorpUtts", f"{sm7['clean_utterances']:,}"))
+        nums.append(macro_def("sevenCorpItems", f"{sm7['num_items']:,}"))
+        nums.append(macro_def("sevenCorpShards", str(sm7["num_shards"])))
+        nums.append(macro_def("diarSpks", f"{sm7['diarization_base_speakers']:,}"))
+        nums.append(macro_def("diarClasses", f"{sm7['diarization_speed_perturbed_classes']:,}"))
+        nums.append(macro_def("diarUtts", f"{sm7['diarization_clean_turns']:,}"))
+        nums.append(macro_def("diarItems", f"{sm7['diarization_augmented_items']:,}"))
+        nums.append(macro_def("diarShards", str(sm7["diarization_shards"])))
+
     fm = flagship["models"]
     for ftag, fmid in (
         ("flagConf", "univ_full_conformer_large_arcface"),
@@ -331,6 +361,10 @@ def main(paper_dir: str) -> None:
         ("flagVtwoPfas", "univ_full_eres2conformer_v2_pfas"),
         ("flagXl", "univ_full_eres2conformer_xl"),
         ("flagXlPfas", "univ_full_eres2conformer_xl_pfas"),
+        ("flagVtwoDiar", "univ_full_eres2conformer_v2_diar"),
+        ("flagXlDiar", "univ_full_eres2conformer_xl_diar"),
+        ("flagXlDiarPfas", "univ_full_eres2conformer_xl_diar_pfas"),
+        ("flagXlAdapt", "univ_full_eres2conformer_xl_diar_adapt"),
         ("flagPfas", "univ_full_conformer_large_pfas"),
         ("flagDr", "univ_full_conformer_large_dr_vectors"),
     ):
@@ -427,6 +461,72 @@ def main(paper_dir: str) -> None:
     nums.append(macro_def("fusionSixMeCnMultiAuc", f4(fus3["cnceleb_e_multi_enroll_map"]["roc_auc"])))
     nums.append(macro_def("fusionSixMeLsMulti", f2(fus3["librispeech_test_clean_3utt"]["eer_percent"])))
     nums.append(macro_def("fusionSixMeLsMultiAuc", f4(fus3["librispeech_test_clean_3utt"]["roc_auc"])))
+    if "v080_7corpus_official_benchmarks" in fus:
+        fus_v8_m = fus["v080_7corpus_official_benchmarks"]
+        nums.append(macro_def("fusionSevenCorpVoxAsn", f2(fus_v8_m["voxceleb1_o"]["eer_percent"])))
+        nums.append(macro_def("fusionSevenCorpVoxQmf", f2(fus_v8_m["voxceleb1_o"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionSevenCorpCnQmf", f2(fus_v8_m["cnceleb_e"]["qmf"]["eer_percent"])))
+        nums.append(macro_def("fusionSevenCorpLsQmf", f2(fus_v8_m["librispeech_test_clean"]["qmf"]["eer_percent"])))
+    if "v080_7corpus_multi_enroll_fusion" in fus:
+        fus_v8_me = fus["v080_7corpus_multi_enroll_fusion"]
+        nums.append(macro_def("fusionSevenCorpCnMulti", f2(fus_v8_me["cnceleb_e_multi_enroll_map"]["eer_percent"])))
+        nums.append(macro_def("fusionSevenCorpLsMulti", f2(fus_v8_me["librispeech_test_clean_3utt"]["eer_percent"])))
+
+    v080_abl_path = os.path.join(PM, "v080_diarization_ablation_results.json")
+    v080_abl = None
+    if os.path.isfile(v080_abl_path):
+        with open(v080_abl_path, "r", encoding="utf-8") as f:
+            v080_abl = json.load(f)
+
+        def _add_diar_macros(dtag: str, db_d: dict) -> None:
+            sd = db_d["suites"]
+            md = db_d["macro_averages"]
+            nums.append(macro_def(dtag + "FisherWsRaw", f2(sd["fisher_test_within_session"]["eer_percent"])))
+            nums.append(macro_def(dtag + "FisherWsQmf", f2(sd["fisher_test_within_session"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "FisherStdQmf", f2(sd["fisher_test_standard"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "FisherShortQmf", f2(sd["fisher_test_short_turn"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "CallhomeWsQmf", f2(sd["callhome_test_within_session"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "CallhomeStdQmf", f2(sd["callhome_test_standard"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "CallhomeShortQmf", f2(sd["callhome_test_short_turn"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "AmiWsRaw", f2(sd["ami_test_within_session"]["eer_percent"])))
+            nums.append(macro_def(dtag + "AmiWsQmf", f2(sd["ami_test_within_session"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "AmiStdQmf", f2(sd["ami_test_standard"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "AmiShortQmf", f2(sd["ami_test_short_turn"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "IcsiWsQmf", f2(sd["icsi_test_within_session"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "IcsiStdQmf", f2(sd["icsi_test_standard"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "IcsiShortQmf", f2(sd["icsi_test_short_turn"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "MacroWsRaw", f2(md["macro_4corpus_within_session"]["eer_percent"])))
+            nums.append(macro_def(dtag + "MacroWsAsn", f2(md["macro_4corpus_within_session"]["as_norm"]["eer_percent"])))
+            nums.append(macro_def(dtag + "MacroWsQmf", f2(md["macro_4corpus_within_session"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "MacroStdRaw", f2(md["macro_4corpus_standard"]["eer_percent"])))
+            nums.append(macro_def(dtag + "MacroStdQmf", f2(md["macro_4corpus_standard"]["qmf"]["eer_percent"])))
+            nums.append(macro_def(dtag + "MacroShortRaw", f2(md["macro_4corpus_short_turn"]["eer_percent"])))
+            nums.append(macro_def(dtag + "MacroShortQmf", f2(md["macro_4corpus_short_turn"]["qmf"]["eer_percent"])))
+
+        zs_map = v080_abl.get("v070_zero_shot_models", {})
+        for ztag, zmid in (
+            ("zsEcapa", "univ_full_ecapa_c1024_arcface"),
+            ("zsResnet", "univ_full_resnet34_arcface"),
+            ("zsEres", "univ_full_eres2conformer_large"),
+            ("zsVtwo", "univ_full_eres2conformer_v2_large"),
+            ("zsVtwoPfas", "univ_full_eres2conformer_v2_pfas"),
+            ("zsXl", "univ_full_eres2conformer_xl"),
+            ("zsXlPfas", "univ_full_eres2conformer_xl_pfas"),
+        ):
+            if zmid in zs_map:
+                _add_diar_macros(ztag, zs_map[zmid]["diarization_benchmarks"])
+        rel_map = v080_abl.get("v080_released_flagships", {})
+        for rtag, rmid in (
+            ("flagVtwoDiar", "univ_full_eres2conformer_v2_diar"),
+            ("flagXlDiar", "univ_full_eres2conformer_xl_diar"),
+            ("flagXlDiarPfas", "univ_full_eres2conformer_xl_diar_pfas"),
+            ("flagXlAdapt", "univ_full_eres2conformer_xl_diar_adapt"),
+        ):
+            if rmid in rel_map:
+                _add_diar_macros(rtag, rel_map[rmid]["diarization_benchmarks"])
+        fus_d_map = v080_abl.get("v080_7corpus_fusion", {})
+        if "diarization_benchmarks" in fus_d_map:
+            _add_diar_macros("fusionSevenCorp", fus_d_map["diarization_benchmarks"])
 
     v070_abl_path = os.path.join(PM, "v070_ablation_results.json")
     v070_abl = None
@@ -770,6 +870,9 @@ def main(paper_dir: str) -> None:
         ("tfliteEres", "univ_full_eres2conformer_large"),
         ("tfliteVtwo", "univ_full_eres2conformer_v2_large"),
         ("tfliteXl", "univ_full_eres2conformer_xl"),
+        ("tfliteVtwoDiar", "univ_full_eres2conformer_v2_diar"),
+        ("tfliteXlDiar", "univ_full_eres2conformer_xl_diar"),
+        ("tfliteXlAdapt", "univ_full_eres2conformer_xl_diar_adapt"),
     ):
         fte = ex.get(fmid, {}).get("tflite_eval", {})
         if fte:
@@ -991,6 +1094,8 @@ def main(paper_dir: str) -> None:
             fus_cands.append(fus["four_way_backbone_official_benchmarks"])
         if "six_way_cosine_official_benchmarks" in fus and "univ_full_eres2conformer_xl" in fm:
             fus_cands.append(fus["six_way_cosine_official_benchmarks"])
+        if "v080_7corpus_official_benchmarks" in fus:
+            fus_cands.append(fus["v080_7corpus_official_benchmarks"])
         min_f_vx_as = min(round(fc["voxceleb1_o"]["eer_percent"], 2) for fc in fus_cands)
         min_f_vx_qmf = min(round(fc["voxceleb1_o"]["qmf"]["eer_percent"], 2) for fc in fus_cands)
         min_f_vx_dcf_as = min(round(fc["voxceleb1_o"]["min_dcf_001"], 4) for fc in fus_cands)
@@ -1060,6 +1165,27 @@ def main(paper_dir: str) -> None:
             f"{f_lbl} & $\\le$1.71 & {all_act_params:.2f} & --- & "
             f"{t5_vx} & {t5_dcf} & {t5_cn} & {t5_ls} & --- \\\\"
         )
+        if "v080_7corpus_official_benchmarks" in fus:
+            fus_v8 = fus["v080_7corpus_official_benchmarks"]
+            v8_mids = fus.get("v080_7corpus_models", [])
+            pv8_m = sum(int(fm[m]["num_parameters"]) for m in v8_mids if m in fm) / 1e6
+            tv8_vx, tv8_dcf, tv8_cn, tv8_ls = fmt_tex_fus(fus_v8)
+            if "v080_7corpus_multi_enroll_fusion" in fus:
+                v8_me = fus["v080_7corpus_multi_enroll_fusion"]
+                v8_cn_me = v8_me["cnceleb_e_multi_enroll_map"]["eer_percent"]
+                v8_ls_me = v8_me["librispeech_test_clean_3utt"]["eer_percent"]
+                v8_cq = fus_v8["cnceleb_e"]["qmf"]["eer_percent"]
+                v8_lq = fus_v8["librispeech_test_clean"]["qmf"]["eer_percent"]
+                v8_cq_s = f"\\textbf{{{f2(v8_cq)}}}" if round(v8_cq, 2) == min_f_cn_qmf else f2(v8_cq)
+                v8_lq_s = f"\\textbf{{{f2(v8_lq)}}}" if round(v8_lq, 2) == min_f_ls_qmf and round(v8_lq, 2) <= min_ls_qmf else f2(v8_lq)
+                v8_cn_me_s = f"\\textbf{{{f2(v8_cn_me)}}}" if round(v8_cn_me, 2) <= min_cn_me else f2(v8_cn_me)
+                v8_ls_me_s = f"\\textbf{{{f2(v8_ls_me)}}}" if round(v8_ls_me, 2) <= min_ls_3 else f2(v8_ls_me)
+                tv8_cn = f"---/{v8_cq_s}/{v8_cn_me_s}"
+                tv8_ls = f"---/{v8_lq_s}/{v8_ls_me_s}"
+            flines.append(
+                f"{len(v8_mids)}-Way 7-Corpus (Diar + HybPFAS) & 2.48 & {pv8_m:.2f} & --- & "
+                f"{tv8_vx} & {tv8_dcf} & {tv8_cn} & {tv8_ls} & --- \\\\"
+            )
     else:
         flines.append(
             f"2-Way Fusion (Conf-L + ECAPA) & 0.46 & {p2_m:.2f} & --- & "
@@ -1485,6 +1611,9 @@ def main(paper_dir: str) -> None:
         "univ_full_eres2conformer_large",
         "univ_full_eres2conformer_v2_large",
         "univ_full_eres2conformer_xl",
+        "univ_full_eres2conformer_v2_diar",
+        "univ_full_eres2conformer_xl_diar",
+        "univ_full_eres2conformer_xl_diar_adapt",
     ):
         te = ex.get(fmid, {}).get("tflite_eval", {})
         if te:
@@ -1625,6 +1754,156 @@ def main(paper_dir: str) -> None:
         + "\n".join(mlines) + "\n\\bottomrule\n\\end{tabular}\n"
     )
     emit(os.path.join(out_dir, "table_matched_data.tex"), tbl)
+
+    # ------------------------------------ Table: Diarization SV (main + appendix)
+    if v080_abl is not None:
+        zs_m = v080_abl.get("v070_zero_shot_models", {})
+        rel_m = v080_abl.get("v080_released_flagships", {})
+        fus_m = v080_abl.get("v080_7corpus_fusion", {})
+        abl_m = v080_abl.get("v080_controlled_ablations", {})
+
+        d_entries: list[tuple[str, str, float, dict, dict, bool]] = []
+        for zlbl, zmid in (
+            ("ECAPA-c1024 (ZS)", "univ_full_ecapa_c1024_arcface"),
+            ("ResNet-34 (ZS)", "univ_full_resnet34_arcface"),
+            ("ERes2Conf-L (ZS)", "univ_full_eres2conformer_large"),
+            ("ERes2Conf-V2 (ZS)", "univ_full_eres2conformer_v2_large"),
+            ("ERes2Conf-V2-PFAS (ZS)", "univ_full_eres2conformer_v2_pfas"),
+            ("ERes2Conf-XL-PFAS (ZS)", "univ_full_eres2conformer_xl_pfas"),
+            ("ERes2Conf-XL (ZS)", "univ_full_eres2conformer_xl"),
+        ):
+            if zmid in zs_m and zmid in fm:
+                d_entries.append((
+                    f"\\href{{https://huggingface.co/wq2012/{zmid}}}{{{zlbl}}}",
+                    "3 (12.2k)",
+                    fm[zmid]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"],
+                    zs_m[zmid]["diarization_benchmarks"]["suites"],
+                    zs_m[zmid]["diarization_benchmarks"]["macro_averages"],
+                    False,
+                ))
+        for rlbl, rmid in (
+            ("eres2conformer\\_v2\\_diar$^{\\dagger}$", "univ_full_eres2conformer_v2_diar"),
+            ("eres2conformer\\_xl\\_diar$^{\\dagger}$", "univ_full_eres2conformer_xl_diar"),
+            ("eres2conformer\\_xl\\_diar\\_pfas", "univ_full_eres2conformer_xl_diar_pfas"),
+            ("eres2conformer\\_xl\\_diar\\_adapt$^{\\dagger}$", "univ_full_eres2conformer_xl_diar_adapt"),
+        ):
+            if rmid in rel_m:
+                d_entries.append((
+                    f"\\href{{https://huggingface.co/wq2012/{rmid}}}{{\\texttt{{{rlbl}}}}}",
+                    "7 (24.1k)",
+                    rel_m[rmid]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"],
+                    rel_m[rmid]["diarization_benchmarks"]["suites"],
+                    rel_m[rmid]["diarization_benchmarks"]["macro_averages"],
+                    True,
+                ))
+        if fus_m and "diarization_benchmarks" in fus_m:
+            nf_v8 = len(fus_m.get("models", []))
+            d_entries.append((
+                f"{nf_v8}-Way 7-Corpus Score Fusion",
+                "7 (24.1k)",
+                fus_m["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"],
+                fus_m["diarization_benchmarks"]["suites"],
+                fus_m["diarization_benchmarks"]["macro_averages"],
+                True,
+            ))
+
+        if d_entries:
+            min_dvx = min(round(e[2], 2) for e in d_entries)
+            min_fws = min(round(e[3]["fisher_test_within_session"]["qmf"]["eer_percent"], 2) for e in d_entries)
+            min_cws = min(round(e[3]["callhome_test_within_session"]["qmf"]["eer_percent"], 2) for e in d_entries)
+            min_aws = min(round(e[3]["ami_test_within_session"]["qmf"]["eer_percent"], 2) for e in d_entries)
+            min_iws = min(round(e[3]["icsi_test_within_session"]["qmf"]["eer_percent"], 2) for e in d_entries)
+            min_mws = min(round(e[4]["macro_4corpus_within_session"]["qmf"]["eer_percent"], 2) for e in d_entries)
+            min_mst = min(round(e[4]["macro_4corpus_standard"]["qmf"]["eer_percent"], 2) for e in d_entries)
+            min_msh = min(round(e[4]["macro_4corpus_short_turn"]["qmf"]["eer_percent"], 2) for e in d_entries)
+
+            dlines_tex = []
+            prev_is_v8 = False
+            for idx_e, (elbl, ecorp, evx, esd, emd, is_v8) in enumerate(d_entries):
+                if idx_e > 0 and is_v8 and not prev_is_v8:
+                    dlines_tex.append("\\midrule")
+                if elbl.endswith("Score Fusion"):
+                    dlines_tex.append("\\midrule")
+                prev_is_v8 = is_v8
+
+                def _bcell(v: float, mv: float) -> str:
+                    return f"\\textbf{{{f2(v)}}}" if round(v, 2) == mv else f2(v)
+
+                def _corp_cell(cn: str, mws_c: float, sd_c: dict = esd) -> str:
+                    w_v = sd_c[f"{cn}_test_within_session"]["qmf"]["eer_percent"]
+                    s_v = sd_c[f"{cn}_test_standard"]["qmf"]["eer_percent"]
+                    h_v = sd_c[f"{cn}_test_short_turn"]["qmf"]["eer_percent"]
+                    return f"{_bcell(w_v, mws_c)}/{f2(s_v)}/{f2(h_v)}"
+
+                m_ws = emd["macro_4corpus_within_session"]["qmf"]["eer_percent"]
+                m_st = emd["macro_4corpus_standard"]["qmf"]["eer_percent"]
+                m_sh = emd["macro_4corpus_short_turn"]["qmf"]["eer_percent"]
+                dlines_tex.append(
+                    f"{elbl} & {ecorp} & {_bcell(evx, min_dvx)} & "
+                    f"{_corp_cell('fisher', min_fws)} & {_corp_cell('callhome', min_cws)} & "
+                    f"{_corp_cell('ami', min_aws)} & {_corp_cell('icsi', min_iws)} & "
+                    f"{_bcell(m_ws, min_mws)}/{_bcell(m_st, min_mst)}/{_bcell(m_sh, min_msh)} \\\\"
+                )
+            dtbl = (
+                "\\begin{tabular}{@{}lccccccc@{}}\n\\toprule\n"
+                "\\textbf{Model / Regime} & \\textbf{Corp.\\ (Spk)} & \\textbf{Vox1-O} & "
+                "\\textbf{Fisher} & \\textbf{CallHome} & \\textbf{AMI} & \\textbf{ICSI} & "
+                "\\textbf{4-Corpus Macro} \\\\\n"
+                " & & (QMF) & (WS/Std/Sh) & (WS/Std/Sh) & (WS/Std/Sh) & (WS/Std/Sh) & (WS/Std/Sh QMF) \\\\\n\\midrule\n"
+                + "\n".join(dlines_tex) + "\n\\bottomrule\n\\end{tabular}\n"
+            )
+            emit(os.path.join(out_dir, "table_diarization_sv.tex"), dtbl)
+
+        if abl_m:
+            da_specs: list[tuple[str, str, dict]] = []
+            if "xl_diar_adapt_gentle_41k" in abl_m:
+                da_specs.append(("1.\\ XL-Diar-Adapt (Gentle LR $0.012$, $41$k)", "Unfrozen SGD ($0.012$)", abl_m["xl_diar_adapt_gentle_41k"]))
+            if "univ_full_eres2conformer_xl_diar_adapt" in rel_m:
+                da_specs.append(("2.\\ XL-Diar-Adapt (LR $0.045$, $78$k)$^{\\star}$", "3k Align + SGD ($0.045$)", rel_m["univ_full_eres2conformer_xl_diar_adapt"]))
+            if "univ_full_eres2conformer_xl_diar" in rel_m:
+                da_specs.append(("3.\\ XL-Diar ($162$k From-Scratch)$^{\\star}$", "Scratch SGD ($0.10$)", rel_m["univ_full_eres2conformer_xl_diar"]))
+            if "xl_diar_pfas_unfrozen_lr002" in abl_m:
+                da_specs.append(("4.\\ XL-Diar-PFAS (Unfrozen $0.02\\times$, $20$k)", "Joint AdamW ($0.02\\times$)", abl_m["xl_diar_pfas_unfrozen_lr002"]))
+            if "xl_diar_pfas_unfrozen_lr0004" in abl_m:
+                da_specs.append(("5.\\ XL-Diar-PFAS (Unfrozen $0.004\\times$, $15$k)", "Joint AdamW ($0.004\\times$)", abl_m["xl_diar_pfas_unfrozen_lr0004"]))
+            if "xl_diar_pfas_frozen_20k_v1" in abl_m:
+                da_specs.append(("6.\\ XL-Diar-PFAS (Frozen on $41$k trunk, $20$k)", "100\\% Frozen Trunk", abl_m["xl_diar_pfas_frozen_20k_v1"]))
+            if "univ_full_eres2conformer_xl_diar_pfas" in rel_m:
+                da_specs.append(("7.\\ XL-Diar-PFAS (Frozen on $78$k trunk)$^{\\star}$", "100\\% Frozen Trunk", rel_m["univ_full_eres2conformer_xl_diar_pfas"]))
+            if da_specs:
+                dalines = []
+                min_davx = min(round(x[2]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"], 2) for x in da_specs)
+                min_daws = min(round(x[2]["diarization_benchmarks"]["macro_averages"]["macro_4corpus_within_session"]["qmf"]["eer_percent"], 2) for x in da_specs)
+                min_dash = min(round(x[2]["diarization_benchmarks"]["macro_averages"]["macro_4corpus_short_turn"]["qmf"]["eer_percent"], 2) for x in da_specs)
+                for dalbl, dareg, dad in da_specs:
+                    vx_da = dad["official_benchmarks"]["voxceleb1_o"]
+                    cn_da = dad["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"].get(
+                        "as_norm", dad["official_benchmarks"]["cnceleb_e"]["multi_enroll_map"]
+                    )["eer_percent"]
+                    sd_da = dad["diarization_benchmarks"]["suites"]
+                    md_da = dad["diarization_benchmarks"]["macro_averages"]
+                    vq_da = vx_da["qmf"]["eer_percent"]
+                    mws_da = md_da["macro_4corpus_within_session"]["qmf"]["eer_percent"]
+                    mst_da = md_da["macro_4corpus_standard"]["qmf"]["eer_percent"]
+                    msh_da = md_da["macro_4corpus_short_turn"]["qmf"]["eer_percent"]
+                    vq_s = f"\\textbf{{{f2(vq_da)}}}" if round(vq_da, 2) == min_davx else f2(vq_da)
+                    mws_s = f"\\textbf{{{f2(mws_da)}}}" if round(mws_da, 2) == min_daws else f2(mws_da)
+                    msh_s = f"\\textbf{{{f2(msh_da)}}}" if round(msh_da, 2) == min_dash else f2(msh_da)
+                    dalines.append(
+                        f"{dalbl} & {dareg} & {f2(vx_da['eer_percent'])}/{vq_s} & {f2(cn_da)} & "
+                        f"{f2(sd_da['fisher_test_within_session']['eer_percent'])}/{f2(sd_da['fisher_test_within_session']['qmf']['eer_percent'])} & "
+                        f"{f2(sd_da['ami_test_within_session']['eer_percent'])}/{f2(sd_da['ami_test_within_session']['qmf']['eer_percent'])} & "
+                        f"{mws_s}/{f2(mst_da)}/{msh_s} \\\\"
+                    )
+                datbl = (
+                    "\\begin{tabular}{@{}llccccc@{}}\n\\toprule\n"
+                    "\\textbf{7-Corpus Adaptation / Hybrid-PFAS Arm} & \\textbf{Trunk Regime} & "
+                    "\\textbf{Vox1-O} & \\textbf{CN-E} & \\textbf{Fisher WS} & \\textbf{AMI WS} & "
+                    "\\textbf{4-Corpus Macro} \\\\\n"
+                    " & & (Raw/QMF) & (Multi) & (Raw/QMF) & (Raw/QMF) & (WS/Std/Sh QMF) \\\\\n\\midrule\n"
+                    + "\n".join(dalines) + "\n\\bottomrule\n\\end{tabular}\n"
+                )
+                emit(os.path.join(out_dir, "table_diarization_ablation.tex"), datbl)
 
     print(f"Wrote generated LaTeX to {out_dir}")
     print(f"  Spearman(pooled, Vox1-O subset) = {rho:.3f} (p={pval:.3e}); Spearman(in-VOX, Vox1-O) = {rho_v:.3f} (p={pval_v:.3e})")

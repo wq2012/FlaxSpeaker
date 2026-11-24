@@ -682,8 +682,8 @@ class TestExportAndHuggingFaceCompat(TestBase):
         from unittest import mock
 
         self.assertEqual(len(hf_compat.CONTROLLED_ABLATION_MODEL_IDS), 44)
-        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 11)
-        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 55)
+        self.assertEqual(len(hf_compat.FULL_DATA_FLAGSHIP_IDS), 15)
+        self.assertEqual(len(hf_compat.PRETRAINED_MODEL_IDS), 59)
         self.assertEqual(
             hf_compat.HF_COLLECTION_URL,
             "https://huggingface.co/collections/wq2012/flaxspeaker",
@@ -1959,9 +1959,9 @@ class TestPhase2ConvergedDeliverables(unittest.TestCase):
         with open(os.path.join(pm, "benchmark_results.json"), "r", encoding="utf-8") as f:
             bench = json.load(f)
 
-        self.assertIn(len(bench["experiments"]), (44, 48, 49, 50, 54, 55))
+        self.assertIn(len(bench["experiments"]), (44, 48, 49, 50, 54, 55, 57, 58, 59))
         self.assertIn(
-            len(bench.get("tflite_exports", {})), (12, 14, 16, 18, 20, 22, 24)
+            len(bench.get("tflite_exports", {})), (12, 14, 16, 18, 20, 22, 24, 26, 28, 30)
         )
 
         vox_ds = bench["datasets"]["voxceleb1"]
@@ -3367,6 +3367,72 @@ class TestV070Innovations(unittest.TestCase):
             self.assertIn("as_norm", eval_payload["trials_1utt"])
             self.assertIn("qmf", eval_payload["trials_1utt"])
             self.assertIn("as_norm", eval_payload["trials_multi_enroll"])
+
+    def test_diarization_prep_overlap_subtraction_and_trial_builder(self):
+        import json
+        import subprocess
+        import sys
+        import tempfile
+
+        from flaxspeaker import diarization_prep
+
+        # Speaker A speaks [0.0, 10.0], Speaker B overlaps backchannel at [4.0, 4.5]
+        # and speaks solo at [11.0, 14.5], plus Speaker A speaks [10.2, 10.7] (short gap 0.2s).
+        turns = [
+            diarization_prep.SpeakerTurn(0.0, 10.0, "spkA", session_id="s1"),
+            diarization_prep.SpeakerTurn(4.0, 4.5, "spkB", session_id="s1"),
+            diarization_prep.SpeakerTurn(10.2, 11.8, "spkA", session_id="s1"),
+            diarization_prep.SpeakerTurn(12.2, 15.0, "spkB", session_id="s1"),
+        ]
+        cfg = diarization_prep.DiarizationCropConfig(
+            overlap_collar_sec=0.10,
+            max_merge_gap_sec=0.30,
+            min_duration_sec=0.80,
+            max_duration_sec=6.00,
+            window_hop_sec=5.00,
+        )
+        segs = diarization_prep.extract_clean_speaker_segments(
+            turns, config=cfg, session_id_override="s1", audio_duration_sec=16.0
+        )
+        # Verify no cropped segment intersects the collared overlap [3.9, 4.6]
+        for seg in segs:
+            self.assertFalse(seg.start_sec < 4.599 and seg.end_sec > 3.901)
+            self.assertGreaterEqual(seg.duration_sec, 0.80 - 1e-4)
+            self.assertLessEqual(seg.duration_sec, 6.00 + 1e-4)
+
+        # Verify 8 kHz -> 16 kHz polyphase resampling and silence gate
+        sr_in = 8000
+        t_vec = np.arange(16 * sr_in, dtype=np.float32) / float(sr_in)
+        wav_8k = (0.3 * np.sin(2.0 * np.pi * 220.0 * t_vec)).astype(np.float32)
+        cropped = diarization_prep.crop_waveform_segments(wav_8k, sr_in, segs, config=cfg)
+        self.assertEqual(len(cropped), len(segs))
+        for seg_spec, arr in cropped:
+            self.assertAlmostEqual(
+                arr.shape[0] / 16000.0, seg_spec.duration_sec, delta=0.02
+            )
+
+        # End-to-end synthetic diarization CLI test (RTTM parsing + disjoint SV trials)
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        with tempfile.TemporaryDirectory() as tmpd:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    os.path.join(repo_root, "scripts", "prepare_diarization_dataset.py"),
+                    "--generate_synthetic",
+                    "--output_dir",
+                    tmpd,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr + "\n" + proc.stdout)
+            summary = json.loads(proc.stdout)
+            self.assertTrue(summary["zero_speaker_overlap"])
+            self.assertGreater(summary["train_segments"], 0)
+            self.assertGreater(summary["eval_segments"], 0)
+            self.assertIn("within_session", summary["trial_counts"])
+            self.assertIn("standard", summary["trial_counts"])
 
 
 if __name__ == "__main__":

@@ -520,7 +520,26 @@ def warm_start_from_checkpoint(
                     src_v, dtype=flat_target[pfas_k].dtype
                 )
                 copied += 1
-    new_params = flax.traverse_util.unflatten_dict(flat_target, sep=".")
+    new_params = dict(flax.traverse_util.unflatten_dict(flat_target, sep="."))
+    if (
+        isinstance(src_params, dict)
+        and "_aux_class_weights" in src_params
+        and "_aux_class_weights" in new_params
+    ):
+        src_cw = np.asarray(src_params["_aux_class_weights"])
+        tgt_cw = new_params["_aux_class_weights"]
+        if (
+            src_cw.ndim == 2
+            and tgt_cw.ndim == 2
+            and src_cw.shape[0] == tgt_cw.shape[0]
+            and src_cw.shape[1] <= tgt_cw.shape[1]
+        ):
+            new_params["_aux_class_weights"] = (
+                jnp.asarray(tgt_cw)
+                .at[:, : int(src_cw.shape[1])]
+                .set(jnp.asarray(src_cw, dtype=tgt_cw.dtype))
+            )
+            copied += 1
 
     new_bs = state.batch_stats
     if state.batch_stats and src_bs:

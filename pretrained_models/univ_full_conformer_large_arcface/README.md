@@ -35,7 +35,7 @@ metrics:
 > - **ATP** (pooling head repurposed from a *language identification* paper): *Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech* ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163))
 > - **PFAS**: *Parameter-Free Attentive Scoring for Speaker Verification* ([arXiv:2203.05642](https://arxiv.org/abs/2203.05642))
 >
-> The original papers were run on Google-internal infrastructure and data; this checkpoint is a **full-data open-corpus universal flagship** trained on **12,193 speakers (464,557 clean utterances + MUSAN/RIR/speed augmentation)** across VoxCeleb2-dev, VoxCeleb1-dev, CN-Celeb 1+2, and LibriSpeech 960h with zero speaker overlap against official evaluation sets.
+> The original papers were run on Google-internal infrastructure and data; this checkpoint is a **full-data open-corpus universal flagship** trained on **12,193 speakers (464,557 clean utterances + MUSAN/RIR/speed augmentation)** across VoxCeleb2-dev, VoxCeleb1-dev, CN-Celeb 1+2, and LibriSpeech 960h with zero speaker overlap against held-out evaluation sets.
 
 ## Training Budget (read this first)
 
@@ -75,7 +75,7 @@ This flagship model was trained for **81,000 gradient steps** (warmup `3000` ste
 
 ### Python API (from Hugging Face Hub or Local Directory)
 
-Requires `flaxspeaker >= 0.7.0` (`pip install -U flaxspeaker`).
+Requires `flaxspeaker >= 0.8.0` (`pip install -U flaxspeaker`).
 
 ```python
 from flaxspeaker import load_pretrained

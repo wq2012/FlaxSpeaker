@@ -208,11 +208,11 @@ class TFLiteSpeakerRunner:
     def __init__(self, tflite_path: str):
         self.tflite_path = tflite_path
         try:
-            from ai_edge_litert import interpreter as litert_interpreter
+            from ai_edge_litert import interpreter as litert_interpreter  # pytype: disable=import-error
 
             self.interpreter = litert_interpreter.Interpreter(model_path=tflite_path)
         except ImportError:
-            import tensorflow as tf
+            import tensorflow as tf  # pytype: disable=import-error
 
             self.interpreter = tf.lite.Interpreter(model_path=tflite_path)
         self.interpreter.allocate_tensors()

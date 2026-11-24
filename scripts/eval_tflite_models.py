@@ -5,7 +5,7 @@ Supports both:
   - Tier-1 controlled models (`TFLITE_TIER1_MODEL_IDS`, 6 models): evaluated on
     `librispeech` (3,000 trials), `cnceleb2` (3,000 trials), `voxceleb1` (2,000 trials),
     and `universal_pooled` (8,000 trials).
-  - Tier-2 full-data flagship models (`TFLITE_TIER2_MODEL_IDS`, 4 models): evaluated on
+  - Tier-2 full-data flagship models (`TFLITE_TIER2_MODEL_IDS`, 9 models): evaluated on
     the official 40-speaker `VoxCeleb1-O` benchmark (`37,611` trials, `4,708` unique
     utterances, 180-frame center crop), plus `cos(Flax, FP32)` and `cos(Flax, INT8)`.
 
@@ -55,6 +55,9 @@ TFLITE_TIER2_MODEL_IDS = (
     "univ_full_eres2conformer_large",
     "univ_full_eres2conformer_v2_large",
     "univ_full_eres2conformer_xl",
+    "univ_full_eres2conformer_v2_diar",
+    "univ_full_eres2conformer_xl_diar",
+    "univ_full_eres2conformer_xl_diar_adapt",
 )
 
 TFLITE_MODEL_IDS = TFLITE_TIER1_MODEL_IDS + TFLITE_TIER2_MODEL_IDS

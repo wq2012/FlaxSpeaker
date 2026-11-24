@@ -1,6 +1,6 @@
 {
-  "timestamp_utc": "2026-11-22T10:49:24.378107+00:00",
-  "code_commit": "8ddb265+dirty",
+  "timestamp_utc": "2026-11-24T12:57:18.689200+00:00",
+  "code_commit": "3db5915+dirty",
   "tolerance": 5e-05,
   "description": "Step-0 training loss at the released seed from the released YAML, under fixed seq_len crops (head_fixed) and U(min_seq_len, seq_len) crops (head_variable), compared with eval_results.json initial_loss.",
   "checkpoints": {
@@ -1744,12 +1744,136 @@
       "abs_diff_fixed": 0.0275,
       "abs_diff_variable": 0.0004,
       "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_v2_diar": {
+      "train_dataset": "universal_7corpus_diar",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 220,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 14.246,
+      "head_fixed": 14.2647,
+      "head_fixed_raw": 14.264663,
+      "head_fixed_valid_frames_first4": [
+        171,
+        220,
+        105,
+        220
+      ],
+      "head_fixed_probe_sec": 142.6,
+      "head_variable": 14.2432,
+      "head_variable_raw": 14.243154,
+      "head_variable_valid_frames_first4": [
+        171,
+        168,
+        105,
+        160
+      ],
+      "head_variable_probe_sec": 122.4,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0187,
+      "abs_diff_variable": 0.0028,
+      "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_xl_diar_adapt": {
+      "train_dataset": "universal_7corpus_diar",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 220,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 14.3797,
+      "head_fixed": 14.4202,
+      "head_fixed_raw": 14.420229,
+      "head_fixed_valid_frames_first4": [
+        171,
+        220,
+        105,
+        220
+      ],
+      "head_fixed_probe_sec": 181.1,
+      "head_variable": 14.3801,
+      "head_variable_raw": 14.380093,
+      "head_variable_valid_frames_first4": [
+        171,
+        168,
+        105,
+        160
+      ],
+      "head_variable_probe_sec": 163.7,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0405,
+      "abs_diff_variable": 0.0004,
+      "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_xl_diar_pfas": {
+      "train_dataset": "universal_7corpus_diar",
+      "loss_type": "extended_set_softmax",
+      "seed": 42,
+      "seq_len": 240,
+      "min_seq_len": 168,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 0.136,
+      "head_fixed": 0.1536,
+      "head_fixed_raw": 0.153628,
+      "head_fixed_valid_frames_first4": [
+        193,
+        39,
+        240,
+        240
+      ],
+      "head_fixed_probe_sec": 184.2,
+      "head_variable": 0.1361,
+      "head_variable_raw": 0.136142,
+      "head_variable_valid_frames_first4": [
+        185,
+        39,
+        181,
+        215
+      ],
+      "head_variable_probe_sec": 177.9,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0176,
+      "abs_diff_variable": 0.0001,
+      "match": "variable_approx"
+    },
+    "univ_full_eres2conformer_xl_diar": {
+      "train_dataset": "universal_7corpus_diar",
+      "loss_type": "subcenter_arcface",
+      "seed": 42,
+      "seq_len": 220,
+      "min_seq_len": 90,
+      "yaml_variable_length_training": true,
+      "released_initial_loss": 12.4283,
+      "head_fixed": 12.5042,
+      "head_fixed_raw": 12.504189,
+      "head_fixed_valid_frames_first4": [
+        220,
+        170,
+        220,
+        220
+      ],
+      "head_fixed_probe_sec": 393.8,
+      "head_variable": 12.4294,
+      "head_variable_raw": 12.429434,
+      "head_variable_valid_frames_first4": [
+        138,
+        162,
+        137,
+        188
+      ],
+      "head_variable_probe_sec": 370.9,
+      "legacy_lambda_used": false,
+      "abs_diff_fixed": 0.0759,
+      "abs_diff_variable": 0.0011,
+      "match": "variable_approx"
     }
   },
   "histogram": {
     "both_approx": 1,
     "variable": 44,
-    "variable_approx": 10
+    "variable_approx": 14
   },
-  "num_checkpoints": 55
+  "num_checkpoints": 59
 }

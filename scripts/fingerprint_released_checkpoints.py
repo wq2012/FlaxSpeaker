@@ -106,8 +106,11 @@ def first_step_loss(
     specaug_prob: float = 0.60,
     shuffled_30_57_dir: str | None = None,
     extra_shard_dirs: list[str] | None = None,
+    diar_shard_dirs: list[str] | None = None,
     max_total_shards: int = 0,
-    dom_probs: tuple[float, float, float] = (0.45, 0.32, 0.23),
+    dom_probs: tuple[float, ...] = (0.45, 0.32, 0.23),
+    phase_seed: int | None = None,
+    aux_prefix_ckpt: str | None = None,
 ) -> tuple[float, list[int]]:
     """One training step at ``cfg.train.seed``; returns (loss, valid frames of first utts)."""
     loss_type = cfg.train.loss.loss_type
@@ -117,7 +120,9 @@ def first_step_loss(
         if getattr(cfg.data, "sharded_cache_dir", "")
         else ""
     )
-    use_base_only = (not is_cls) and (cfg.data.dataset_name != "universal_full")
+    use_base_only = (not is_cls) and (
+        cfg.data.dataset_name not in ("universal_full", "universal_7corpus_diar")
+    )
     shard_store = (
         shard_cache.ShardedFeatureStore(resolved_shard, base_speakers_only=use_base_only)
         if (
@@ -130,71 +135,89 @@ def first_step_loss(
         import jax
         import jax.numpy as jnp
 
-        win = shard_cache.WindowedMultiDomainSampler(
-            shard_store,
-            shard_budget=shard_budget,
-            seed=int(cfg.train.seed),
-            shuffled_30_57_dir=shuffled_30_57_dir,
-            extra_shard_dirs=extra_shard_dirs,
-            max_total_shards=max_total_shards,
-        )
-        num_cls = win.num_classes if is_cls else 0
-        _, state0 = neural_net.get_speaker_encoder(cfg, num_classes=num_cls)
-        vstep = neural_net.make_pmap_train_step(
-            cfg,
-            axis_name="batch",
-            num_devices=num_devices,
-            use_vmap=True,
-            forward_only=True,
-        )
-        seq_len = int(cfg.model.seq_len)
-        min_seq_len = int(cfg.model.min_seq_len)
-        batch_size = int(cfg.train.batch_size)
-        per_dev_b = batch_size // num_devices
-        step_rng = np.random.default_rng(int(cfg.train.seed) + 17)
-        if is_cls:
-            xb, lb, mb = win.sample_classification_batch(
-                step_rng,
-                batch_size=batch_size,
-                seq_len=seq_len,
-                min_seq_len=min_seq_len,
-                variable_length=variable_length,
-                dom_probs=dom_probs,
+        # Multi-device TPU runs execute under modern JAX (>= 0.5), where
+        # `jax_threefry_partitionable=True` is the default PRNG stream; enable it
+        # explicitly here so JAX 0.4.x environments produce bit-identical init & masks.
+        prev_part = bool(getattr(jax.config, "jax_threefry_partitionable", False))
+        jax.config.update("jax_threefry_partitionable", True)
+        try:
+            win = shard_cache.WindowedMultiDomainSampler(
+                shard_store,
+                shard_budget=shard_budget,
+                seed=int(cfg.train.seed),
+                shuffled_30_57_dir=shuffled_30_57_dir,
+                extra_shard_dirs=extra_shard_dirs,
+                diar_shard_dirs=diar_shard_dirs,
+                max_total_shards=max_total_shards,
             )
-            lb_d = jnp.asarray(lb.reshape(num_devices, per_dev_b), dtype=jnp.int32)
-        else:
-            xb, mb = win.sample_episode_batch(
-                step_rng,
-                num_speakers=int(cfg.train.loss.num_speakers_per_batch),
-                num_utts_per_spk=int(cfg.train.loss.num_utts_per_speaker),
-                seq_len=seq_len,
-                min_seq_len=min_seq_len,
-                variable_length=variable_length,
-                dom_probs=dom_probs,
-            )
-            lb_d = None
-        valid = [int(v) for v in mb.sum(axis=1)[:4]]
-        xb_d = jnp.asarray(xb.reshape(num_devices, per_dev_b, seq_len, -1))
-        mb_d = jnp.asarray(mb.reshape(num_devices, per_dev_b, seq_len))
-        nb_prob = float(getattr(cfg.train.specaug, "narrowband_prob", 0.0))
-        st_prob = float(getattr(cfg.train.specaug, "spectral_tilt_prob", 0.0))
-        if specaug_prob > 0.0 or nb_prob > 0.0 or st_prob > 0.0:
-            rk = jax.random.split(
-                jax.random.fold_in(jax.random.PRNGKey(int(cfg.train.seed) + 7919), 1),
-                num_devices,
-            )
-            xb_d = jax.vmap(
-                lambda x, m, r: specaug.apply_masked_specaug_batch_jax(
-                    x,
-                    m,
-                    r,
-                    apply_prob=specaug_prob,
-                    narrowband_prob=nb_prob,
-                    spectral_tilt_prob=st_prob,
+            num_cls = win.num_classes if is_cls else 0
+            _, state0 = neural_net.get_speaker_encoder(cfg, num_classes=num_cls)
+            if aux_prefix_ckpt:
+                resolved_aux = os.path.abspath(
+                    os.path.expanduser(dataset.resolve_data_path(aux_prefix_ckpt))
                 )
-            )(xb_d, mb_d, rk)
-        _, l_rep = vstep(state0, xb_d, lb_d, mb_d)
-        return float(l_rep[0]), valid
+                if os.path.isfile(resolved_aux):
+                    state0 = neural_net.warm_start_from_checkpoint(state0, resolved_aux)
+            vstep = neural_net.make_pmap_train_step(
+                cfg,
+                axis_name="batch",
+                num_devices=num_devices,
+                use_vmap=True,
+                forward_only=True,
+            )
+            seq_len = int(cfg.model.seq_len)
+            min_seq_len = int(cfg.model.min_seq_len)
+            batch_size = int(cfg.train.batch_size)
+            per_dev_b = batch_size // num_devices
+            eff_phase_seed = (
+                int(phase_seed) if phase_seed is not None else int(cfg.train.seed)
+            )
+            step_rng = np.random.default_rng(eff_phase_seed + 17)
+            if is_cls:
+                xb, lb, mb = win.sample_classification_batch(
+                    step_rng,
+                    batch_size=batch_size,
+                    seq_len=seq_len,
+                    min_seq_len=min_seq_len,
+                    variable_length=variable_length,
+                    dom_probs=dom_probs,
+                )
+                lb_d = jnp.asarray(lb.reshape(num_devices, per_dev_b), dtype=jnp.int32)
+            else:
+                xb, mb = win.sample_episode_batch(
+                    step_rng,
+                    num_speakers=int(cfg.train.loss.num_speakers_per_batch),
+                    num_utts_per_spk=int(cfg.train.loss.num_utts_per_speaker),
+                    seq_len=seq_len,
+                    min_seq_len=min_seq_len,
+                    variable_length=variable_length,
+                    dom_probs=dom_probs,
+                )
+                lb_d = None
+            valid = [int(v) for v in mb.sum(axis=1)[:4]]
+            xb_d = jnp.asarray(xb.reshape(num_devices, per_dev_b, seq_len, -1))
+            mb_d = jnp.asarray(mb.reshape(num_devices, per_dev_b, seq_len))
+            nb_prob = float(getattr(cfg.train.specaug, "narrowband_prob", 0.0))
+            st_prob = float(getattr(cfg.train.specaug, "spectral_tilt_prob", 0.0))
+            if specaug_prob > 0.0 or nb_prob > 0.0 or st_prob > 0.0:
+                rk = jax.random.split(
+                    jax.random.fold_in(jax.random.PRNGKey(eff_phase_seed + 7919), 1),
+                    num_devices,
+                )
+                xb_d = jax.vmap(
+                    lambda x, m, r: specaug.apply_masked_specaug_batch_jax(
+                        x,
+                        m,
+                        r,
+                        apply_prob=specaug_prob,
+                        narrowband_prob=nb_prob,
+                        spectral_tilt_prob=st_prob,
+                    )
+                )(xb_d, mb_d, rk)
+            _, l_rep = vstep(state0, xb_d, lb_d, mb_d)
+            return float(l_rep[0]), valid
+        finally:
+            jax.config.update("jax_threefry_partitionable", prev_part)
     if shard_store is not None:
         num_cls = shard_store.num_speakers if is_cls else 0
         speaker_to_id: dict[str, int] = {}
@@ -394,6 +417,8 @@ def main(
                     setattr(cfg.train, ov_k, ov_v)
                 elif hasattr(cfg.train.loss, ov_k):
                     setattr(cfg.train.loss, ov_k, ov_v)
+                elif hasattr(cfg.train.specaug, ov_k):
+                    setattr(cfg.train.specaug, ov_k, ov_v)
                 elif hasattr(cfg.model, ov_k):
                     setattr(cfg.model, ov_k, ov_v)
                 elif hasattr(cfg.model.pfas, ov_k):
@@ -438,21 +463,20 @@ def main(
                 ("head_variable_legacy_lambda", True, True),
             ]
         released_lambda_base = float(cfg.train.loss.sphereface_lambda_base)
-        num_dev_rec = int(rec.get("num_devices", 1))
         ov_dict = phase_ov if isinstance(phase_ov, dict) else {}
+        num_dev_rec = int(ov_dict.get("step0_num_devices", rec.get("num_devices", 1)))
         s_prob_rec = float(ov_dict.get("specaug_prob", 0.60))
         shard_budget_rec = int(ov_dict.get("shard_budget", 18))
         shuf_dir_rec = ov_dict.get("shuffled_30_57_dir")
         extra_dirs_rec = ov_dict.get("extra_shard_dirs")
+        diar_dirs_rec = ov_dict.get("diar_shard_dirs")
         max_shards_rec = int(ov_dict.get("max_total_shards", 0))
+        phase_seed_rec = ov_dict.get("phase_seed")
+        aux_prefix_rec = ov_dict.get("aux_prefix_ckpt")
         dom_probs_raw = ov_dict.get("dom_probs")
-        dom_probs_rec: tuple[float, float, float] = (
-            (
-                float(dom_probs_raw[0]),
-                float(dom_probs_raw[1]),
-                float(dom_probs_raw[2]),
-            )
-            if isinstance(dom_probs_raw, (list, tuple)) and len(dom_probs_raw) == 3
+        dom_probs_rec: tuple[float, ...] = (
+            tuple(float(x) for x in dom_probs_raw)
+            if isinstance(dom_probs_raw, (list, tuple)) and len(dom_probs_raw) >= 3
             else (0.45, 0.32, 0.23)
         )
         for key, var_len, legacy_lambda in probes:
@@ -473,8 +497,11 @@ def main(
                 specaug_prob=s_prob_rec,
                 shuffled_30_57_dir=shuf_dir_rec,
                 extra_shard_dirs=extra_dirs_rec,
+                diar_shard_dirs=diar_dirs_rec,
                 max_total_shards=max_shards_rec,
                 dom_probs=dom_probs_rec,
+                phase_seed=int(phase_seed_rec) if phase_seed_rec is not None else None,
+                aux_prefix_ckpt=aux_prefix_rec,
             )
             out[key] = round(loss, 4)
             out[f"{key}_raw"] = round(loss, 6)

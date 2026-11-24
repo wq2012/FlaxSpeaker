@@ -22,14 +22,20 @@ Features:
 - Model Export & Ecosystem: TFLite (with int8 quantization), TensorFlow
   SavedModel, SafeTensors, and HuggingFace `PretrainedConfig` / `save_pretrained` /
   `from_pretrained` (`flaxspeaker.export`, `flaxspeaker.hf_compat`)
-- 55 Pretrained Models on Hugging Face Hub (`wq2012/<model_id>` — 44 controlled
-  ablation models + 11 full-data SOTA flagship models):
+- Diarization-to-Speaker-Encoder Preparation: Overlap-subtracted monologue turn
+  cropping (`0.10 s` collars), pause merging, `8 -> 16 kHz` resampling, global
+  caller/meeting speaker deduplication, and disjoint verification trial generation
+  for Fisher, AMI, ICSI, CallHome, and custom RTTM/CTM/CSV/JSON/LDC corpora
+  (`flaxspeaker.diarization_prep`)
+- 59 Pretrained Models on Hugging Face Hub (`wq2012/<model_id>` — 44 controlled
+  ablation models + 15 full-data SOTA universal & diarization flagship models):
   https://huggingface.co/collections/wq2012/flaxspeaker
 """
 
 from flaxspeaker import backbones
 from flaxspeaker import configs
 from flaxspeaker import dataset
+from flaxspeaker import diarization_prep
 from flaxspeaker import evaluation
 from flaxspeaker import export
 from flaxspeaker import feature_extraction
@@ -45,7 +51,7 @@ from flaxspeaker import specaug
 from flaxspeaker import vad
 from flaxspeaker import waveform_aug
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 HF_DEFAULT_NAMESPACE = hf_compat.HF_DEFAULT_NAMESPACE
 HF_COLLECTION_URL = hf_compat.HF_COLLECTION_URL
@@ -78,6 +84,7 @@ __all__ = [
     "backbones",
     "configs",
     "dataset",
+    "diarization_prep",
     "evaluation",
     "export",
     "feature_extraction",

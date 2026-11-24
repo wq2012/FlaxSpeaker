@@ -29,6 +29,15 @@ DOMAIN_TRAIN_STATS: dict[str, dict[str, Any]] = {
         "safety_margin_steps": 1000,
         "label": "full multi-corpus universal training pool (VoxCeleb1/2 + CN-Celeb1/2 + LibriSpeech 960h)",
     },
+    "universal_7corpus_diar": {
+        "utts": 2481542,
+        "spks": 24110,
+        "safety_margin_steps": 1000,
+        "label": (
+            "7-corpus universal + conversational diarization training pool "
+            "(VoxCeleb1/2 + CN-Celeb1/2 + LibriSpeech 960h + Fisher + AMI + ICSI + CallHome)"
+        ),
+    },
     "librispeech": {
         "utts": 5788,
         "spks": 232,
@@ -295,7 +304,7 @@ def deviations_from_papers(
         if train_epochs_override is not None
         else (num_steps * batch_size) / max(train_utts, 1)
     )
-    if str(train_ds) == "universal_full":
+    if str(train_ds) in ("universal_full", "universal_7corpus_diar"):
         out.append(
             f"**Training regime**: {num_steps:,} gradient steps x {batch_size} utterances "
             f"(~{epochs:.2f} epochs) across {train_spks:,} base speakers ({train_utts:,} clean "
@@ -506,6 +515,11 @@ def build_model_card(
             f"VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech 960h "
             f"(full multi-domain SOTA flagship, {train_spks:,} speakers, {train_utts:,} utterances)"
         ),
+        "universal_7corpus_diar": (
+            "VoxCeleb1/2 + CN-Celeb1/2 + LibriSpeech 960h + Fisher + AMI + ICSI + CallHome "
+            f"(7-corpus universal + conversational diarization flagship, "
+            f"{train_spks:,} speakers, {train_utts:,} clean utterances)"
+        ),
         "librispeech": "LibriSpeech only (232 speakers, 5,788 utterances)",
         "cnceleb2": "CN-Celeb2 only (119 speakers, 2,909 utterances)",
         "voxceleb1": "VoxCeleb1 only (30 speakers, 750 utterances from the VoxCeleb1 test partition)",
@@ -526,13 +540,19 @@ def build_model_card(
             "state of the art and are only meaningful for *relative* comparisons between "
             "FlaxSpeaker checkpoints trained under the same budget."
         )
-    elif str(train_ds) == "universal_full":
+    elif str(train_ds) in ("universal_full", "universal_7corpus_diar"):
+        corpora_str = (
+            "VoxCeleb2-dev, VoxCeleb1-dev, CN-Celeb 1+2, LibriSpeech 960h, "
+            "Fisher, AMI, ICSI, and CallHome (overlap-subtracted conversational turns)"
+            if str(train_ds) == "universal_7corpus_diar"
+            else "VoxCeleb2-dev, VoxCeleb1-dev, CN-Celeb 1+2, and LibriSpeech 960h"
+        )
         disclaimer_tail = (
             "> The original papers were run on Google-internal infrastructure and data; "
             f"this checkpoint is a **full-data open-corpus universal flagship** trained on "
             f"**{train_spks:,} speakers ({train_utts:,} clean utterances + MUSAN/RIR/speed "
-            "augmentation)** across VoxCeleb2-dev, VoxCeleb1-dev, CN-Celeb 1+2, and "
-            "LibriSpeech 960h with zero speaker overlap against official evaluation sets."
+            f"augmentation)** across {corpora_str} with zero speaker overlap against "
+            "held-out evaluation sets."
         )
         budget_paragraph = (
             f"This flagship model was trained for **{num_steps:,} gradient steps** "
@@ -679,7 +699,11 @@ def build_model_card(
         "",
         _provenance_paragraph(save_directory, exp_cfg),
         "",
-        *([] if str(train_ds) == "universal_full" else [SOTA_ANCHOR, ""]),
+        *(
+            []
+            if str(train_ds) in ("universal_full", "universal_7corpus_diar")
+            else [SOTA_ANCHOR, ""]
+        ),
         "## Model Summary",
         "",
         "| Property | Value |",
@@ -769,7 +793,7 @@ def build_model_card(
         "",
         "### Python API (from Hugging Face Hub or Local Directory)",
         "",
-        "Requires `flaxspeaker >= 0.7.0` (`pip install -U flaxspeaker`).",
+        "Requires `flaxspeaker >= 0.8.0` (`pip install -U flaxspeaker`).",
         "",
         "```python",
         "from flaxspeaker import load_pretrained",
@@ -850,6 +874,71 @@ def build_model_card(
                             f"{m3_asn} | — | {m3.get('min_dcf_001', 0.0):.4f} | "
                             f"{m3.get('roc_auc', 0.0):.4f} |"
                         )
+        diar_eval = metrics.get("diarization_benchmarks")
+        if isinstance(diar_eval, dict) and isinstance(diar_eval.get("suites"), dict):
+            d_suites = diar_eval["suites"]
+            d_macros = diar_eval.get("macro_averages", {})
+            lines += [
+                "",
+                "## Conversational & Meeting Diarization SV Benchmarks",
+                "",
+                "Evaluated on overlap-subtracted (`0.10 s` collar) speaker-disjoint test splits "
+                "across Fisher (8 kHz -> 16 kHz telephone), CallHome English (telephone), "
+                "AMI (`Mix-Headset` 4-speaker meetings), and ICSI (multi-party meetings):",
+                "",
+                "| Benchmark Suite | Trials | Raw EER (%) | AS-Norm EER (%) | AS-Norm + QMF EER (%) |",
+                "| :--- | :---: | :---: | :---: | :---: |",
+            ]
+            for s_lbl, s_key in [
+                ("Fisher Test — Within-Session", "fisher_test_within_session"),
+                ("Fisher Test — Standard", "fisher_test_standard"),
+                ("Fisher Test — Short-Turn (0.8-2.0s)", "fisher_test_short_turn"),
+                ("AMI Test — Within-Session", "ami_test_within_session"),
+                ("AMI Test — Standard", "ami_test_standard"),
+                ("AMI Test — Short-Turn (0.8-2.0s)", "ami_test_short_turn"),
+                ("ICSI Test — Within-Session", "icsi_test_within_session"),
+                ("ICSI Test — Standard", "icsi_test_standard"),
+                ("ICSI Test — Short-Turn (0.8-2.0s)", "icsi_test_short_turn"),
+                ("CallHome Test — Within-Session", "callhome_test_within_session"),
+                ("CallHome Test — Standard", "callhome_test_standard"),
+                ("CallHome Test — Short-Turn (0.8-2.0s)", "callhome_test_short_turn"),
+            ]:
+                sm = d_suites.get(s_key)
+                if isinstance(sm, dict) and "eer_percent" in sm:
+                    s_asn = (
+                        f"**{sm['as_norm']['eer_percent']:.2f}%**"
+                        if isinstance(sm.get("as_norm"), dict)
+                        else "—"
+                    )
+                    s_qmf = (
+                        f"**{sm['qmf']['eer_percent']:.2f}%**"
+                        if isinstance(sm.get("qmf"), dict)
+                        else "—"
+                    )
+                    lines.append(
+                        f"| **{s_lbl}** | {sm.get('num_trials', 0):,} | "
+                        f"**{sm['eer_percent']:.2f}%** | {s_asn} | {s_qmf} |"
+                    )
+            for m_lbl, m_key in [
+                ("4-Corpus Macro-Avg — Within-Session", "macro_4corpus_within_session"),
+                ("4-Corpus Macro-Avg — Standard", "macro_4corpus_standard"),
+                ("4-Corpus Macro-Avg — Short-Turn", "macro_4corpus_short_turn"),
+            ]:
+                mm_d = d_macros.get(m_key)
+                if isinstance(mm_d, dict) and "eer_percent" in mm_d:
+                    ma_s = (
+                        f"**{mm_d['as_norm']['eer_percent']:.2f}%**"
+                        if isinstance(mm_d.get("as_norm"), dict)
+                        else "—"
+                    )
+                    mq_s = (
+                        f"**{mm_d['qmf']['eer_percent']:.2f}%**"
+                        if isinstance(mm_d.get("qmf"), dict)
+                        else "—"
+                    )
+                    lines.append(
+                        f"| **{m_lbl}** | — | **{mm_d['eer_percent']:.2f}%** | {ma_s} | {mq_s} |"
+                    )
         lines += ["", "## Multi-Domain Evaluation Results", ""]
         md_eval = metrics.get("multi_domain_eval", {})
         if md_eval and "domains_1utt" in md_eval:
@@ -905,14 +994,32 @@ def build_model_card(
                     if has_asn_1utt and isinstance(macro_1.get("as_norm"), dict)
                     else (" — |" if has_asn_1utt else "")
                 )
+                mdcf001_s = (
+                    f"{macro_1['min_dcf_001']:.4f}"
+                    if "min_dcf_001" in macro_1
+                    else "—"
+                )
+                mdcf01_s = (
+                    f"{macro_1['min_dcf_01']:.4f}"
+                    if "min_dcf_01" in macro_1
+                    else "—"
+                )
+                mauc_s = (
+                    f"{macro_1['roc_auc']:.4f}"
+                    if "roc_auc" in macro_1
+                    else "—"
+                )
                 lines.append(
                     f"| **Universal Macro-Average (3 Domains)** | — | **{macro_1['eer_percent']:.2f}%** |{asn_m_col} "
-                    f"— | {macro_1['min_dcf_001']:.4f} | {macro_1['min_dcf_01']:.4f} | {macro_1['roc_auc']:.4f} |"
+                    f"— | {mdcf001_s} | {mdcf01_s} | {mauc_s} |"
                 )
             vox_sub = md_eval["domains_1utt"].get(VOX1_SUBSET_KEY) or (
                 metrics.get("cross_dataset_eval", {}) or {}
             ).get(VOX1_SUBSET_KEY)
-            if vox_sub and str(train_ds) != "universal_full":
+            if vox_sub and str(train_ds) not in (
+                "universal_full",
+                "universal_7corpus_diar",
+            ):
                 asn_v_col = (
                     f" **{vox_sub['as_norm']['eer_percent']:.2f}%** |"
                     if has_asn_1utt and isinstance(vox_sub.get("as_norm"), dict)
@@ -946,9 +1053,19 @@ def build_model_card(
                         )
                 macro_3 = md_eval.get("universal_macro_avg_3utt")
                 if macro_3:
+                    m3_dcf = (
+                        f"{macro_3['min_dcf_001']:.4f}"
+                        if "min_dcf_001" in macro_3
+                        else "—"
+                    )
+                    m3_auc = (
+                        f"{macro_3['roc_auc']:.4f}"
+                        if "roc_auc" in macro_3
+                        else "—"
+                    )
                     lines.append(
                         f"| **Universal Macro-Average (3-Utt)** | — | **{macro_3['eer_percent']:.2f}%** | "
-                        f"— | {macro_3['min_dcf_001']:.4f} | {macro_3['roc_auc']:.4f} |"
+                        f"— | {m3_dcf} | {m3_auc} |"
                     )
         elif "in_domain_eval" in metrics and metrics["in_domain_eval"]:
             ind = metrics["in_domain_eval"]

@@ -158,8 +158,8 @@ def draw_architecture_diagram(
         "1. Multi-Domain & VAD",
         "Waveform (B, L) @ 16 kHz",
         [
-            "Tier-1 (381 spk) + Tier-2 (12,193 spk)",
-            "Vox1+Vox2+CN1+CN2+LibriSpeech",
+            "Tier-1 (381 spk) + Tier-2 (24,110 spk)",
+            "Vox1/2+CN1/2+LS+Fisher/AMI/ICSI/CH",
             "Peak AGC (1.0) + 80-d log-Mel",
             "Energy VAD: max($-42$ dB,",
             "  $P_{95}-26$ dB, $P_{10}+4.5$ dB) + CMVN",
@@ -794,17 +794,21 @@ def draw_flagship_and_ablation_chart(
     # Panel (a): Tier-2 Flagships + Fusion on Official VoxCeleb1-O & CN-Celeb-E
     ax = axes[0]
     model_rows = [
-        ("Conf-L\nArcFace", "univ_full_conformer_large_arcface"),
-        ("ECAPA\nc1024", "univ_full_ecapa_c1024_arcface"),
-        ("ResNet-34\nArcFace", "univ_full_resnet34_arcface"),
-        ("ERes2-L\nCosine", "univ_full_eres2conformer_large"),
+        ("Conf-L ArcF.", "univ_full_conformer_large_arcface"),
+        ("ECAPA-c1024", "univ_full_ecapa_c1024_arcface"),
+        ("ResNet-34", "univ_full_resnet34_arcface"),
+        ("ERes2-L Cos", "univ_full_eres2conformer_large"),
     ]
     for lbl_opt, k_opt in (
-        ("ERes2-L\nHybPFAS", "univ_full_eres2conformer_large_pfas"),
-        ("ERes2-V2\nCosine", "univ_full_eres2conformer_v2_large"),
-        ("ERes2-V2\nHybPFAS", "univ_full_eres2conformer_v2_pfas"),
-        ("ERes2-XL\nHybPFAS", "univ_full_eres2conformer_xl_pfas"),
-        ("ERes2-XL\nCosine", "univ_full_eres2conformer_xl"),
+        ("ERes2-L PFAS", "univ_full_eres2conformer_large_pfas"),
+        ("ERes2-V2 Cos", "univ_full_eres2conformer_v2_large"),
+        ("ERes2-V2 PFAS", "univ_full_eres2conformer_v2_pfas"),
+        ("ERes2-XL PFAS", "univ_full_eres2conformer_xl_pfas"),
+        ("ERes2-XL Cos", "univ_full_eres2conformer_xl"),
+        ("V2-Diar", "univ_full_eres2conformer_v2_diar"),
+        ("XL-Diar Scr.", "univ_full_eres2conformer_xl_diar"),
+        ("XL-Diar PFAS", "univ_full_eres2conformer_xl_diar_pfas"),
+        ("XL-Diar Adapt", "univ_full_eres2conformer_xl_diar_adapt"),
     ):
         if k_opt in fm:
             model_rows.append((lbl_opt, k_opt))
@@ -830,10 +834,19 @@ def draw_flagship_and_ablation_chart(
         f_ob = fus["official_benchmarks"]
         f_me = fus["multi_enroll_3way_fusion"]
         n_way = len(fus.get("models", []))
-        labels_a.append(f"{n_way}-Way\nFusion")
+        labels_a.append(f"{n_way}-Way Fusion")
         vx_vals.append(f_ob["voxceleb1_o"]["qmf"]["eer_percent"])
         cn_vals.append(f_me["cnceleb_e_multi_enroll_map"]["eer_percent"])
         ls_vals.append(f_ob["librispeech_test_clean"]["qmf"]["eer_percent"])
+    f7 = flag_data.get("v080_7corpus_fusion", {})
+    if "official_benchmarks" in f7:
+        f7_ob = f7["official_benchmarks"]
+        labels_a.append("7-Corp Fusion")
+        vx_vals.append(f7_ob["voxceleb1_o"]["qmf"]["eer_percent"])
+        cn_vals.append(
+            f7_ob["cnceleb_e"]["multi_enroll_map"]["as_norm"]["eer_percent"]
+        )
+        ls_vals.append(f7_ob["librispeech_test_clean"]["qmf"]["eer_percent"])
 
     xa = np.arange(len(labels_a))
     wa = 0.25
@@ -859,16 +872,18 @@ def draw_flagship_and_ablation_chart(
                 ha="center",
                 va="bottom",
                 rotation=90,
-                fontsize=6.1,
+                fontsize=5.9,
                 fontweight="bold",
                 color=col,
             )
     ax.set_xticks(xa)
-    ax.set_xticklabels(labels_a, fontsize=6.4)
+    ax.set_xticklabels(
+        labels_a, fontsize=6.4, rotation=28, ha="right", rotation_mode="anchor"
+    )
     ax.set_ylabel("Official Zero-Shot EER (%)", fontsize=9.0)
     ax.set_title(
-        "(a) Tier-2 full-data universal flagships & fusion (12,193 spk)",
-        fontsize=9.5,
+        "(a) Tier-2 universal & 7-corpus diarization flagships (up to 24,110 spk)",
+        fontsize=9.2,
         fontweight="bold",
     )
     ax.set_ylim(0, max(cn_vals) + 3.8)
@@ -1032,11 +1047,193 @@ def draw_flagship_and_ablation_chart(
     plt.close(fig)
 
 
+def draw_diarization_sv_chart(
+    repo_root: str = REPO_ROOT,
+    paper_fig_dir: str = PAPER_FIG_DIR,
+) -> None:
+    """Draws Figure 4: Zero-Shot v0.7.0 vs. Retrained v0.8.0 7-Corpus Diarization SV."""
+    v080_path = os.path.join(
+        repo_root, "pretrained_models", "v080_diarization_ablation_results.json"
+    )
+    flag_path = os.path.join(
+        repo_root, "pretrained_models", "full_data_flagship_results.json"
+    )
+    if not (os.path.isfile(v080_path) and os.path.isfile(flag_path)):
+        return
+    with open(v080_path, "r", encoding="utf-8") as f:
+        v080 = json.load(f)
+    with open(flag_path, "r", encoding="utf-8") as f:
+        flag = json.load(f)
+    zs = v080.get("v070_zero_shot_models", {})
+    rel = v080.get("v080_released_flagships", {})
+    fus = v080.get("v080_7corpus_fusion", {})
+    fm = flag.get("models", {})
+    if not zs or not rel:
+        return
+
+    os.makedirs(paper_fig_dir, exist_ok=True)
+    os.makedirs(os.path.join(repo_root, "resources"), exist_ok=True)
+    plt.close("all")
+    fig, axes = plt.subplots(1, 2, figsize=(11.9, 3.85), dpi=300)
+    fig.patch.set_facecolor("#FFFFFF")
+
+    # Panel (a): Within-session QMF EER across Fisher, CallHome, AMI, ICSI & 4-Corpus Macro
+    ax = axes[0]
+    sys_specs: list[tuple[str, dict, dict]] = []
+    for lbl_z, mid_z in (
+        ("V2-Large\n(Zero-Shot)", "univ_full_eres2conformer_v2_large"),
+        ("XL-PFAS\n(Zero-Shot)", "univ_full_eres2conformer_xl_pfas"),
+        ("XL-Cosine\n(Zero-Shot)", "univ_full_eres2conformer_xl"),
+    ):
+        if mid_z in zs:
+            db_z = zs[mid_z]["diarization_benchmarks"]
+            sys_specs.append((lbl_z, db_z["suites"], db_z["macro_averages"]))
+    for lbl_r, mid_r in (
+        ("V2-Diar\n(v0.8.0)", "univ_full_eres2conformer_v2_diar"),
+        ("XL-Diar\n(Scratch)", "univ_full_eres2conformer_xl_diar"),
+        ("XL-Diar\nHybPFAS", "univ_full_eres2conformer_xl_diar_pfas"),
+        ("XL-Diar\nAdapt", "univ_full_eres2conformer_xl_diar_adapt"),
+    ):
+        if mid_r in rel:
+            db_r = rel[mid_r]["diarization_benchmarks"]
+            sys_specs.append((lbl_r, db_r["suites"], db_r["macro_averages"]))
+    if fus and "diarization_benchmarks" in fus:
+        db_f = fus["diarization_benchmarks"]
+        sys_specs.append(("7-Corpus\nFusion", db_f["suites"], db_f["macro_averages"]))
+
+    x = np.arange(len(sys_specs))
+    w = 0.17
+    f_vals = [s[1]["fisher_test_within_session"]["qmf"]["eer_percent"] for s in sys_specs]
+    c_vals = [s[1]["callhome_test_within_session"]["qmf"]["eer_percent"] for s in sys_specs]
+    a_vals = [s[1]["ami_test_within_session"]["qmf"]["eer_percent"] for s in sys_specs]
+    i_vals = [s[1]["icsi_test_within_session"]["qmf"]["eer_percent"] for s in sys_specs]
+    m_vals = [s[2]["macro_4corpus_within_session"]["qmf"]["eer_percent"] for s in sys_specs]
+
+    ax.bar(x - 2 * w, f_vals, w, label="Fisher (Tel.)", color="#2563EB")
+    ax.bar(x - w, c_vals, w, label="CallHome (Tel.)", color="#0EA5E9")
+    ax.bar(x, a_vals, w, label="AMI (Meeting)", color="#F59E0B")
+    ax.bar(x + w, i_vals, w, label="ICSI (Meeting)", color="#10B981")
+    bm = ax.bar(x + 2 * w, m_vals, w, label="4-Corpus Macro", color="#1E293B")
+    for b in bm:
+        ax.text(
+            b.get_x() + b.get_width() / 2,
+            b.get_height() + 0.22,
+            f"{b.get_height():.2f}",
+            ha="center",
+            va="bottom",
+            rotation=90,
+            fontsize=6.4,
+            fontweight="bold",
+            color="#0F172A",
+        )
+    ax.set_xticks(x)
+    ax.set_xticklabels([s[0] for s in sys_specs], fontsize=6.7)
+    ax.set_ylabel("Within-Session SV QMF EER (%)", fontsize=9.0)
+    ax.set_title(
+        "(a) Within-session diarization SV: 3-corpus zero-shot vs. 7-corpus v0.8.0",
+        fontsize=9.2,
+        fontweight="bold",
+    )
+    ax.set_ylim(
+        0,
+        max(max(f_vals), max(c_vals), max(a_vals), max(i_vals), max(m_vals))
+        + 2.8,
+    )
+    ax.legend(fontsize=7.2, ncol=3, loc="upper right", framealpha=0.92)
+    ax.grid(axis="y", alpha=0.25)
+
+    # Panel (b): Short-Turn [0.8-2.0s], Standard Diarization Macro, & VoxCeleb1-O QMF
+    ax2 = axes[1]
+    p2_rows: list[tuple[str, float, float, float]] = []
+    for lbl_p, mid_p, is_zs in (
+        ("V2-Large\n(ZS)", "univ_full_eres2conformer_v2_large", True),
+        ("XL-Cosine\n(ZS)", "univ_full_eres2conformer_xl", True),
+        ("XL-PFAS\n(ZS)", "univ_full_eres2conformer_xl_pfas", True),
+        ("V2-Diar\n(v0.8.0)", "univ_full_eres2conformer_v2_diar", False),
+        ("XL-Diar\n(Scratch)", "univ_full_eres2conformer_xl_diar", False),
+        ("XL-Diar\nHybPFAS", "univ_full_eres2conformer_xl_diar_pfas", False),
+        ("XL-Diar\nAdapt", "univ_full_eres2conformer_xl_diar_adapt", False),
+    ):
+        if is_zs and mid_p in zs and mid_p in fm:
+            mc = zs[mid_p]["diarization_benchmarks"]["macro_averages"]
+            vx = fm[mid_p]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+            p2_rows.append((
+                lbl_p,
+                mc["macro_4corpus_short_turn"]["qmf"]["eer_percent"],
+                mc["macro_4corpus_standard"]["qmf"]["eer_percent"],
+                vx,
+            ))
+        elif (not is_zs) and mid_p in rel:
+            mc = rel[mid_p]["diarization_benchmarks"]["macro_averages"]
+            vx = rel[mid_p]["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+            p2_rows.append((
+                lbl_p,
+                mc["macro_4corpus_short_turn"]["qmf"]["eer_percent"],
+                mc["macro_4corpus_standard"]["qmf"]["eer_percent"],
+                vx,
+            ))
+    if fus and "diarization_benchmarks" in fus:
+        mc_f = fus["diarization_benchmarks"]["macro_averages"]
+        vx_f = fus["official_benchmarks"]["voxceleb1_o"]["qmf"]["eer_percent"]
+        p2_rows.append((
+            "7-Corpus\nFusion",
+            mc_f["macro_4corpus_short_turn"]["qmf"]["eer_percent"],
+            mc_f["macro_4corpus_standard"]["qmf"]["eer_percent"],
+            vx_f,
+        ))
+
+    xb = np.arange(len(p2_rows))
+    wb = 0.25
+    sh_v = [r[1] for r in p2_rows]
+    st_v = [r[2] for r in p2_rows]
+    vx_v = [r[3] for r in p2_rows]
+    b_sh = ax2.bar(xb - wb, sh_v, wb, label="4-Corpus Short-Turn [0.8–2.0s] (%)", color="#DC2626")
+    b_st = ax2.bar(xb, st_v, wb, label="4-Corpus Standard QMF (%)", color="#7C3AED")
+    b_vx = ax2.bar(xb + wb, vx_v, wb, label="Official VoxCeleb1-O QMF (%)", color="#16A34A")
+    for bars, col in ((b_sh, "#991B1B"), (b_st, "#5B21B6"), (b_vx, "#14532D")):
+        for b in bars:
+            ax2.text(
+                b.get_x() + b.get_width() / 2,
+                b.get_height() + 0.22,
+                f"{b.get_height():.2f}",
+                ha="center",
+                va="bottom",
+                rotation=90,
+                fontsize=6.2,
+                fontweight="bold",
+                color=col,
+            )
+    ax2.set_xticks(xb)
+    ax2.set_xticklabels([r[0] for r in p2_rows], fontsize=6.7)
+    ax2.set_ylabel("QMF EER (%) [Lower is Better]", fontsize=9.0)
+    ax2.set_title(
+        "(b) Short-turn [0.8–2.0s] & standard diarization SV + VoxCeleb1-O retention",
+        fontsize=9.2,
+        fontweight="bold",
+    )
+    ax2.set_ylim(0, max(sh_v) + 3.4)
+    ax2.legend(fontsize=7.2, loc="upper right", framealpha=0.92)
+    ax2.grid(axis="y", alpha=0.25)
+
+    plt.tight_layout()
+    fig.savefig(
+        os.path.join(paper_fig_dir, "fig4_diarization_sv.pdf"),
+        bbox_inches="tight",
+    )
+    fig.savefig(
+        os.path.join(repo_root, "resources", "diarization_sv_comparison.png"),
+        bbox_inches="tight",
+        dpi=250,
+    )
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Generate the FlaxSpeaker paper figures (fig1_architecture.pdf, "
-            "fig2_benchmarks.pdf, fig3_flagships.pdf) and repository PNGs."
+            "fig2_benchmarks.pdf, fig3_flagships.pdf, fig4_diarization_sv.pdf) "
+            "and repository PNGs."
         )
     )
     parser.add_argument(
@@ -1060,6 +1257,8 @@ if __name__ == "__main__":
         args.repo_root, args.paper_fig_dir, benchmark_json=args.benchmark_json
     )
     draw_flagship_and_ablation_chart(args.repo_root, args.paper_fig_dir)
+    draw_diarization_sv_chart(args.repo_root, args.paper_fig_dir)
     print(
-        "Generated fig1_architecture.pdf, fig2_benchmarks.pdf, and fig3_flagships.pdf"
+        "Generated fig1_architecture.pdf, fig2_benchmarks.pdf, "
+        "fig3_flagships.pdf, and fig4_diarization_sv.pdf"
     )

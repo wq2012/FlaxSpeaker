@@ -15,6 +15,7 @@ size on disk):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 import os
 from typing import Any, Optional
@@ -532,10 +533,10 @@ class WindowedMultiDomainSampler:
     """Stratified rolling-window multi-domain `.f16` shard sampler for multi-GPU / TPU training.
 
     Maintains a stratified subset of `shard_budget` shards (`0` = all shards) across
-    domains `(0, 1, 2)` over `ShardedFeatureStore` `memmap` arrays (plus optional
-    speaker-shuffled `30..57` shards and extension shard directories) so multi-device
-    `jax.pmap` runs keep bounded RSS on any host while visiting all shards via
-    `rotate_window()`.
+    all active domains (`(0, 1, 2)` or `(0, 1, 2, 3, 4)` when conversational/meeting
+    diarization shards are appended via `diar_shard_dirs`) over `ShardedFeatureStore`
+    `memmap` arrays so multi-device `jax.pmap` runs keep bounded RSS on any host while
+    visiting all shards via `rotate_window()`.
     """
 
     def __init__(
@@ -545,17 +546,16 @@ class WindowedMultiDomainSampler:
         seed: int = 42,
         shuffled_30_57_dir: Optional[str] = None,
         extra_shard_dirs: Optional[list[str]] = None,
+        diar_shard_dirs: Optional[list[str]] = None,
         max_total_shards: int = 0,
     ):
         self.store = store
         self.base_n_shards = len(store.shard_frame_counts)
         self.feat_dim = store.feat_dim
-        self.num_classes = len(store.raw_speaker_to_id)
+        merged_spk_to_id: dict[str, int] = {
+            k: int(v) for k, v in store.raw_speaker_to_id.items()
+        }
 
-        id_to_spk = {int(v): k for k, v in store.raw_speaker_to_id.items()}
-        is_sp = np.array(
-            ["@sp" in id_to_spk[i] for i in range(self.num_classes)], dtype=np.bool_
-        )
         base_idx = np.load(os.path.join(store.shard_dir, "index.npz"))
         self.orig_speaker_ids = base_idx["speaker_ids"].astype(np.int32)
         self.orig_shard_ids = store.shard_ids.astype(np.int32).copy()
@@ -628,7 +628,75 @@ class WindowedMultiDomainSampler:
                 [self.orig_domain_ids, ez["domain_ids"][keep].astype(np.int16)]
             )
 
+        self.diar_start_sid = len(self.shard_paths)
+        for diar_raw in diar_shard_dirs or []:
+            diar_dir = os.path.abspath(
+                os.path.expanduser(dataset.resolve_data_path(diar_raw))
+            )
+            dmeta_path = os.path.join(diar_dir, "metadata.json")
+            dspk_path = os.path.join(diar_dir, "speakers.json")
+            didx_path = os.path.join(diar_dir, "index.npz")
+            if not (
+                os.path.isfile(dmeta_path)
+                and os.path.isfile(dspk_path)
+                and os.path.isfile(didx_path)
+            ):
+                continue
+            with open(dmeta_path, "r", encoding="utf-8") as df:
+                dmeta = json.load(df)
+            with open(dspk_path, "r", encoding="utf-8") as df:
+                dspks = json.load(df)
+            dz = np.load(didx_path)
+            sid_offset = len(self.shard_paths)
+            spk_offset = len(merged_spk_to_id)
+            for s_name, local_sid in dspks["speaker_to_id"].items():
+                if s_name in merged_spk_to_id:
+                    raise ValueError(f"Duplicate speaker {s_name} in {diar_dir}")
+                merged_spk_to_id[s_name] = int(local_sid) + spk_offset
+            dz_sids = dz["shard_ids"].astype(np.int32)
+            diar_n_sh = max(
+                int(dmeta["num_shards"]),
+                int(np.max(dz_sids)) + 1 if dz_sids.size > 0 else 0,
+            )
+            if max_total_shards > 0:
+                diar_n_sh = max(0, min(diar_n_sh, max_total_shards - sid_offset))
+                keep = dz_sids < diar_n_sh
+            else:
+                keep = np.ones((dz_sids.shape[0],), dtype=np.bool_)
+            for s_i in range(diar_n_sh):
+                self.shard_paths.append(
+                    os.path.join(diar_dir, f"shard_{s_i:04d}.f16")
+                )
+            self.orig_shard_ids = np.concatenate(
+                [self.orig_shard_ids, dz_sids[keep] + sid_offset]
+            )
+            self.orig_frame_offsets = np.concatenate(
+                [self.orig_frame_offsets, dz["frame_offsets"][keep].astype(np.int64)]
+            )
+            self.orig_frame_lengths = np.concatenate(
+                [self.orig_frame_lengths, dz["frame_lengths"][keep].astype(np.int32)]
+            )
+            self.orig_speaker_ids = np.concatenate(
+                [
+                    self.orig_speaker_ids,
+                    dz["speaker_ids"][keep].astype(np.int32) + spk_offset,
+                ]
+            )
+            self.orig_domain_ids = np.concatenate(
+                [self.orig_domain_ids, dz["domain_ids"][keep].astype(np.int16)]
+            )
+
+        self.num_classes = len(merged_spk_to_id)
+        id_to_spk = {int(v): k for k, v in merged_spk_to_id.items()}
+        is_sp = np.array(
+            ["@sp" in id_to_spk[i] for i in range(self.num_classes)], dtype=np.bool_
+        )
         self.orig_item_is_sp = is_sp[self.orig_speaker_ids]
+        self.clean_class_ids = np.nonzero(~is_sp)[0].astype(np.int32)
+        self.orig_to_clean_label = np.zeros((self.num_classes,), dtype=np.int32)
+        for clean_j, orig_cid in enumerate(self.clean_class_ids):
+            self.orig_to_clean_label[int(orig_cid)] = clean_j
+
         self.total_shards = (
             min(len(self.shard_paths), max_total_shards)
             if max_total_shards > 0
@@ -636,17 +704,50 @@ class WindowedMultiDomainSampler:
         )
         self._ext_memmaps: dict[int, np.memmap] = {}
 
-        self.dom_shards: dict[int, list[int]] = {0: [], 1: [], 2: []}
+        uniq_doms = sorted(int(d) for d in np.unique(self.orig_domain_ids))
+        self.all_domain_ids: tuple[int, ...] = (
+            tuple(uniq_doms) if len(uniq_doms) > 3 else (0, 1, 2)
+        )
+        self.dom_shards: dict[int, list[int]] = {
+            d: [] for d in self.all_domain_ids
+        }
         for sid in range(self.total_shards):
             m = self.orig_shard_ids == sid
             if np.any(m):
-                counts = [int(np.sum(self.orig_domain_ids[m] == d)) for d in (0, 1, 2)]
-                self.dom_shards[int(np.argmax(counts))].append(sid)
+                counts = [
+                    int(np.sum(self.orig_domain_ids[m] == d))
+                    for d in self.all_domain_ids
+                ]
+                dom_major = self.all_domain_ids[int(np.argmax(counts))]
+                self.dom_shards[dom_major].append(sid)
 
         self.rolling_enabled = 0 < shard_budget < self.total_shards
         self._rot_rng = np.random.default_rng(int(seed) + 1337)
+        has_diar_shards = self.diar_start_sid < self.total_shards
         if self.rolling_enabled:
-            if self.using_shuffled_30_57:
+            if has_diar_shards and self.using_shuffled_30_57:
+                pool_d = list(range(self.diar_start_sid, self.total_shards))
+                pool_a = [
+                    s
+                    for s in range(self.diar_start_sid)
+                    if s < 30 or s >= self.base_n_shards
+                ]
+                pool_b = list(
+                    range(30, min(self.base_n_shards, self.diar_start_sid))
+                )
+                k_d = min(len(pool_d), max(4, round(shard_budget * 0.30)))
+                rem_u = max(2, shard_budget - k_d)
+                k_b = min(len(pool_b), max(1, round(rem_u * 0.45)))
+                k_a = min(len(pool_a), max(1, rem_u - k_b))
+                init_parts: list[int] = []
+                for p_grp, k_pick in ((pool_a, k_a), (pool_b, k_b), (pool_d, k_d)):
+                    if p_grp and k_pick > 0:
+                        chosen_p = self._rot_rng.choice(
+                            p_grp, size=min(len(p_grp), k_pick), replace=False
+                        )
+                        init_parts.extend(int(x) for x in chosen_p)
+                self.active_sids = sorted(set(init_parts))
+            elif self.using_shuffled_30_57:
                 pool_a = [
                     s
                     for s in range(self.total_shards)
@@ -681,18 +782,18 @@ class WindowedMultiDomainSampler:
                 self.active_sids = sorted(set(c_a + c_b))
             else:
                 n_d0 = min(
-                    len(self.dom_shards[0]), max(1, round(shard_budget * 0.50))
+                    len(self.dom_shards.get(0, [])), max(1, round(shard_budget * 0.50))
                 )
                 n_d1 = min(
-                    len(self.dom_shards[1]), max(1, round(shard_budget * 0.28))
+                    len(self.dom_shards.get(1, [])), max(1, round(shard_budget * 0.28))
                 )
                 n_d2 = min(
-                    len(self.dom_shards[2]),
+                    len(self.dom_shards.get(2, [])),
                     max(1, shard_budget - n_d0 - n_d1),
                 )
                 init_sids: list[int] = []
                 for d_id, k_cnt in ((0, n_d0), (1, n_d1), (2, n_d2)):
-                    if self.dom_shards[d_id]:
+                    if self.dom_shards.get(d_id):
                         chosen = self._rot_rng.choice(
                             self.dom_shards[d_id],
                             size=min(k_cnt, len(self.dom_shards[d_id])),
@@ -726,7 +827,7 @@ class WindowedMultiDomainSampler:
 
     def _rebuild_indices(self) -> None:
         in_mem = np.isin(self.orig_shard_ids, self.active_sids)
-        for d_id in (0, 1, 2):
+        for d_id in self.all_domain_ids:
             d_mask = in_mem & (self.orig_domain_ids == d_id)
             self.dom_items_all[d_id] = np.nonzero(d_mask)[0].astype(np.int32)
             self.dom_items_non_sp[d_id] = np.nonzero(
@@ -748,7 +849,27 @@ class WindowedMultiDomainSampler:
         if not self.rolling_enabled:
             return
         cur_keys = set(self.active_sids)
-        if self.using_shuffled_30_57:
+        if self.diar_start_sid < self.total_shards and self.using_shuffled_30_57:
+            pool_d = list(range(self.diar_start_sid, self.total_shards))
+            pool_a = [
+                s
+                for s in range(self.diar_start_sid)
+                if s < 30 or s >= self.base_n_shards
+            ]
+            pool_b = list(
+                range(30, min(self.base_n_shards, self.diar_start_sid))
+            )
+            for pool_grp, k_max in ((pool_a, 2), (pool_b, 2), (pool_d, 2)):
+                in_p = [s for s in pool_grp if s in cur_keys]
+                out_p = [s for s in pool_grp if s not in cur_keys]
+                n_sw = min(k_max, len(in_p), len(out_p))
+                if n_sw > 0:
+                    ev_l = self._rot_rng.choice(in_p, size=n_sw, replace=False)
+                    ld_l = self._rot_rng.choice(out_p, size=n_sw, replace=False)
+                    for e, ld_s in zip(ev_l, ld_l):
+                        cur_keys.discard(int(e))
+                        cur_keys.add(int(ld_s))
+        elif self.using_shuffled_30_57:
             pool_a = [
                 s
                 for s in range(self.total_shards)
@@ -768,8 +889,8 @@ class WindowedMultiDomainSampler:
                         cur_keys.discard(int(e))
                         cur_keys.add(int(ld_s))
         else:
-            for d_id in (0, 1, 2):
-                all_d = self.dom_shards[d_id]
+            for d_id in self.all_domain_ids:
+                all_d = self.dom_shards.get(d_id, [])
                 in_d = [s for s in all_d if s in cur_keys]
                 out_d = [s for s in all_d if s not in cur_keys]
                 if in_d and out_d:
@@ -780,6 +901,12 @@ class WindowedMultiDomainSampler:
         self.active_sids = sorted(cur_keys)
         self._rebuild_indices()
 
+    @staticmethod
+    def _dom_weight(dom_probs: Sequence[float], d_id: int) -> float:
+        if d_id < len(dom_probs):
+            return max(1e-6, float(dom_probs[d_id]))
+        return max(1e-6, float(dom_probs[-1]) if dom_probs else 0.1)
+
     def sample_classification_batch(
         self,
         rng: np.random.Generator,
@@ -788,11 +915,17 @@ class WindowedMultiDomainSampler:
         min_seq_len: int,
         variable_length: bool = True,
         non_sp_only: bool = False,
-        dom_probs: tuple[float, float, float] = (0.45, 0.32, 0.23),
+        dom_probs: Sequence[float] = (0.45, 0.32, 0.23),
+        clean_remap_labels: bool = False,
+        short_crop_prob: float = 0.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         pool_map = self.dom_items_non_sp if non_sp_only else self.dom_items_all
-        avail_doms = [d for d in (0, 1, 2) if pool_map[d].size > 0]
-        probs = np.array([dom_probs[d] for d in avail_doms], dtype=np.float64)
+        avail_doms = [
+            d for d in self.all_domain_ids if pool_map.get(d, np.empty(0)).size > 0
+        ]
+        probs = np.array(
+            [self._dom_weight(dom_probs, d) for d in avail_doms], dtype=np.float64
+        )
         probs /= probs.sum()
         chosen_doms = rng.choice(avail_doms, size=batch_size, p=probs)
 
@@ -806,7 +939,14 @@ class WindowedMultiDomainSampler:
         feats = np.zeros((batch_size, seq_len, self.feat_dim), dtype=np.float32)
         masks = np.zeros((batch_size, seq_len), dtype=np.float32)
         labels = self.orig_speaker_ids[item_indices].astype(np.int32)
+        if clean_remap_labels and non_sp_only:
+            labels = self.orig_to_clean_label[labels]
         eff_lens = rng.integers(min_seq_len, seq_len + 1, size=batch_size)
+        if variable_length and short_crop_prob > 0.0 and seq_len > 220:
+            short_hi = min(220, seq_len)
+            short_lens = rng.integers(100, short_hi + 1, size=batch_size)
+            use_short = rng.random(size=batch_size) < short_crop_prob
+            eff_lens = np.where(use_short, short_lens, eff_lens)
         if not variable_length:
             eff_lens = np.full((batch_size,), seq_len, dtype=np.int64)
 
@@ -834,10 +974,14 @@ class WindowedMultiDomainSampler:
         seq_len: int,
         min_seq_len: int,
         variable_length: bool = True,
-        dom_probs: tuple[float, float, float] = (0.45, 0.32, 0.23),
+        dom_probs: Sequence[float] = (0.45, 0.32, 0.23),
     ) -> tuple[np.ndarray, np.ndarray]:
-        avail_doms = [d for d in (0, 1, 2) if self.dom_spk_to_items[d]]
-        probs = np.array([dom_probs[d] for d in avail_doms], dtype=np.float64)
+        avail_doms = [
+            d for d in self.all_domain_ids if self.dom_spk_to_items.get(d)
+        ]
+        probs = np.array(
+            [self._dom_weight(dom_probs, d) for d in avail_doms], dtype=np.float64
+        )
         probs /= probs.sum()
         dom_choice = int(rng.choice(avail_doms, p=probs))
         groups = self.dom_spk_to_items[dom_choice]

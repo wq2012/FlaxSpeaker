@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate and (optionally) push model cards, metadata, and weights for all 55 HF repos.
+"""Regenerate and (optionally) push model cards, metadata, and weights for all 59 HF repos.
 
 For every `pretrained_models/<model_id>/`:
   1. regenerates `README.md` from `config.json` + `eval_results.json` via
@@ -7,13 +7,14 @@ For every `pretrained_models/<model_id>/`:
   2. with `--push`, uploads `README.md`, `config.json`, `eval_results.json` (plus
      `model.safetensors`, `flax_model.msgpack`, `model_fp32.tflite`, `model_int8.tflite`
      when `--include_weights` is passed) to `wq2012/<model_id>` and deletes any stale
-     `preprocessor_config.json` from the Hub. Any newly created HF repository is
-     created with `private=True` by default.
+     `preprocessor_config.json` from the Hub. Pass `--public` to create / ensure
+     repositories are public (`private=False`) and attach them to the
+     `wq2012/flaxspeaker` collection.
 
 Usage:
     python scripts/update_hf_model_cards.py                           # regenerate locally only
-    python scripts/update_hf_model_cards.py --push                    # push cards + metadata
-    python scripts/update_hf_model_cards.py --push --include_weights  # push full release artifacts
+    python scripts/update_hf_model_cards.py --push --public           # push public cards + metadata
+    python scripts/update_hf_model_cards.py --push --include_weights --public
 """
 
 import argparse
@@ -63,6 +64,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--push", action="store_true")
     parser.add_argument(
+        "--public",
+        action="store_true",
+        help="Ensure pushed Hugging Face repositories are public (private=False) and in the collection.",
+    )
+    parser.add_argument(
+        "--collection_slug",
+        default="wq2012/flaxspeaker",
+        help="Hugging Face collection slug prefix when --public is passed.",
+    )
+    parser.add_argument(
         "--include_weights",
         action="store_true",
         help="Also upload model.safetensors, flax_model.msgpack, and *.tflite when present.",
@@ -71,8 +82,8 @@ def main() -> None:
     parser.add_argument(
         "--commit_message",
         default=(
-            "v0.7.0: SimAM-ERes2Conformer-XL/V2 + Hybrid-PFAS flagships, "
-            "55-model zoo, 24 TFLite exports, and updated model cards"
+            "v0.8.0: 7-corpus diarization + SV flagships, 59-model zoo, "
+            "30 TFLite exports, and updated model cards"
         ),
     )
     args = parser.parse_args()
@@ -95,22 +106,40 @@ def main() -> None:
     )
 
     api = HfApi()
+    resolved_collection_slug = ""
+    if args.public and args.collection_slug:
+        try:
+            colls = list(api.list_collections(owner="wq2012"))
+            for c in colls:
+                if c.slug.startswith(args.collection_slug):
+                    resolved_collection_slug = c.slug
+                    break
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: could not list collections: {exc}")
+
     newly_created_private: list[str] = []
     for idx, d in enumerate(model_dirs, 1):
         model_id = os.path.basename(d)
         repo_id = f"wq2012/{model_id}"
         repo_exists = True
         try:
-            api.repo_info(repo_id=repo_id, repo_type="model")
+            rinfo = api.repo_info(repo_id=repo_id, repo_type="model")
         except Exception:  # noqa: BLE001
             repo_exists = False
+            rinfo = None
         if not repo_exists:
+            want_private = not bool(args.public)
             api.create_repo(
-                repo_id=repo_id, repo_type="model", private=True, exist_ok=True
+                repo_id=repo_id, repo_type="model", private=want_private, exist_ok=True
             )
-            newly_created_private.append(repo_id)
+            if want_private:
+                newly_created_private.append(repo_id)
         else:
             api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
+            if args.public and rinfo is not None and bool(getattr(rinfo, "private", False)):
+                api.update_repo_visibility(
+                    repo_id=repo_id, repo_type="model", private=False
+                )
         ops = []
         upload_candidates = list(METADATA_FILES)
         if args.include_weights:
@@ -129,6 +158,16 @@ def main() -> None:
             operations=ops,
             commit_message=args.commit_message,
         )
+        if resolved_collection_slug:
+            try:
+                api.add_collection_item(
+                    collection_slug=resolved_collection_slug,
+                    item_id=repo_id,
+                    item_type="model",
+                    exists_ok=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"Warning: add_collection_item({repo_id}): {exc}")
         print(
             f"[{idx}/{len(model_dirs)}] pushed {repo_id} "
             f"({len(uploaded_names)} files: {', '.join(uploaded_names)}) -> {commit_info.oid[:8]}"

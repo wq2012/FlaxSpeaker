@@ -44,8 +44,8 @@ PRETRAINED_ROOT = os.environ.get(
     os.path.join(REPO_ROOT, "pretrained_models"),
 )
 EXAMPLES_DIR = os.path.join(THIS_DIR, "examples")
-DEFAULT_MODEL = "univ_full_eres2conformer_xl"
-FALLBACK_MODEL = "univ_full_eres2conformer_v2_large"
+DEFAULT_MODEL = "univ_full_eres2conformer_xl_diar_adapt"
+FALLBACK_MODEL = "univ_full_eres2conformer_xl"
 _MODEL_CACHE: dict[str, hf_compat.FlaxSpeakerModel] = {}
 _THRESHOLD_CACHE: dict[str, dict[str, float]] = {}
 _EVAL_SUMMARY_CACHE: dict[str, dict[str, float]] = {}
@@ -496,7 +496,7 @@ def build_demo() -> Any:
 
     with gr.Blocks(title="FlaxSpeaker — Universal Speaker Recognition") as demo:
         gr.Markdown(
-            "# FlaxSpeaker (`v0.7.0`) — Universal Multi-Domain Speaker Verification\n"
+            "# FlaxSpeaker (`v0.8.0`) — Universal & Diarization Multi-Domain Speaker Verification\n"
             "> **Disclaimer**: **This is not an officially supported Google product.** "
             "FlaxSpeaker is a from-scratch JAX/Flax re-implementation (using only the published "
             "papers, no proprietary code) of "
@@ -507,16 +507,21 @@ def build_demo() -> Any:
             "`SimAM-ERes2Conformer` (`XL`, `V2-Large`, `Large`) + `Context-ATP` (`catp`), "
             "`Hybrid-PFAS`, Sub-Center ArcFace (`K=3`) + `Inter-TopK`, "
             "SE-ResNet-34, ECAPA-TDNN, Conformer, and Mamba encoders.\n\n"
-            "> **Two-Tier Model Zoo (`55` Pretrained Models)**:\n"
-            "> 1. **Tier 2 — Full-Data Universal Flagships (`univ_full_*`, 11 models)**: "
+            "> **Two-Tier Model Zoo (`59` Pretrained Models)**:\n"
+            "> 1. **Tier 2 — Full-Data Universal & Diarization Flagships (`univ_full_*`, 15 models)**: "
+            "`SimAM-ERes2Conformer-XL-Diar-Adapt` (`64.38M`, **`0.39%`** VoxCeleb1-O QMF / `0.47%` raw, "
+            "**`0.93%` / `1.31%`** Fisher SV, **`4.51%`** 4-corpus diarization SV), "
             "`SimAM-ERes2Conformer-XL` (`64.38M`, `0.40%` VoxCeleb1-O QMF / `0.44%` raw), "
-            "`SimAM-ERes2Conformer-V2-Large` (`36.32M`, `0.58%` VoxCeleb1-O / `6.68%` CN-Celeb-E), "
-            "`SimAM-ERes2Conformer-Large` (`31.83M`), `SE-ResNet-34` (`24.55M`), "
+            "`SimAM-ERes2Conformer-XL-Diar-PFAS` (`77.05M`, **`3.93%`** 4-corpus diarization SV / "
+            "**`1.15%`** Fisher WS), "
+            "`SimAM-ERes2Conformer-XL-Diar` (`64.38M`, `0.52%` VoxCeleb1-O / `0.92%` Fisher SV), "
+            "`SimAM-ERes2Conformer-V2-Diar` (`36.32M`, `0.62%` VoxCeleb1-O / `0.97%` Fisher SV), "
+            "`SimAM-ERes2Conformer-V2-PFAS` (`46.47M`, **`5.82%`** CN-Celeb-E Multi-Enroll), "
+            "`SimAM-ERes2Conformer-XL-PFAS` (`77.05M`), `SE-ResNet-34` (`24.55M`), "
             "`Conformer-Large` (`22.01M`), and `ECAPA-TDNN-c1024` (`14.86M`) "
-            "trained from scratch across `12,193` base speakers (`36,579` speed-perturbed classes, "
-            "up to `1,708,852` clean utterances / `4,345,181` MUSAN + RIR + speed-augmented items "
-            "with Clean-K3 Large-Margin Fine-Tuning), plus `Hybrid-PFAS` (`V2-PFAS` `5.82%` CN-Celeb-E, "
-            "`XL-PFAS` `0.57%` VoxCeleb1-O / `6.04%` CN-Celeb-E, `Large-PFAS`), `PFAS-SN`, and `Dr-Vectors`.\n"
+            "trained from scratch across up to `24,110` physical speakers (`72,330` speed-perturbed classes, "
+            "`2,481,542` clean utterances / `7,435,874` MUSAN + RIR + speed-augmented items across "
+            "VoxCeleb1/2, CN-Celeb1/2, LibriSpeech-960h, Fisher, AMI, ICSI, and CallHome).\n"
             "> 2. **Tier 1 — Controlled Multi-Domain Benchmark (`univ_*`, `ls_*`, `cn_*`, `vox_*`, "
             "44 models)**: trained on fixed bounded subsets (`<= 381` speakers, `<= 9,447` clean "
             "utterances) for controlled architectural, pooling, and loss ablations.\n\n"
@@ -525,7 +530,7 @@ def build_demo() -> Any:
             "`eval_results.json` operating point (`1-utt` for single enrollment, `3-utt` for "
             "multi-utterance enrollment).\n\n"
             "**Links**: "
-            "[Hugging Face Collection (55 Pretrained Models)]"
+            "[Hugging Face Collection (59 Pretrained Models)]"
             "(https://huggingface.co/collections/wq2012/flaxspeaker) | "
             "[GitHub Repository (`wq2012/FlaxSpeaker`)](https://github.com/wq2012/FlaxSpeaker) | "
             "[PyPI (`flaxspeaker`)](https://pypi.org/project/flaxspeaker/)"

@@ -1,4 +1,4 @@
-# FlaxSpeaker v0.7.0: Universal Multi-Domain Speaker Recognition Research Report
+# FlaxSpeaker v0.8.0: Universal Multi-Domain & Diarization Speaker Recognition Research Report
 
 ## Disclaimer & Open-Source Reproduction Notice
 
@@ -10,38 +10,49 @@
 > 3. **ATP** (a *language identification* paper whose pooling head is repurposed here): Quan Wang, Yang Yu, Jason Pelecanos, Yiling Huang, and Ignacio Lopez Moreno, *"Attentive Temporal Pooling for Conformer-based Streaming Language Identification in Long-form Speech"*, Odyssey 2022 ([arXiv:2202.12163](https://arxiv.org/abs/2202.12163)).
 > 4. **PFAS**: Jason Pelecanos, Quan Wang, Yiling Huang, and Ignacio Lopez Moreno, *"Parameter-Free Attentive Scoring for Speaker Verification"*, Odyssey 2022 ([arXiv:2203.05642v3](https://arxiv.org/abs/2203.05642v3)).
 >
-> The experiments reported in those original papers were conducted using internal proprietary infrastructure and large-scale datasets (`~8K–18K` speakers, `~500k` steps), not this open-source library. All benchmark numbers in this report are measured directly from our open-source JAX/Flax implementation on public datasets (`VoxCeleb2`, `VoxCeleb1`, `CN-Celeb1/2`, `LibriSpeech`).
+> The experiments reported in those original papers were conducted using internal proprietary infrastructure and large-scale datasets (`~8K–18K` speakers, `~500k` steps), not this open-source library. All benchmark numbers in this report are measured directly from our open-source JAX/Flax implementation on public datasets (`VoxCeleb2`, `VoxCeleb1`, `CN-Celeb1/2`, `LibriSpeech`, `Fisher`, `AMI`, `ICSI`, `CallHome`).
 >
-> **Two-Tier `v0.7.0` Scope & Corpus-Scale Notice.** `FlaxSpeaker v0.7.0` ships **55 pretrained checkpoints** organized into two tiers:
-> 1. **Tier-2 Full-Data Universal Flagships (`11` `univ_full_*` models, `14.86M–77.05M` parameters):** Trained 100% from scratch via `jax.pmap` across TPU v5p/v6p devices over **`12,193` physical speakers** (`36,579` speed-perturbed classes across `VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech-960h` with `MUSAN` noise/music/babble and `RIRS_NOISES` room impulse responses, up to `145` shuffled `float16` shards = `1,708,852` clean utterances / `4,345,181` augmented items) and evaluated zero-shot on the full official trial lists (**VoxCeleb1-O** `37,611` trials, **CN-Celeb-E** `3,484,292` trials, and **LibriSpeech `test-clean`** `10,000` 1-utt / `3,000` 3-utt trials). **[`univ_full_eres2conformer_xl`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl)** (`64.38M` params, `145,000` steps) reaches **`0.40%` VoxCeleb1-O QMF EER** (**`0.44%` raw**, `minDCF@0.01 = 0.0510`, `AUC = 0.9999`; `1.67%` FP32 / `1.70%` INT8 TFLite) and **`0.34%` 1-Utt QMF / `0.13%` 3-Utt AS-Norm LibriSpeech `test-clean` EER**, while **[`univ_full_eres2conformer_v2_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_pfas)** (`46.47M` params, `Hybrid-PFAS` `alpha = 0.4368`) reaches **`5.82%` CN-Celeb-E Multi-Enroll AS-Norm EER** (**`6.25%` Single-Enroll QMF**, `6.82%` raw; **`5.60%` Multi-Enroll / `5.67%` Single QMF** with 6-way fusion).
-> 2. **Tier-1 Controlled Benchmark Zoo (`44` `univ_*`, `ls_*`, `cn_*`, `vox_*` models, `0.63M–4.55M` parameters):** Trained to calibrated `S_safe = X + 2` epoch step budgets (`4,600` steps / `15.58` epochs on Universal `381` spk / `9,447` utts; `2,400–2,600` steps on LibriSpeech; `1,600–1,800` steps on CN-Celeb2; `1,000` steps on VoxCeleb1; `32` utterances per step) with uniform variable-length masked crops `T ~ U(90, 180)` (`55 / 55` released checkpoints verified in `pretrained_models/step0_fingerprints.json`: `44` exact `variable`, `10` `variable_approx`, and `1` `both_approx`), `Sub-Center ArcFace (K=3)`, and `BatchNorm` after activation in `ECAPA-TDNN`. Several released zoo models use **FlaxSpeaker variants** of the cited algorithms; all four paper-faithful `pure_paper_mode=True` presets are also trained for `4,600` steps and benchmarked in Section 10 (`ablation_results.json → studies.paper_faithful_presets_smoke_test`).
+> **Two-Tier `v0.8.0` Scope & Corpus-Scale Notice.** `FlaxSpeaker v0.8.0` ships **59 pretrained checkpoints** organized into two tiers:
+> 1. **Tier-2 Full-Data Universal & Diarization Flagships (`15` `univ_full_*` models, `14.86M–77.05M` parameters):** Trained 100% from scratch via `jax.pmap` across TPU v5p/v6p devices over **`12,193` to `24,110` physical speakers** (`36,579` to `72,330` speed-perturbed classes across `VoxCeleb2-dev + VoxCeleb1-dev + CN-Celeb1/2 + LibriSpeech-960h` plus overlap-subtracted `Fisher + AMI + ICSI + CallHome` diarization turns in `v0.8.0`, with `MUSAN` noise/music/babble and `RIRS_NOISES` room impulse responses, up to `212` shuffled `float16` shards = `2,481,542` clean utterances / `7,435,874` augmented items) and evaluated zero-shot on the full official trial lists (**VoxCeleb1-O** `37,611` trials, **CN-Celeb-E** `3,484,292` trials, **LibriSpeech `test-clean`** `10,000` 1-utt / `3,000` 3-utt trials, and **4-Corpus Diarization SV** `82,000` trials across Fisher, AMI, ICSI, and CallHome). **[`univ_full_eres2conformer_xl_diar_adapt`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_adapt)** (`64.38M` params, `78,000` adaptation steps) reaches **`0.39%` VoxCeleb1-O QMF EER** (**`0.47%` raw**, **`1.58%` FP32 / `1.57%` INT8 TFLite**) and **`4.51%` 4-Corpus Diarization Within-Session QMF EER** (`1.31%` Fisher WS / `0.93%` Fisher Std), **[`univ_full_eres2conformer_xl_diar_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_pfas)** (`77.05M` params) reaches **`3.93%` 4-Corpus Diarization Within-Session QMF EER** (**`1.15%`** Fisher WS / **`4.45%`** AMI WS / `0.48%` VoxCeleb1-O QMF / `6.00%` CN-Celeb-E Multi-Enroll), **[`univ_full_eres2conformer_xl`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl)** reaches **`0.40%` VoxCeleb1-O QMF** and **`0.34% / 0.13%` LibriSpeech `test-clean`**, and **[`univ_full_eres2conformer_v2_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_pfas)** reaches **`5.82%` CN-Celeb-E Multi-Enroll AS-Norm EER** (**`6.25%` Single-Enroll QMF**; **`5.60%` Multi-Enroll / `5.67%` Single QMF** with 6-way fusion).
+> 2. **Tier-1 Controlled Benchmark Zoo (`44` `univ_*`, `ls_*`, `cn_*`, `vox_*` models, `0.63M–4.55M` parameters):** Trained to calibrated `S_safe = X + 2` epoch step budgets (`4,600` steps / `15.58` epochs on Universal `381` spk / `9,447` utts; `2,400–2,600` steps on LibriSpeech; `1,600–1,800` steps on CN-Celeb2; `1,000` steps on VoxCeleb1; `32` utterances per step) with uniform variable-length masked crops `T ~ U(90, 180)` (`59 / 59` released checkpoints verified in `pretrained_models/step0_fingerprints.json`: `44` exact `variable`, `14` `variable_approx`, and `1` `both_approx`), `Sub-Center ArcFace (K=3)`, and `BatchNorm` after activation in `ECAPA-TDNN`. Several released zoo models use **FlaxSpeaker variants** of the cited algorithms; all four paper-faithful `pure_paper_mode=True` presets are also trained for `4,600` steps and benchmarked in Section 10 (`ablation_results.json → studies.paper_faithful_presets_smoke_test`).
 
 ---
 
 ## 1. Executive Summary & Verification Provenance
 
-This report documents a **55-model two-tier empirical investigation** of **Universal Multi-Domain Speaker Recognition** versus **Single-Domain Speaker Recognition** in `FlaxSpeaker v0.7.0` across 7 neural backbones (`SimAM-ERes2Conformer`, `Conformer`, `Transformer`, `Mamba`, `LSTM`, `ECAPA-TDNN`, `SE-ResNet-18/34`), 10 temporal pooling heads (led by utterance-context-aware `Context-ATP` / `catp`, `Hybrid-PFAS`, and `ATP`), 7 released training objectives (`Sub-Center ArcFace K=3` with optional `Inter-TopK` and `decay_class_weights`, `CosFace`, `SphereFace`, `GE2E-Softmax`, `GE2E-Contrast`, `Extended-Set Softmax`, `Triplet`) with 4 scoring heads (`Cosine`, `Hybrid-PFAS`, `Dr-Vectors`, `PFAS`), and 5 parameter scales (`tiny`, `small`, `base`, `large`, `xl`, `0.63M–77.05M` parameters), backed by a 7-arm + 4-run long-horizon `v0.7.0` TPU v6p ablation (`v070_ablation_results.json`), a 3-arm `27,500`-step `SimAM-ERes2Conformer` architecture & optimizer ablation, a 16-candidate wide `PFAS` hyperparameter sweep, 2-way to 6-way heterogeneous score fusion, 7 controlled ablation groups (`35` runs), 3-seed stability runs, matched-data controls at `2,400` and `4,600` steps, and a step-0 loss fingerprint of every released checkpoint (§10).
+This report documents a **59-model two-tier empirical investigation** of **Universal Multi-Domain & Diarization Speaker Recognition** versus **Single-Domain Speaker Recognition** in `FlaxSpeaker v0.8.0` across 7 neural backbones (`SimAM-ERes2Conformer`, `Conformer`, `Transformer`, `Mamba`, `LSTM`, `ECAPA-TDNN`, `SE-ResNet-18/34`), 10 temporal pooling heads (led by utterance-context-aware `Context-ATP` / `catp`, `Hybrid-PFAS`, and `ATP`), 7 released training objectives (`Sub-Center ArcFace K=3` with optional `Inter-TopK` and `decay_class_weights`, `CosFace`, `SphereFace`, `GE2E-Softmax`, `GE2E-Contrast`, `Extended-Set Softmax`, `Triplet`) with 4 scoring heads (`Cosine`, `Hybrid-PFAS`, `Dr-Vectors`, `PFAS`), and 5 parameter scales (`tiny`, `small`, `base`, `large`, `xl`, `0.63M–77.05M` parameters), backed by a 7-arm `v0.8.0` 7-corpus adaptation & `Hybrid-PFAS` ablation (`v080_diarization_ablation_results.json`), an 11-model zero-shot diarization SV audit (`v070_diar_zero_shot_summary.json`), a 7-arm + 4-run long-horizon `v0.7.0` TPU v6p ablation (`v070_ablation_results.json`), a 3-arm `27,500`-step `SimAM-ERes2Conformer` architecture & optimizer ablation, a 16-candidate wide `PFAS` hyperparameter sweep, 2-way to 6-way heterogeneous score fusion, 7 controlled ablation groups (`35` runs), 3-seed stability runs, matched-data controls at `2,400` and `4,600` steps, and a step-0 loss fingerprint of every released checkpoint (§10).
 
-- **Hugging Face Pretrained Model Collection (55 Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker) (individual repositories at `https://huggingface.co/wq2012/<model_id>`)
-- **Machine-Readable Metrics Artifact (`55` models + `24` TFLite exports)**: [`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json) (and per-model [`pretrained_models/<model_id>/eval_results.json`](pretrained_models/))
-- **Tier-2 Full-Data Flagships & Official Benchmarks (`11` flagships + 2-way to 6-way fusion)**: [`pretrained_models/full_data_flagship_results.json`](pretrained_models/full_data_flagship_results.json) (`scripts/train_full_data_flagships.py`)
+- **Hugging Face Pretrained Model Collection (59 Models)**: [`wq2012/FlaxSpeaker`](https://huggingface.co/collections/wq2012/flaxspeaker) (individual repositories at `https://huggingface.co/wq2012/<model_id>`)
+- **Machine-Readable Metrics Artifact (`59` models + `30` TFLite exports)**: [`pretrained_models/benchmark_results.json`](pretrained_models/benchmark_results.json) (and per-model [`pretrained_models/<model_id>/eval_results.json`](pretrained_models/))
+- **Tier-2 Full-Data Flagships & Official Benchmarks (`15` flagships + 2-way to 6-way & 7-corpus fusion)**: [`pretrained_models/full_data_flagship_results.json`](pretrained_models/full_data_flagship_results.json) (`scripts/train_full_data_flagships.py`)
+- **`v0.8.0` 7-Corpus Diarization SV Benchmarks & 7-Arm Adaptation Ablation**: [`pretrained_models/v080_diarization_ablation_results.json`](pretrained_models/v080_diarization_ablation_results.json), [`pretrained_models/v070_diar_zero_shot_summary.json`](pretrained_models/v070_diar_zero_shot_summary.json) (`scripts/prepare_diarization_dataset.py`)
 - **Controlled `v0.7.0` 7-Arm Ablation & 4-Run Full-Corpus Horizon Crossover**: [`pretrained_models/v070_ablation_results.json`](pretrained_models/v070_ablation_results.json)
 - **Controlled 3-Arm `SimAM-ERes2Conformer` Architecture & Optimizer Ablation (`27,500` steps)**: [`pretrained_models/eres2conformer_ablation_results.json`](pretrained_models/eres2conformer_ablation_results.json)
 - **16-Candidate Wide `PFAS` Hyperparameter Sweep**: [`pretrained_models/pfas_hparam_sweep.json`](pretrained_models/pfas_hparam_sweep.json) (`scripts/run_pfas_hparam_sweep.py`)
 - **Phase-1 Convergence Pilot & Schedule Calibration**: [`pretrained_models/phase1_convergence_pilot.json`](pretrained_models/phase1_convergence_pilot.json) (`scripts/run_phase1_convergence_pilot.py`)
 - **Controlled Ablations & Paper-Faithful Presets**: [`pretrained_models/ablation_results.json`](pretrained_models/ablation_results.json) (`scripts/run_r1_ablations.py`)
 - **Multi-Seed Stability, Own-Schedule Horizons & Matched-Data Controls**: [`pretrained_models/r2_seed_and_control_results.json`](pretrained_models/r2_seed_and_control_results.json) (`scripts/run_r2_controls.py`)
-- **VoxCeleb1-O 10-Speaker Subset Evaluation (`55` models)**: [`pretrained_models/vox1_o_10spk_subset_results.json`](pretrained_models/vox1_o_10spk_subset_results.json) (`scripts/eval_vox1_o_subset.py`)
-- **Step-0 Loss Fingerprint (`44` `variable` + `10` `variable_approx` + `1` `both_approx`)**: [`pretrained_models/step0_fingerprints.json`](pretrained_models/step0_fingerprints.json) (`scripts/fingerprint_released_checkpoints.py`)
+- **VoxCeleb1-O 10-Speaker Subset Evaluation (`59` models)**: [`pretrained_models/vox1_o_10spk_subset_results.json`](pretrained_models/vox1_o_10spk_subset_results.json) (`scripts/eval_vox1_o_subset.py`)
+- **Step-0 Loss Fingerprint (`44` `variable` + `14` `variable_approx` + `1` `both_approx`)**: [`pretrained_models/step0_fingerprints.json`](pretrained_models/step0_fingerprints.json) (`scripts/fingerprint_released_checkpoints.py`)
 - **Reproducible Table & Figure Generators**: `scripts/generate_report_tables.py`, `scripts/generate_paper_tables.py`, `scripts/generate_figures.py`
 
 ![FlaxSpeaker Architecture Diagram](resources/architecture_diagram.png)
 
 ![FlaxSpeaker Tier-2 Flagships & SimAM-ERes2Conformer Ablation](resources/flagship_comparison.png)
 
+![FlaxSpeaker v0.8.0 Diarization SV Comparison](resources/diarization_sv_comparison.png)
+
 ![FlaxSpeaker Benchmark Summary](resources/benchmark_charts.png)
 
-### Key Research Highlights (`v0.7.0`)
+### Key Research Highlights (`v0.8.0`)
+
+0. **Overlap-Subtracted Diarization Training (`v0.8.0`) Cuts Conversational Telephone SV EER by `4.5–5.1x` and Reaches `0.39%` VoxCeleb1-O (`1.57%` INT8 TFLite)**:
+   - Evaluating all `11` `v0.7.0` 3-corpus universal flagships zero-shot on `82,000` trials extracted from **Fisher**, **CallHome**, **AMI**, and **ICSI** reveals severe narrowband (`0–4 kHz`), reverberant, and short-turn (`0.8–2.0 s`) degradation (`5.90%` Fisher WS / `7.14%` 4-corpus macro WS QMF EER on `univ_full_eres2conformer_xl`).
+   - Cropping `772,690` overlap-free speaker turns (`0.10 s` collar, `<= 0.30 s` pause merging across `11,917` speakers) and training across all `24,110` physical speakers (`72,330` classes, `212` shards = `2.48M` clean utterances / `7.44M` items) yields 4 new public flagships:
+     - **[`univ_full_eres2conformer_xl_diar_adapt`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_adapt)** (`64.38M`, `78,000` steps = `3k` frozen-trunk prototype alignment + `65k` 5-domain SGD + `10k` bimodal `Clean-K3 LMFT`): **`0.39%` VoxCeleb1-O QMF EER** (`0.47%` raw, **`1.58%` FP32 / `1.57%` INT8 TFLite**), **`1.31% / 0.93% / 1.68%` Fisher WS / Std / Short QMF EER**, **`5.40%` AMI WS**, and **`4.51% / 5.49% / 6.54%` 4-Corpus Macro WS / Std / Short QMF EER** (outperforming `162k`-step from-scratch `univ_full_eres2conformer_xl_diar` at `0.52%` VoxCeleb1-O and `5.03%` 4-corpus macro WS).
+     - **[`univ_full_eres2conformer_xl_diar_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_pfas)** (`77.05M`, `24,000` episodes on `100%` frozen `78k` `XL-Diar-Adapt` trunk, `alpha = 0.350`): **`3.93%` 4-Corpus Macro Within-Session QMF EER** (**`4.96%` Standard**, **`5.98%` Short-Turn** — `-35.4%` relative vs. best `v0.7.0` zero-shot `6.08%`), **`1.15% / 0.74% / 1.39%` Fisher WS / Std / Short**, **`2.32%` CallHome WS**, **`4.45%` AMI WS**, **`7.80%` ICSI WS**, **`0.48%` VoxCeleb1-O QMF**, and **`6.00%` CN-Celeb-E Multi-Enroll**.
+     - **[`univ_full_eres2conformer_v2_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_diar)** (`36.32M`, `78,000` steps): **`0.62%` VoxCeleb1-O QMF** (`1.91% / 1.96%` FP32/INT8 TFLite), **`1.38% / 0.97%` Fisher WS / Std**, **`4.79%` 4-Corpus Macro WS**, and **`6.57%` CN-Celeb-E Multi-Enroll**.
+     - **[`univ_full_eres2conformer_xl_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar)** (`64.38M`, `162,000` steps from scratch): **`0.52%` VoxCeleb1-O QMF** (`1.61% / 1.62%` FP32/INT8 TFLite), **`1.24% / 0.92% / 1.30%` Fisher WS / Std / Short**, **`2.43%` CallHome WS**, and **`6.48%` CN-Celeb-E Multi-Enroll**.
 
 1. **`SimAM-ERes2Conformer-XL` (`0.40%` VoxCeleb1-O) & `Hybrid-PFAS` (`5.82%` CN-Celeb-E) — Full-Corpus Scaling, Horizon-Regularization Crossover & Attentive Scoring**:
    - Expanding training across all `145` shuffled `float16` shards (`1,708,852` clean utterances / `4,345,181` `MUSAN + RIRS_NOISES + 3x speed`-augmented items across `12,193` speakers) with `2D-fwSE`, `3-Stage (2+3+4) MFA`, `Clean-K3 LMFT + SWA + Exact BN + QMF-v2`, `Inter-TopK` (`K=5, m=0.06`) + Narrowband/Tilt `SpecAugment`, and frozen-trunk `Hybrid-PFAS` yields 5 new public flagships that surpass `v0.6.0` across every benchmark:
@@ -88,7 +99,8 @@ All controlled datasets are stored under `./data/speaker_datasets` with strictly
 | **`voxceleb1`** (Tier-1) | English Celebrity Interviews (`16 kHz`) | 30 (`seed=42`) | 750 | `1,000` (`42.67` ep) | 10 (`seed=42`, unseen) | 250 | 2,000 / 1,000 |
 | **`vox1_o_10spk_subset`** | VoxCeleb1-O **10-speaker subset** of `veri_test2.txt` | — (Eval-Only) | — | — | 10 (`id10271..id10308`) | 937 | 2,500 / — |
 | **`universal`** (Tier-1) | **Combined 3-Domain Controlled Mix (`LS + CN + VOX`)** | **381** | **9,447** | **`4,600` (`15.58` ep)** | **80** | **1,989** | **8,000 / 3,000** |
-| **`universal_full`** (Tier-2) | **Full Multi-Corpus (`Vox2 + Vox1-dev + CN1/2 + LS-960h`)** | **12,193** (`36,579` `3x` spk) | **464,557–1,708,852** (`1.86M–4.35M` aug) | **`145k–162k` (`V2/XL`) / `93k` (`L`) / `81k` / `24k, 16k`** | **40 (`Vox1-O`) / 200 (`CN-E`) / 40 (`LS-test`)** | **4,874 / 17,973 / 2,620** | **37,611 / 3,484,292 / 10,000 (3,000 3-utt)** |
+| **`universal_full`** (Tier-2, `v0.5–0.7`) | **Full 3-Domain Multi-Corpus (`Vox2 + Vox1-dev + CN1/2 + LS-960h`)** | **12,193** (`36,579` `3x` spk) | **464,557–1,708,852** (`1.86M–4.35M` aug) | **`145k–162k` (`V2/XL`) / `93k` (`L`) / `81k` / `24k, 16k`** | **40 (`Vox1-O`) / 200 (`CN-E`) / 40 (`LS-test`)** | **4,874 / 17,973 / 2,620** | **37,611 / 3,484,292 / 10,000 (3,000 3-utt)** |
+| **`diar_full_v080`** (Tier-2, `v0.8.0`) | **7-Corpus + Diarization (`+ Fisher + AMI + ICSI + CallHome`, `0.10 s` collar)** | **24,110** (`72,330` `3x` spk) | **2,481,542** (`7.44M` aug across `212` shards) | **`162k` (`XL-Diar`) / `78k` (`Adapt, V2-Diar`) / `24k` (`PFAS`)** | **Unseen Fisher / AMI / ICSI / CallHome sessions** | **30,078** | **82,000 test (`11,000` val)** |
 
 ---
 
@@ -190,9 +202,9 @@ All controlled datasets are stored under `./data/speaker_datasets` with strictly
 
 ---
 
-## 8. Tier-2 Full-Data Universal Flagships (`12,193` Speakers), `SimAM-ERes2Conformer` Ablation, 16-Config PFAS Sweep & Score Fusion
+## 8. Tier-2 Full-Data Universal & Diarization Flagships (Up to `24,110` Speakers), `SimAM-ERes2Conformer` Ablation, 16-Config PFAS Sweep & Score Fusion
 
-### 8.1 Full-Data Universal Flagships & Heterogeneous Score Fusion on Official Benchmarks (`full_data_flagship_results.json`)
+### 8.1 Full-Data Universal & Diarization Flagships & Heterogeneous Score Fusion on Official Benchmarks (`full_data_flagship_results.json`)
 
 <!-- BEGIN README_FLAGSHIP_TABLE -->
 | Hugging Face Repository | Backbone / Head / Objective | Params | Steps | VoxCeleb1-O Official (`37,611` trials) Raw / AS-Norm / QMF EER (%) | CN-Celeb-E Official (`3.48M` trials) Single Raw / QMF / Multi-Enroll EER (%) | LibriSpeech `test-clean` (`10,000` trials) 1-Utt Raw / QMF / 3-Utt EER (%) | Controlled 3-Domain Pooled 1-Utt / 3-Utt EER (%) | Controlled Macro-Avg 1-Utt / 3-Utt EER (%) |
@@ -207,12 +219,17 @@ All controlled datasets are stored under `./data/speaker_datasets` with strictly
 | [`wq2012/univ_full_eres2conformer_v2_large`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_large) | `eres2conformer` (`large`) / `catp` / `subcenter_arcface` (`cosine`) | `36,324,302` | `162,000` | 0.66% / 0.66% / 0.58% | 7.58% / 6.92% / 6.68% | 0.52% / 0.45% / **0.13%** | 4.35% / 2.27% (raw 2.27%) | 3.20% / 1.87% |
 | [`wq2012/univ_full_eres2conformer_v2_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_pfas) | `eres2conformer` (`large`) / `hybrid_pfas` / `extended_set_softmax` (`hybrid_pfas`) | `46,469,194` | `24,000` | 0.73% / 0.78% / 0.66% | 6.82% / **6.25%** / **5.82%** | 0.77% / 0.56% / 0.37% | 3.40% / 1.87% (raw 1.87%) | 2.61% / 1.57% |
 | [`wq2012/univ_full_eres2conformer_xl_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_pfas) | `eres2conformer` (`xl`) / `hybrid_pfas` / `extended_set_softmax` (`hybrid_pfas`) | `77,049,960` | `24,000` | 0.63% / 0.66% / 0.57% | 7.13% / 6.41% / 6.04% | 0.71% / 0.69% / 0.27% | 3.29% / 1.80% (raw 1.80%) | 2.69% / 1.53% |
-| [`wq2012/univ_full_eres2conformer_xl`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl) | `eres2conformer` (`xl`) / `catp` / `subcenter_arcface` (`cosine`) | `64,376,300` | `145,000` | 0.44% / 0.47% / **0.40%** | 8.04% / 7.37% / 7.06% | 0.52% / **0.34%** / **0.13%** | 4.20% / 2.30% (raw 2.30%) | 3.03% / 1.80% |
+| [`wq2012/univ_full_eres2conformer_xl`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl) | `eres2conformer` (`xl`) / `catp` / `subcenter_arcface` (`cosine`) | `64,376,300` | `145,000` | 0.44% / 0.47% / 0.40% | 8.04% / 7.37% / 7.06% | 0.52% / **0.34%** / **0.13%** | 4.20% / 2.30% (raw 2.30%) | 3.03% / 1.80% |
+| [`wq2012/univ_full_eres2conformer_v2_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_diar) | `eres2conformer` (`large`) / `catp` / `subcenter_arcface` (`cosine`) | `36,324,302` | `78,000` | 0.64% / 0.66% / 0.62% | 7.57% / 7.10% / 6.57% | 0.48% / 0.38% / 0.20% | 4.04% / 1.90% (raw 1.90%) | 3.04% / 1.57% |
+| [`wq2012/univ_full_eres2conformer_xl_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar) | `eres2conformer` (`xl`) / `catp` / `subcenter_arcface` (`cosine`) | `64,376,300` | `162,000` | 0.57% / 0.60% / 0.52% | 7.55% / 7.23% / 6.48% | 0.77% / 0.54% / 0.20% | 4.16% / 2.07% (raw 2.07%) | 3.22% / 1.93% |
+| [`wq2012/univ_full_eres2conformer_xl_diar_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_pfas) | `eres2conformer` (`xl`) / `hybrid_pfas` / `extended_set_softmax` (`hybrid_pfas`) | `77,049,960` | `24,000` | 0.50% / 0.58% / 0.48% | 7.02% / 6.50% / 6.00% | 0.50% / 0.38% / 0.20% | 3.38% / 1.83% (raw 1.83%) | 2.58% / 1.47% |
+| [`wq2012/univ_full_eres2conformer_xl_diar_adapt`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_adapt) | `eres2conformer` (`xl`) / `catp` / `subcenter_arcface` (`cosine`) | `64,376,300` | `78,000` | 0.47% / 0.48% / **0.39%** | 7.99% / 7.32% / 6.82% | 0.44% / 0.35% / 0.23% | 3.88% / 2.13% (raw 2.13%) | 2.73% / 1.47% |
 | **2-Way Score Fusion (`0.3·Conformer-L + 0.7·ECAPA-c1024`)** | Heterogeneous Cosine + AS-Norm + QMF | `36,862,468` | — | — / 2.20% / 2.01% | — / 10.44% / — | — / 1.62% / — | — | — |
 | **3-Way Backbone Fusion (`0.25·Conf-L + 0.2·ECAPA + 0.55·ResNet-34`)** | 3-Architecture Cosine + AS-Norm + QMF | `61,413,940` | — | — / 1.62% / 1.43% | — / 9.37% / — | — / 1.14% / — | — | — |
 | **4-Way Backbone Fusion (`0.02·Conf-L + 0.1·ECAPA + 0.2·ResNet-34 + 0.68·ERes2Conf`)** | 4-Architecture Cosine + AS-Norm + QMF | `93,248,292` | — | — / 0.85% / 0.69% | — / 7.62% / — | — / 0.74% / — | — | — |
-| **6-Way Cosine Backbone Fusion (`Conf-L + ECAPA + ResNet-34 + ERes2Conf-L + V2-Large + XL`)** | 6-Backbone Pure Cosine + AS-Norm + QMF | `193,948,894` | — | — / **0.51%** / 0.44% | — / 6.43% / — | — / 0.44% / — | — | — |
-| **6-Way Flagship Fusion (`ERes2Conf Large/V2/XL Cosine + Large/V2/XL Hybrid-PFAS`)** | Heterogeneous 6-Way AS-Norm + QMF | `298,033,352` | — | — / 0.53% / **0.42%** | — / **5.67%** / — | — / 0.44% / — | — | — |
+| **6-Way Cosine Backbone Fusion (`Conf-L + ECAPA + ResNet-34 + ERes2Conf-L + V2-Large + XL`)** | 6-Backbone Pure Cosine + AS-Norm + QMF | `193,948,894` | — | — / 0.51% / 0.44% | — / 6.43% / — | — / 0.44% / — | — | — |
+| **6-Way Flagship Fusion (`ERes2Conf Large/V2/XL Cosine + Large/V2/XL Hybrid-PFAS`)** | Heterogeneous 6-Way AS-Norm + QMF | `298,033,352` | — | — / 0.53% / 0.42% | — / **5.67%** / — | — / 0.44% / — | — | — |
+| **4-Way 7-Corpus Diarization Fusion (`V2-Diar + XL-Diar + XL-Diar-Adapt + XL-Diar-PFAS`)** | 7-Corpus Cosine + Hybrid-PFAS QMF | `242,126,862` | — | — / **0.47%** / **0.40%** | — / 6.40% / 6.09% | — / 0.39% / **0.10%** | — | — |
 | **6-Way Multi-Enroll Fusion** | Cosine AS-Norm + Frame-Level PFAS | `298,033,352` | — | — | — / — / **5.60%** (`AUC 0.9864`) | — / — / 0.33% (`AUC 1.0000`) | — | — |
 <!-- END README_FLAGSHIP_TABLE -->
 
@@ -281,6 +298,39 @@ To systematically improve upon `univ_full_eres2conformer_large` (`0.71%` VoxCele
 | 16 | `pfas_sn_k4_d32_v128_anchor025` | `shared_nonlinear` (`4×(32,128)`) | `640` | `True` (`0.25`) | `extended_set_softmax` (`False`) | `7,197,515` | 14.80% [13.57, 16.13] | 13.87% [12.20, 15.77] | 14.33% |
 <!-- END PFAS_SWEEP_TABLE -->
 
+### 8.4 Overlap-Subtracted Diarization Speaker Verification & 7-Arm `v0.8.0` Adaptation Ablation (`v080_diarization_ablation_results.json`)
+
+To bridge standard wideband speaker verification and real-world conversational/meeting diarization, [`flaxspeaker/diarization_prep.py`](flaxspeaker/diarization_prep.py) (`scripts/prepare_diarization_dataset.py`) subtracts multi-speaker overlap regions expanded by a `0.10 s` collar, merges intra-turn pauses `<= 0.30 s`, resamples `8 kHz -> 16 kHz`, and enforces strict recording- and speaker-disjoint splits across **Fisher** (`8 kHz` telephone), **CallHome** (`8 kHz` telephone), **AMI** (`16 kHz` meeting microphones), and **ICSI** (`16 kHz` tabletop meetings). Across `82,000` held-out test trials (`Within-Session`, `Standard`, and `0.8–2.0 s` `Short-Turn`), two-phase Classifier-Aligned Continual Adaptation (`XL-Diar-Adapt`, `3k` frozen-trunk prototype warm-up + `65k` 5-domain SGD + `10k` bimodal `Clean-K3 LMFT`) preserves wideband angular margins (`0.39%` vs. `0.52%` VoxCeleb1-O QMF on `162k`-step from-scratch `XL-Diar`), while keeping the `78k` `XL-Diar-Adapt` trunk `100%` frozen during episodic `Hybrid-PFAS` training (`XL-Diar-PFAS`, Arm 7 vs. unfrozen Arms 4–5) achieves **`3.93% / 4.96% / 5.98%`** 4-corpus macro within-session / standard / short-turn QMF EER while retaining **`0.48%`** VoxCeleb1-O QMF and **`6.00%`** CN-Celeb-E Multi-Enroll:
+
+<!-- BEGIN DIARIZATION_SV_TABLE -->
+| Model / Regime | Train Corpora (`Spks`) | VoxCeleb1-O QMF (%) | Fisher (Tel.) WS / Std / Short QMF (%) | CallHome (Tel.) WS / Std / Short QMF (%) | AMI (Meeting) WS / Std / Short QMF (%) | ICSI (Meeting) WS / Std / Short QMF (%) | 4-Corpus Macro WS / Std / Short QMF (%) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| [`wq2012/univ_full_ecapa_c1024_arcface`](https://huggingface.co/wq2012/univ_full_ecapa_c1024_arcface) (Zero-Shot) | 3-Corpus (`12,193`) | 2.29% | 11.63% / 11.30% / 16.90% | 13.55% / 14.17% / 16.20% | 12.12% / 13.20% / 18.23% | 14.35% / 17.53% / 20.70% | 12.91% / 14.05% / 18.01% |
+| [`wq2012/univ_full_resnet34_arcface`](https://huggingface.co/wq2012/univ_full_resnet34_arcface) (Zero-Shot) | 3-Corpus (`12,193`) | 1.60% | 9.89% / 8.70% / 14.29% | 10.97% / 12.42% / 14.78% | 8.91% / 11.11% / 13.43% | 11.47% / 14.07% / 16.02% | 10.31% / 11.57% / 14.63% |
+| [`wq2012/univ_full_eres2conformer_large`](https://huggingface.co/wq2012/univ_full_eres2conformer_large) (Zero-Shot) | 3-Corpus (`12,193`) | 0.71% | 8.41% / 7.41% / 13.29% | 8.53% / 9.52% / 12.90% | 7.25% / 8.30% / 10.23% | 9.65% / 11.80% / 13.82% | 8.46% / 9.26% / 12.56% |
+| [`wq2012/univ_full_eres2conformer_v2_large`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_large) (Zero-Shot) | 3-Corpus (`12,193`) | 0.58% | 5.98% / 5.40% / 9.07% | 7.93% / 8.60% / 9.97% | 6.88% / 7.75% / 10.10% | 8.83% / 12.80% / 14.95% | 7.41% / 8.64% / 11.03% |
+| [`wq2012/univ_full_eres2conformer_v2_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_pfas) (Zero-Shot) | 3-Corpus (`12,193`) | 0.66% | 5.25% / 4.61% / 7.58% | 6.68% / 7.13% / 8.18% | 5.33% / 6.80% / 8.60% | 7.05% / 9.78% / 11.38% | 6.08% / 7.08% / 8.93% |
+| [`wq2012/univ_full_eres2conformer_xl_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_pfas) (Zero-Shot) | 3-Corpus (`12,193`) | 0.57% | 5.52% / 5.07% / 8.34% | 7.12% / 6.78% / 9.38% | 6.33% / 7.64% / 8.78% | 7.30% / 9.43% / 10.97% | 6.57% / 7.23% / 9.37% |
+| [`wq2012/univ_full_eres2conformer_xl`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl) (Zero-Shot) | 3-Corpus (`12,193`) | 0.40% | 5.90% / 5.46% / 9.28% | 7.75% / 7.97% / 9.88% | 6.10% / 8.40% / 9.40% | 8.80% / 12.48% / 15.05% | 7.14% / 8.58% / 10.90% |
+| **[`wq2012/univ_full_eres2conformer_v2_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_diar)** (`v0.8.0`) | 7-Corpus (`24,110`) | 0.62% | 1.38% / 0.97% / 1.88% | 3.17% / 3.08% / 3.50% | 5.51% / 5.75% / 7.75% | 9.08% / 12.87% / 14.57% | 4.79% / 5.67% / 6.92% |
+| **[`wq2012/univ_full_eres2conformer_xl_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar)** (`v0.8.0`) | 7-Corpus (`24,110`) | 0.52% | 1.24% / 0.92% / 1.30% | 2.43% / 2.47% / 3.20% | 6.36% / 6.89% / 8.85% | 10.07% / 14.03% / 15.10% | 5.03% / 6.08% / 7.11% |
+| **[`wq2012/univ_full_eres2conformer_xl_diar_pfas`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_pfas)** (`v0.8.0`) | 7-Corpus (`24,110`) | 0.48% | 1.15% / 0.74% / 1.39% | 2.32% / 2.50% / 3.50% | 4.45% / 5.12% / 7.37% | 7.80% / 11.47% / 11.65% | **3.93%** / **4.96%** / **5.98%** |
+| **[`wq2012/univ_full_eres2conformer_xl_diar_adapt`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_adapt)** (`v0.8.0`) | 7-Corpus (`24,110`) | **0.39%** | 1.31% / 0.93% / 1.68% | 2.88% / 2.85% / 3.55% | 5.40% / 5.90% / 8.20% | 8.47% / 12.28% / 12.75% | 4.51% / 5.49% / 6.54% |
+| **4-Way 7-Corpus Score Fusion** | 7-Corpus (`24,110`) | 0.40% | 1.13% / 0.82% / 1.31% | 2.10% / 2.30% / 2.90% | 4.85% / 5.56% / 7.27% | 8.05% / 12.23% / 12.68% | 4.03% / 5.23% / 6.04% |
+<!-- END DIARIZATION_SV_TABLE -->
+
+<!-- BEGIN V080_ABLATION_TABLE -->
+| `v0.8.0` 7-Corpus Adaptation / Hybrid-PFAS Arm | Steps | Trunk Regime | VoxCeleb1-O Raw / QMF (%) | CN-Celeb-E Multi-Enroll (%) | Fisher WS Raw / QMF (%) | AMI WS Raw / QMF (%) | 4-Corpus Macro WS / Std / Short QMF (%) |
+| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: |
+| 1. `XL-Diar-Adapt` (Gentle `lr=0.012`, `41k` steps) | `41,000` | Unfrozen SGD (`lr=0.012`) | 0.52% / 0.45% | 6.80% | 2.43% / 1.80% | 5.65% / 5.16% | 4.72% / 5.86% / 6.67% |
+| **2. `XL-Diar-Adapt` (`lr=0.045`, `78k` = `3k + 65k + 10k` Bimodal LMFT) [Released]** | `78,000` | 3k Head Align + Unfrozen SGD (`0.045`) | 0.47% / 0.39% | 6.82% | 1.77% / 1.31% | 6.75% / 5.40% | 4.51% / 5.49% / 6.54% |
+| 3. `XL-Diar` (`162k` = `150k + 12k` 100% From-Scratch) [Released] | `162,000` | 100% From-Scratch SGD (`lr=0.10`) | 0.57% / 0.52% | 6.48% | 1.60% / 1.24% | 8.69% / 6.36% | 5.03% / 6.08% / 7.11% |
+| 4. `XL-Diar-PFAS` (`trunk_lr_mult=0.02`, `20k` ep.) | `20,000` | Jointly Unfrozen AdamW (`0.02×`) | 1.00% / 0.85% | 6.33% | 2.87% / 2.22% | 4.19% / 4.19% | 4.07% / 5.14% / 6.20% |
+| 5. `XL-Diar-PFAS` (`trunk_lr_mult=0.004`, `15k` ep.) | `20,000` | Micro-Unfrozen AdamW (`0.004×`) | 0.92% / 0.83% | 6.90% | 3.54% / 2.38% | 4.97% / 4.42% | 4.09% / 5.14% / 6.24% |
+| 6. `XL-Diar-PFAS` (`100%` Frozen on Gentle `41k` trunk, `20k` ep.) | `20,000` | 100% Frozen Trunk (`trunk_lr=0`) | 0.70% / 0.71% | 5.98% | 1.48% / 1.34% | 5.67% / 4.88% | 4.13% / 5.30% / 5.49% |
+| **7. `XL-Diar-PFAS` (`100%` Frozen on `78k` `XL-Diar-Adapt` trunk) [Released]** | `24,000` | 100% Frozen Trunk (`trunk_lr=0`) | 0.50% / 0.48% | 6.00% | 1.21% / 1.15% | 5.51% / 4.45% | 3.93% / 4.96% / 5.98% |
+<!-- END V080_ABLATION_TABLE -->
+
 ---
 
 ## 9. Studies 1–4: Complete Single-Domain Baselines Evaluated Across All 3 Domains
@@ -321,16 +371,20 @@ To systematically improve upon `univ_full_eres2conformer_large` (`0.71%` VoxCele
 
 All tables in this section are generated directly from the JSON archives by `scripts/generate_report_tables.py`.
 
-### VoxCeleb1-O 10-speaker subset (all 55 models)
+### VoxCeleb1-O 10-speaker subset (all 59 models)
 
 Protocol: `veri_test2_10spk_subset_2500trials` — 2,500 trials (1,789 target / 711 impostor, 71.6% target), 937 utterances from 10 held-out speakers (`id10271`, `id10275`, `id10276`, `id10277`, `id10278`, `id10284`, `id10285`, `id10287`, `id10297`, `id10308`), VAD 26 dB (matched to training). **Not comparable to published VoxCeleb1-O numbers (see Section 8 for Official 37,611-trial VoxCeleb1-O).**
 
 | Model | Subset EER (%) [95% CI] | minDCF@0.01 | ROC-AUC | Pooled 1-utt EER (%) |
 | :--- | :---: | :---: | :---: | :---: |
 | `univ_full_eres2conformer_large` | 0.15 [0.03, 0.42] | 0.0050 | 1.0000 | 4.30 |
+| `univ_full_eres2conformer_xl_diar_adapt` | 0.25 [0.03, 0.45] | 0.0050 | 1.0000 | 3.88 |
 | `univ_full_eres2conformer_xl` | 0.31 [0.15, 0.73] | 0.0123 | 0.9999 | 4.20 |
+| `univ_full_eres2conformer_v2_diar` | 0.31 [0.15, 0.81] | 0.0101 | 1.0000 | 4.04 |
+| `univ_full_eres2conformer_xl_diar_pfas` | 0.34 [0.15, 0.74] | 0.0089 | 0.9999 | 3.38 |
 | `univ_full_eres2conformer_large_pfas` | 0.41 [0.14, 0.69] | 0.0106 | 0.9999 | 2.96 |
 | `univ_full_eres2conformer_v2_large` | 0.41 [0.15, 0.98] | 0.0179 | 0.9999 | 4.35 |
+| `univ_full_eres2conformer_xl_diar` | 0.43 [0.15, 0.74] | 0.0073 | 1.0000 | 4.16 |
 | `univ_full_eres2conformer_v2_pfas` | 0.56 [0.32, 0.85] | 0.0162 | 0.9999 | 3.40 |
 | `univ_full_eres2conformer_xl_pfas` | 0.84 [0.42, 1.21] | 0.0235 | 0.9998 | 3.29 |
 | `univ_full_resnet34_arcface` | 1.07 [0.78, 1.69] | 0.0721 | 0.9995 | 5.81 |
@@ -440,9 +494,9 @@ Protocol: `veri_test2_10spk_subset_2500trials` — 2,500 trials (1,789 target / 
 | Universal subsampled to LibriSpeech utterance count (`S_safe` 4,600-step schedule) | `4,600` | 381 / 5,788 | 7.83 | 19.17 | 19.70 | 15.57 | 15.29 [14.54, 16.12] | 10.60 | 11.20 |
 | `univ_conformer_small_ge2e` (full Universal 3-domain mix) § | `4,600` | 381 / 9,447 | 13.47 | 19.40 | 20.85 | 17.91 | 17.54 [16.76, 18.42] | 13.97 | 13.87 |
 
-### Step-0 loss fingerprint of all 55 released checkpoints (`step0_fingerprints.json`, code `8ddb265+dirty`; tolerance 5e-05)
+### Step-0 loss fingerprint of all 59 released checkpoints (`step0_fingerprints.json`, code `3db5915+dirty`; tolerance 5e-05)
 
-Histogram: `both_approx` = 1, `variable` = 44, `variable_approx` = 10.
+Histogram: `both_approx` = 1, `variable` = 44, `variable_approx` = 14.
 
 | Checkpoint | Loss | Released `initial_loss` | `HEAD`, fixed T = 180 | `HEAD`, T ~ U(90,180) | Match |
 | :--- | :--- | :---: | :---: | :---: | :--- |
@@ -497,8 +551,12 @@ Histogram: `both_approx` = 1, `variable` = 44, `variable_approx` = 10.
 | `univ_full_ecapa_c1024_arcface` | `arcface` | 12.4876 | 12.4590 | 12.4881 | `variable_approx` |
 | `univ_full_eres2conformer_large` | `subcenter_arcface` | 11.7771 | 11.7526 | 11.7810 | `variable_approx` |
 | `univ_full_eres2conformer_large_pfas` | `extended_set_softmax` | 0.4037 | 0.4142 | 0.4045 | `variable_approx` |
+| `univ_full_eres2conformer_v2_diar` | `subcenter_arcface` | 14.2460 | 14.2647 | 14.2432 | `variable_approx` |
 | `univ_full_eres2conformer_v2_large` | `subcenter_arcface` | 11.7756 | 11.7063 | 11.7803 | `variable_approx` |
 | `univ_full_eres2conformer_xl` | `subcenter_arcface` | 11.7048 | 11.6712 | 11.7055 | `variable_approx` |
+| `univ_full_eres2conformer_xl_diar` | `subcenter_arcface` | 12.4283 | 12.5042 | 12.4294 | `variable_approx` |
+| `univ_full_eres2conformer_xl_diar_adapt` | `subcenter_arcface` | 14.3797 | 14.4202 | 14.3801 | `variable_approx` |
+| `univ_full_eres2conformer_xl_diar_pfas` | `extended_set_softmax` | 0.1360 | 0.1536 | 0.1361 | `variable_approx` |
 | `univ_full_eres2conformer_xl_pfas` | `extended_set_softmax` | 0.1884 | 0.1609 | 0.1888 | `variable_approx` |
 | `univ_full_resnet34_arcface` | `arcface` | 12.4063 | 12.7355 | 12.4057 | `variable_approx` |
 
@@ -506,9 +564,9 @@ Histogram: `both_approx` = 1, `variable` = 44, `variable_approx` = 10.
 
 ## 11. Production Export: Hugging Face Hub & TensorFlow Lite (`FP32` and `INT8`)
 
-Every trained model (`55/55`) is published on the Hugging Face Hub in the [**`wq2012/FlaxSpeaker` Collection**](https://huggingface.co/collections/wq2012/flaxspeaker) (`https://huggingface.co/wq2012/<experiment_name>`) and exported locally under [`pretrained_models/<experiment_name>/`](pretrained_models/) containing `config.json`, `model.safetensors`, `flax_model.msgpack`, `eval_results.json`, and `README.md`.
+Every trained model (`59/59`) is published on the Hugging Face Hub in the [**`wq2012/FlaxSpeaker` Collection**](https://huggingface.co/collections/wq2012/flaxspeaker) (`https://huggingface.co/wq2012/<experiment_name>`) and exported locally under [`pretrained_models/<experiment_name>/`](pretrained_models/) containing `config.json`, `model.safetensors`, `flax_model.msgpack`, `eval_results.json`, and `README.md`.
 
-In addition, **12 converged models (`24` `.tflite` files: `6` Tier-2 `univ_full_*` flagships across `SimAM-ERes2Conformer-XL`, `SimAM-ERes2Conformer-V2-Large`, `SimAM-ERes2Conformer-Large`, `SE-ResNet-34`, `ECAPA-TDNN c=1024`, and `Conformer-Large` + `6` Tier-1 models across Conformer-ATP, ECAPA-TDNN, and LSTM)** were exported to **TensorFlow Lite (`.tflite`)** in both **FP32** and **dynamic-range INT8 quantized** formats (`180`-frame = `1.8 s` fixed encoder window) and evaluated via `scripts/eval_tflite_models.py`:
+In addition, **15 converged cosine-scored models (`30` `.tflite` files: `9` Tier-2 `univ_full_*` flagships across `SimAM-ERes2Conformer-XL-Diar-Adapt`, `SimAM-ERes2Conformer-XL-Diar`, `SimAM-ERes2Conformer-V2-Diar`, `SimAM-ERes2Conformer-XL`, `SimAM-ERes2Conformer-V2-Large`, `SimAM-ERes2Conformer-Large`, `SE-ResNet-34`, `ECAPA-TDNN c=1024`, and `Conformer-Large` + `6` Tier-1 models across Conformer-ATP, ECAPA-TDNN, and LSTM)** were exported to **TensorFlow Lite (`.tflite`)** in both **FP32** and **dynamic-range INT8 quantized** formats (`180`-frame = `1.8 s` fixed encoder window) and evaluated via `scripts/eval_tflite_models.py`:
 
 | Model | FP32 / INT8 size (MB) | Ratio | Primary eval set | TFLite FP32 EER (%) [95% CI] | TFLite INT8 EER (%) [95% CI] | JAX full-seq EER (%) | `cos(FP32, INT8)` mean (min) | CPU latency FP32 / INT8 (ms, 50-run mean) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -518,6 +576,9 @@ In addition, **12 converged models (`24` `.tflite` files: `6` Tier-2 `univ_full_
 | [`wq2012/univ_full_eres2conformer_large`](https://huggingface.co/wq2012/univ_full_eres2conformer_large) | 127.79 / **33.12** | **`3.86×`** | `voxceleb1_o (37,611 trials)` | 2.38% [2.21, 2.54] | **2.41%** [2.24, 2.56] | 0.84% | **`0.999707`** (`0.998887`) | 495.29 / 475.38 ms |
 | [`wq2012/univ_full_eres2conformer_v2_large`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_large) | 145.83 / **37.82** | **`3.86×`** | `voxceleb1_o (37,611 trials)` | 2.11% [1.96, 2.25] | **2.14%** [1.99, 2.28] | 0.66% | **`0.999355`** (`0.997561`) | 497.50 / 483.57 ms |
 | [`wq2012/univ_full_eres2conformer_xl`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl) | 258.11 / **66.42** | **`3.89×`** | `voxceleb1_o (37,611 trials)` | 1.67% [1.54, 1.83] | **1.70%** [1.55, 1.83] | 0.44% | **`0.999556`** (`0.996425`) | 860.11 / 803.73 ms |
+| [`wq2012/univ_full_eres2conformer_v2_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_v2_diar) | 145.87 / **37.86** | **`3.85×`** | `voxceleb1_o (37,611 trials)` | 1.91% [1.78, 2.05] | **1.96%** [1.80, 2.09] | 0.64% | **`0.999495`** (`0.998374`) | 520.90 / 493.14 ms |
+| [`wq2012/univ_full_eres2conformer_xl_diar`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar) | 258.17 / **66.48** | **`3.88×`** | `voxceleb1_o (37,611 trials)` | 1.61% [1.49, 1.74] | **1.62%** [1.50, 1.75] | 0.57% | **`0.999352`** (`0.997949`) | 858.25 / 799.61 ms |
+| [`wq2012/univ_full_eres2conformer_xl_diar_adapt`](https://huggingface.co/wq2012/univ_full_eres2conformer_xl_diar_adapt) | 258.17 / **66.48** | **`3.88×`** | `voxceleb1_o (37,611 trials)` | 1.58% [1.45, 1.69] | **1.57%** [1.45, 1.69] | 0.47% | **`0.999639`** (`0.998364`) | 942.10 / 863.21 ms |
 | [`wq2012/univ_conformer_small_ge2e`](https://huggingface.co/wq2012/univ_conformer_small_ge2e) | 8.25 / **2.33** | **`3.54×`** | `universal_pooled` | 20.26% [19.39, 21.14] | **20.40%** [19.48, 21.17] | 17.54% | **`0.999974`** (`0.999853`) | 10.61 / 9.79 ms |
 | [`wq2012/univ_ecapa_tdnn_small_ge2e`](https://huggingface.co/wq2012/univ_ecapa_tdnn_small_ge2e) | 6.82 / **1.86** | **`3.66×`** | `universal_pooled` | 19.93% [19.14, 20.80] | **19.96%** [19.12, 20.82] | 17.62% | **`0.999988`** (`0.999968`) | 8.05 / 7.18 ms |
 | [`wq2012/univ_lstm_small_ge2e`](https://huggingface.co/wq2012/univ_lstm_small_ge2e) | 7.09 / **2.06** | **`3.44×`** | `universal_pooled` | 21.94% [21.11, 22.84] | **22.02%** [21.12, 22.86] | 19.14% | **`0.999978`** (`0.999889`) | 31.59 / 17.02 ms |
