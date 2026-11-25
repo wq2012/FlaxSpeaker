@@ -140,6 +140,7 @@ def prepare_diarization_corpus(
     corpus: str = "diar",
     fisher_calldata_tbls: list[str] | None = None,
     ami_meetings_xml: str = "",
+    global_speaker_ids: bool = False,
     crop_config: diarization_prep.DiarizationCropConfig | None = None,
     eval_speaker_ratio: float = 0.20,
     num_eval_trials: int = 2000,
@@ -180,6 +181,7 @@ def prepare_diarization_corpus(
                 raw_speaker_tag=t.speaker,
                 fisher_pin_map=fisher_map,
                 ami_speaker_map=ami_map,
+                global_speaker_ids=global_speaker_ids,
             )
             resolved_turns.append(
                 diarization_prep.SpeakerTurn(
@@ -202,16 +204,35 @@ def prepare_diarization_corpus(
             sf.write(out_wav, wav_arr, cfg.target_sample_rate)
             all_records.append((seg_spec, out_wav, split_hint))
 
-    # Enforce strict speaker disjointness between train and eval
+    # Enforce strict speaker disjointness between train and eval.
+    # When speakers are session-scoped (each speaker appears in only 1 session),
+    # hold out whole sessions so every eval recording retains all of its speakers
+    # for within-session negative trials.
     explicit_eval_spks = {
         rec[0].speaker_id for rec in all_records if rec[2] in ("eval", "test", "dev")
     }
     all_spks = sorted({rec[0].speaker_id for rec in all_records})
     if not explicit_eval_spks and len(all_spks) >= 2:
         rng = random.Random(seed)
-        n_eval = max(2, int(round(len(all_spks) * eval_speaker_ratio)))
-        n_eval = min(n_eval, len(all_spks) - 1)
-        explicit_eval_spks = set(rng.sample(all_spks, n_eval))
+        spk_to_sessions: dict[str, set[str]] = {}
+        sess_to_spks: dict[str, set[str]] = {}
+        for rec in all_records:
+            spk_to_sessions.setdefault(rec[0].speaker_id, set()).add(rec[0].session_id)
+            sess_to_spks.setdefault(rec[0].session_id, set()).add(rec[0].speaker_id)
+        all_sessions = sorted(sess_to_spks.keys())
+        if len(all_sessions) >= 2 and all(
+            len(s_set) == 1 for s_set in spk_to_sessions.values()
+        ):
+            n_eval_sess = max(1, int(round(len(all_sessions) * eval_speaker_ratio)))
+            n_eval_sess = min(n_eval_sess, len(all_sessions) - 1)
+            chosen_sess = set(rng.sample(all_sessions, n_eval_sess))
+            explicit_eval_spks = {
+                spk for s in chosen_sess for spk in sess_to_spks[s]
+            }
+        else:
+            n_eval = max(2, int(round(len(all_spks) * eval_speaker_ratio)))
+            n_eval = min(n_eval, len(all_spks) - 1)
+            explicit_eval_spks = set(rng.sample(all_spks, n_eval))
 
     train_spk_to_utts: dict[str, list[str]] = {}
     eval_spk_to_utts: dict[str, list[str]] = {}
@@ -292,6 +313,11 @@ def main() -> None:
         help="Comma-separated Fisher calldata.tbl paths.",
     )
     parser.add_argument("--ami_meetings_xml", type=str, default="", help="Path to AMI meetings.xml.")
+    parser.add_argument(
+        "--global_speaker_ids",
+        action="store_true",
+        help="Treat raw RTTM/transcript speaker tags as corpus-global IDs instead of session-local labels.",
+    )
     parser.add_argument("--overlap_collar_sec", type=float, default=0.10, help="Collar around multi-speaker overlaps.")
     parser.add_argument("--min_duration_sec", type=float, default=0.80, help="Minimum cropped segment duration (s).")
     parser.add_argument("--max_duration_sec", type=float, default=8.00, help="Maximum cropped segment duration (s).")
@@ -316,6 +342,7 @@ def main() -> None:
         corpus=args.corpus,
         fisher_calldata_tbls=tbls,
         ami_meetings_xml=args.ami_meetings_xml,
+        global_speaker_ids=bool(args.global_speaker_ids or args.generate_synthetic),
         crop_config=crop_cfg,
     )
     print(json.dumps(summary, indent=2))

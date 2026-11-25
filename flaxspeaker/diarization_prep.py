@@ -41,7 +41,7 @@ from scipy import signal
 import soundfile as sf
 
 _FISHER_CALL_RE = re.compile(r"(\d{5})")
-_AMI_MEET_RE = re.compile(r"([A-Z]{2}\d{4}[a-z])")
+_AMI_MEET_RE = re.compile(r"([A-Z]{2}\d{4}[a-z]?)")
 _ICSI_MEET_RE = re.compile(r"([A-Za-z]{3}\d{3})")
 _TRANSCRIPT_LINE_RE = re.compile(
     r"^\s*([0-9]+(?:\.[0-9]+)?)\s+([0-9]+(?:\.[0-9]+)?)\s+([^:\s]+)\s*:?(.*)$"
@@ -141,8 +141,16 @@ def resolve_global_speaker_id(
     raw_speaker_tag: str,
     fisher_pin_map: Optional[Mapping[tuple[str, str], str]] = None,
     ami_speaker_map: Optional[Mapping[tuple[str, str], str]] = None,
+    global_speaker_ids: bool = False,
 ) -> tuple[str, str]:
-    """Resolves `(canonical_session_id, global_speaker_id)` for diarization corpora."""
+    """Resolves `(canonical_session_id, global_speaker_id)` for diarization corpora.
+
+    By default (`global_speaker_ids=False`), recording-local speaker labels
+    (e.g. `A`, `B`, `SPEAKER_00`, `spk0`) are strictly scoped to their session
+    (`f"{prefix}:{sess}:{tag}"`) unless resolved through an official corpus
+    speaker table (`fisher_pin_map` or `ami_speaker_map`), ensuring `speaker-A`
+    in one utterance/recording is never merged with `speaker-A` in another.
+    """
     corpus_norm = corpus.strip().lower()
     tag = raw_speaker_tag.strip()
     if tag.lower().startswith("speaker:"):
@@ -188,11 +196,20 @@ def resolve_global_speaker_id(
                 call_id = call_id[: -len(ext)]
         return f"callhome:{call_id}", f"callhome:{call_id}:{tag}"
 
-    sess = session_or_utt_id.strip() or "session"
+    sess = os.path.basename(session_or_utt_id.strip()) or "session"
+    for ext in (".wav", ".sph", ".flac", ".txt", ".rttm"):
+        if sess.lower().endswith(ext):
+            sess = sess[: -len(ext)]
     prefix = corpus_norm or "diar"
-    if tag.startswith(f"{prefix}:"):
+    if global_speaker_ids:
+        if tag.startswith(f"{prefix}:"):
+            return f"{prefix}:{sess}", tag
+        return f"{prefix}:{sess}", f"{prefix}:{tag}"
+    if tag.startswith(f"{prefix}:{sess}:"):
         return f"{prefix}:{sess}", tag
-    return f"{prefix}:{sess}", f"{prefix}:{tag}"
+    if tag.startswith(f"{prefix}:"):
+        tag = tag[len(prefix) + 1:]
+    return f"{prefix}:{sess}", f"{prefix}:{sess}:{tag}"
 
 
 def parse_diarization_annotations(
@@ -420,6 +437,7 @@ def extract_clean_speaker_segments(
     config: Optional[DiarizationCropConfig] = None,
     session_id_override: Optional[str] = None,
     audio_duration_sec: Optional[float] = None,
+    scope_local_speakers: bool = True,
 ) -> list[CroppedSegmentSpec]:
     """Extracts overlap-free single-speaker segments from multi-speaker turns.
 
@@ -434,6 +452,9 @@ def extract_clean_speaker_segments(
        active during the gap.
     4. Filter out fragments shorter than `min_duration_sec` and split long
        monologues (`> max_duration_sec`) using `window_hop_sec`.
+    5. When `scope_local_speakers=True` (default), bare local speaker labels
+       without a `:` namespace (e.g. `A`, `B`, `SPEAKER_00`) are scoped as
+       `f"{session_id}:{spk}"` so different recordings never share local tags.
     """
     cfg = config or DiarizationCropConfig()
     if not turns:
@@ -510,19 +531,24 @@ def extract_clean_speaker_segments(
             else:
                 merged_spk.append((s, e))
 
+        resolved_spk = (
+            f"{inferred_sess}:{spk}"
+            if (scope_local_speakers and ":" not in spk)
+            else spk
+        )
         for s, e in merged_spk:
             dur = e - s
             if dur + 1e-6 < cfg.min_duration_sec:
                 continue
             if dur <= cfg.max_duration_sec + 1e-6:
                 seg_id = (
-                    f"{inferred_sess}__{spk}"
+                    f"{inferred_sess}__{resolved_spk}"
                     f"__{int(round(s * 100)):06d}_{int(round(e * 100)):06d}"
                 )
                 segments.append(
                     CroppedSegmentSpec(
                         session_id=inferred_sess,
-                        speaker_id=spk,
+                        speaker_id=resolved_spk,
                         start_sec=round(s, 4),
                         end_sec=round(e, 4),
                         segment_id=seg_id,
@@ -536,13 +562,13 @@ def extract_clean_speaker_segments(
                     if e - win_end < cfg.min_duration_sec:
                         win_end = e
                     seg_id = (
-                        f"{inferred_sess}__{spk}"
+                        f"{inferred_sess}__{resolved_spk}"
                         f"__{int(round(cur * 100)):06d}_{int(round(win_end * 100)):06d}"
                     )
                     segments.append(
                         CroppedSegmentSpec(
                             session_id=inferred_sess,
-                            speaker_id=spk,
+                            speaker_id=resolved_spk,
                             start_sec=round(cur, 4),
                             end_sec=round(win_end, 4),
                             segment_id=seg_id,

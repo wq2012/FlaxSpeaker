@@ -3434,6 +3434,39 @@ class TestV070Innovations(unittest.TestCase):
             self.assertIn("within_session", summary["trial_counts"])
             self.assertIn("standard", summary["trial_counts"])
 
+    def test_diarization_prep_session_local_speaker_scoping(self):
+        from flaxspeaker import diarization_prep
+
+        # Recording-local "A" / "SPEAKER_00" in different utterances/sessions must
+        # never be merged into the same speaker class unless mapped by an official
+        # global speaker table (or explicit global_speaker_ids=True).
+        for corpus in ("diar", "fisher", "callhome", "ami", "voxconverse"):
+            _, spk_u1 = diarization_prep.resolve_global_speaker_id(
+                corpus=corpus, session_or_utt_id="utt_00101", raw_speaker_tag="A"
+            )
+            _, spk_u2 = diarization_prep.resolve_global_speaker_id(
+                corpus=corpus, session_or_utt_id="utt_00202", raw_speaker_tag="A"
+            )
+            self.assertNotEqual(
+                spk_u1,
+                spk_u2,
+                msg=f"Local speaker 'A' falsely merged across sessions for {corpus}",
+            )
+
+        # Direct Python API calls to extract_clean_speaker_segments with unprefixed
+        # local tags ("A", "SPEAKER_00") must also scope speaker_id per session.
+        s1 = diarization_prep.extract_clean_speaker_segments(
+            [diarization_prep.SpeakerTurn(0.0, 2.5, "A", session_id="rec_1")],
+            session_id_override="rec_1",
+        )
+        s2 = diarization_prep.extract_clean_speaker_segments(
+            [diarization_prep.SpeakerTurn(0.0, 2.5, "A", session_id="rec_2")],
+            session_id_override="rec_2",
+        )
+        self.assertEqual(len(s1), 1)
+        self.assertEqual(len(s2), 1)
+        self.assertNotEqual(s1[0].speaker_id, s2[0].speaker_id)
+
 
 if __name__ == "__main__":
     unittest.main()
